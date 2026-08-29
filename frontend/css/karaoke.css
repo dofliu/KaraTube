@@ -1,0 +1,447 @@
+/* Fullscreen KTV Stage Screen Styles */
+body.stage-mode {
+  background: #000;
+  overflow: hidden;
+  user-select: none;
+}
+
+.stage-wrapper {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  background: #000;
+}
+
+/* Background Video MV / Canvas */
+.video-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+  opacity: 0.85;
+}
+
+.stage-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0.75) 100%),
+              linear-gradient(to top, rgba(0,0,0,0.95) 0%, transparent 45%),
+              linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, transparent 35%);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Autoplay Prompt Overlay (Ensures AudioContext and Web Audio start smoothly) */
+.audio-prompt-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  cursor: pointer;
+  transition: opacity 0.3s ease;
+}
+
+.audio-prompt-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.audio-prompt-box {
+  background: linear-gradient(135deg, rgba(0, 240, 255, 0.2), rgba(255, 0, 127, 0.2));
+  border: 2px solid var(--accent-cyan);
+  box-shadow: 0 0 30px rgba(0, 240, 255, 0.5);
+  border-radius: 20px;
+  padding: 30px 50px;
+  text-align: center;
+}
+
+/* Stage Header (Song Info & Score HUD) */
+.stage-header {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px 32px 10px 32px;
+}
+
+.stage-song-info {
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(12px);
+  padding: 8px 18px;
+  border-radius: 14px;
+  border-left: 4px solid var(--accent-cyan);
+  max-width: 68vw;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+
+.stage-song-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+  /* 長標題只佔兩行，不讓它把音準線一路往下推 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.25;
+}
+
+.stage-song-artist {
+  font-size: 15px;
+  color: var(--accent-cyan);
+  margin-top: 2px;
+}
+
+.stage-hud {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+}
+
+.score-card {
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 222, 89, 0.4);
+  padding: 6px 18px;
+  border-radius: 14px;
+  text-align: right;
+  box-shadow: 0 0 20px rgba(255, 222, 89, 0.25);
+}
+
+.score-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+  letter-spacing: 2px;
+}
+
+.score-value {
+  font-size: 28px;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 0 15px var(--accent-yellow);
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.combo-badge {
+  font-size: 14px;
+  color: var(--accent-pink);
+  font-weight: 800;
+  text-shadow: 0 0 10px var(--accent-pink);
+}
+
+/* Pitch Detection & Guide Bar */
+.pitch-visualizer-container {
+  position: relative;
+  z-index: 10;
+  width: 90%;
+  max-width: 1200px;
+  height: 78px;
+  margin: 0 auto;
+  flex: 0 0 auto;
+  background: rgba(10, 15, 28, 0.75);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+#pitchCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* KTV Subtitles Engine (Classic 2-line Alternating Subtitles) */
+.karaoke-subtitles-container {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  padding: 0 60px 48px 60px;
+  margin-top: auto;          /* 中間空出來的高度全部留給 MV 畫面 */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ktv-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+  min-height: 60px;
+}
+
+/* Line 1 (Top) aligns left; Line 2 (Bottom) aligns right (Classic KTV) */
+.ktv-line.line-top {
+  justify-content: flex-start;
+}
+
+.ktv-line.line-bottom {
+  justify-content: flex-end;
+}
+
+/* Countdown Lead-in Dots (3, 2, 1, 0) */
+.ktv-countdown {
+  display: inline-flex;
+  gap: 12px;
+  margin-right: 20px;
+  vertical-align: middle;
+}
+
+.countdown-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  border: 2px solid #fff;
+  transition: all 0.2s ease;
+}
+
+.countdown-dot.active {
+  background: var(--accent-yellow);
+  box-shadow: 0 0 20px var(--accent-yellow), 0 0 35px var(--accent-yellow);
+  transform: scale(1.35);
+}
+
+/* Double-Layer Bulletproof KTV Character Rendering */
+.ktv-text-wrapper {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ktv-char {
+  position: relative;
+  display: inline-block;
+  font-size: 46px;
+  font-weight: 900;
+  line-height: 1.2;
+  letter-spacing: 2px;
+  margin: 0 1px;
+}
+
+/* Base White Text with Strong Black Outline */
+.ktv-char .char-bg {
+  display: block;
+  color: #ffffff !important;
+  -webkit-text-stroke: 3.5px #000000;
+  paint-order: stroke fill;
+  text-shadow: 0 4px 15px rgba(0, 0, 0, 0.95);
+}
+
+/* Sweeping Fill Color Layer (Glowing Neon Cyan or Pink) */
+.ktv-char .char-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 0%;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--accent-cyan) !important;
+  -webkit-text-stroke: 3.5px #000000;
+  paint-order: stroke fill;
+  text-shadow: 0 0 16px var(--accent-cyan), 0 0 30px var(--accent-cyan);
+  pointer-events: none;
+}
+
+/* Female Duet Accent */
+.ktv-line.duet-female .ktv-char .char-fill {
+  color: var(--accent-pink) !important;
+  text-shadow: 0 0 16px var(--accent-pink), 0 0 30px var(--accent-pink);
+}
+
+/* Up Next / Queue Floating Toast */
+.next-song-toast {
+  position: absolute;
+  bottom: 24px;
+  left: 40px;
+  z-index: 15;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(10px);
+  padding: 8px 18px;
+  border-radius: 12px;
+  font-size: 14px;
+  color: var(--text-muted);
+  border-left: 3px solid var(--accent-pink);
+}
+
+.next-song-toast span {
+  color: #fff;
+  font-weight: 700;
+}
+
+/* Toast Celebration Particle Effects */
+.floating-fx {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  font-size: 34px;
+  font-weight: 900;
+  color: var(--accent-yellow);
+  text-shadow: 0 0 20px rgba(255, 222, 89, 0.9);
+  animation: floatUp 1.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+@keyframes floatUp {
+  0% { opacity: 0; transform: translateY(20px) scale(0.6); }
+  20% { opacity: 1; transform: translateY(0px) scale(1.2); }
+  80% { opacity: 1; transform: translateY(-40px) scale(1); }
+  100% { opacity: 0; transform: translateY(-80px) scale(0.8); }
+}
+
+/* 字幕同步微調提示（舞台端按 ← → 調整時短暫顯示） */
+.sync-toast {
+  position: absolute;
+  bottom: 24px;
+  right: 40px;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(10px);
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  border-left: 3px solid var(--accent-cyan);
+  letter-spacing: 0.5px;
+}
+
+.sync-toast .sync-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
+/* 音準導唱線可隱藏 —— 有人只想看 MV 與字幕（舞台按 P 或從點歌台切換） */
+body.hide-pitch .pitch-visualizer-container {
+  display: none;
+}
+
+/* --- 舞台端音訊裝置設定面板 --- */
+.stage-gear {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 60;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.2s ease;
+}
+
+.stage-gear:hover {
+  opacity: 1;
+}
+
+.stage-panel {
+  position: absolute;
+  top: 56px;
+  right: 14px;
+  z-index: 60;
+  width: 340px;
+  background: rgba(8, 12, 22, 0.94);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+}
+
+.stage-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent-cyan);
+  margin-bottom: 12px;
+}
+
+.stage-panel-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.stage-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.stage-panel-row label {
+  flex: 0 0 92px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.stage-panel-row select {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.stage-panel-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin: 2px 0 12px 0;
+}
+
+.mode-switch {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-muted);
+}
+
+.mode-btn.active {
+  background: rgba(0, 240, 255, 0.18);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}

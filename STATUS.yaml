@@ -1,0 +1,21 @@
+name: KaraTube
+name_zh: KaraTube 隨選即唱 KTV 伴唱系統
+category: personal_tools
+progress: 82
+status: active
+last_updated: "2026-08-29"
+next_milestone: "以 CTC forced alignment 取代能量包絡，做到真正的逐字時間戳"
+technologies:
+  - Python
+  - FastAPI
+  - WebSocket
+  - yt-dlp
+  - Demucs v4
+  - Whisper
+  - librosa
+  - Web Audio API
+outputs:
+  - tool
+description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment and real-time pitch scoring"
+description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、即時音準導唱與評分"
+key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；前端補償音訊輸出延遲並提供 ±1s 即時微調；舞台版面可切換音準線、點唱排行持久化"

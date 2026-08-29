@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>KaraTube - KTV 點歌控制台</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="glass-panel" style="border-radius: 0 0 16px 16px; margin-bottom: 20px;">
+    <div class="logo-group">
+      <span class="logo-icon">🎤</span>
+      <h1 class="logo-title">KaraTube</h1>
+      <span style="font-size: 11px; background: rgba(0,240,255,0.15); color: var(--accent-cyan); padding: 2px 8px; border-radius: 20px; font-weight: 700;">PRO KTV</span>
+    </div>
+    <div class="header-actions">
+      <a href="/player.html" target="_blank" class="btn btn-primary">
+        🖥️ 開啟舞台大螢幕
+      </a>
+      <button class="btn btn-secondary" id="qrBtn">
+        📱 手機點歌 QR
+      </button>
+    </div>
+  </header>
+
+  <main class="app-container">
+    <!-- Search & Library Column -->
+    <section class="search-section">
+      <div class="search-container">
+        <div class="search-input-wrapper">
+          <span style="font-size: 20px; margin-right: 8px; opacity: 0.7;">🔍</span>
+          <input type="text" id="searchInput" class="search-input" placeholder="輸入歌曲名稱、歌手、或貼上 YouTube / YouTube Music 網址...">
+          <button id="searchBtn" class="btn btn-primary" style="padding: 8px 20px;">搜尋</button>
+        </div>
+      </div>
+
+      <!-- 曲庫切換：搜尋結果 / 本地快取 / 熱門點唱排行 -->
+      <div class="library-tabs">
+        <button class="btn btn-secondary lib-tab active" data-lib="cached">📚 快取歌曲</button>
+        <button class="btn btn-secondary lib-tab" data-lib="rankings">🏆 點唱排行</button>
+        <span id="libSummary" class="lib-summary"></span>
+      </div>
+
+      <!-- Search Results Area -->
+      <div id="searchResults" class="search-results">
+        <!-- Dynamic Cards -->
+      </div>
+    </section>
+
+    <!-- Playlist & Queue Column -->
+    <aside class="queue-panel glass-panel">
+      <div class="panel-title">
+        <span>📋 點歌排隊佇列</span>
+        <span style="font-size: 13px; color: var(--text-muted); font-weight: 400;">自動背景分離</span>
+      </div>
+      <div id="queueList" class="queue-list">
+        <!-- Dynamic Queue Items -->
+      </div>
+    </aside>
+  </main>
+
+  <!-- Bottom Control Deck -->
+  <footer class="control-deck">
+    <!-- Current Track Mini Info -->
+    <div class="now-playing-mini">
+      <img id="nowPlayingThumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='54' height='38' fill='%23222'></svg>" style="width: 54px; height: 38px; border-radius: 8px; object-fit: cover;">
+      <div style="min-width: 0; flex: 1;">
+        <div id="nowPlayingTitle" style="font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">尚未播放歌曲</div>
+        <div id="nowPlayingArtist" style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">請從上方搜尋點歌</div>
+        <!-- Mini Progress -->
+        <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 6px; overflow: hidden;">
+          <div id="progressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-pink)); transition: width 0.3s linear;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 2px;">
+          <span id="timeCurrent">00:00</span>
+          <span id="timeDuration">00:00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Playback Core Buttons -->
+    <div class="deck-controls">
+      <button id="restartBtn" class="btn btn-secondary" title="重新開始">🔄 重唱</button>
+      <button id="playPauseBtn" class="btn btn-primary">▶ 播放</button>
+      <button id="skipBtn" class="btn btn-pink" title="切歌 / 下一首">⏭ 切歌</button>
+    </div>
+
+    <!-- 原唱 / 伴奏：整場最常動的一個，留在最外層 -->
+    <div class="slider-group deck-slider">
+      <span style="font-size: 16px;">🎤</span>
+      <div style="flex: 1;">
+        <div class="slider-caption">
+          <span id="vocalModeText">純伴奏 (KTV模式)</span>
+        </div>
+        <input type="range" id="vocalSlider" min="0" max="1" step="0.05" value="0" style="width: 100%;">
+      </div>
+    </div>
+
+    <!-- 音量：音樂與麥克風 -->
+    <div class="slider-group deck-slider">
+      <span style="font-size: 16px;">🎵</span>
+      <div style="flex: 1;">
+        <div class="slider-caption">
+          <span>音樂</span>
+          <span id="musicVolumeText" class="slider-value">100%</span>
+        </div>
+        <input type="range" id="musicVolumeSlider" min="0" max="1" step="0.05" value="1"
+               title="伴奏音樂音量（不影響麥克風）" style="width: 100%;">
+      </div>
+    </div>
+
+    <div class="slider-group deck-slider">
+      <span style="font-size: 16px;">🎙️</span>
+      <div style="flex: 1;">
+        <div class="slider-caption">
+          <span>麥克風</span>
+          <span id="micVolumeText" class="slider-value">100%</span>
+        </div>
+        <input type="range" id="micVolumeSlider" min="0" max="2" step="0.05" value="1"
+               title="麥克風音量。拉到 0 可立即切斷監聽止住嘯叫，音準評分不受影響" style="width: 100%;">
+      </div>
+    </div>
+
+    <!-- 進階設定收進調音台，避免控制列塞爆 -->
+    <button id="mixerBtn" class="btn btn-secondary" title="調性、殘響、回音、字幕同步、音準線">🎛️ 調音台</button>
+
+    <!-- Atmosphere Sound FX -->
+    <div class="sound-fx-bar">
+      <button class="btn btn-secondary sfx-btn" data-effect="applause" title="熱烈掌聲">👏</button>
+      <button class="btn btn-secondary sfx-btn" data-effect="cheer" title="歡呼口哨">🎉</button>
+      <button class="btn btn-secondary sfx-btn" data-effect="boo" title="倒喝采">👎</button>
+    </div>
+  </footer>
+
+  <!-- 調音台：進階設定 -->
+  <div id="mixerModal" class="modal-overlay">
+    <div class="modal-content mixer-content">
+      <div class="mixer-header">
+        <h3>🎛️ 調音台</h3>
+        <button id="closeMixerBtn" class="btn btn-secondary" style="padding: 4px 12px;">關閉</button>
+      </div>
+
+      <div class="mixer-section">
+        <div class="mixer-section-title">🎵 演唱</div>
+        <div class="mixer-row">
+          <label>升降 Key</label>
+          <div class="key-shift-box">
+            <button id="keyDownBtn" class="btn btn-secondary" style="padding: 2px 10px; font-size: 12px;">♭ 降</button>
+            <span id="keyValueText" class="key-value">0</span>
+            <button id="keyUpBtn" class="btn btn-secondary" style="padding: 2px 10px; font-size: 12px;">♯ 升</button>
+            <button id="keyResetBtn" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;">原</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mixer-section">
+        <div class="mixer-section-title">🎙️ 演唱模式</div>
+        <div class="mixer-row">
+          <label>人聲外放<small>喇叭是否放出歌聲</small></label>
+          <div class="mode-switch" style="flex: 1;">
+            <button id="modeSoloBtn" class="mode-btn active">🎧 單人</button>
+            <button id="modePartyBtn" class="mode-btn">🔊 多人</button>
+          </div>
+        </div>
+        <p id="modeHint" class="mixer-hint">
+          單人模式：人聲不進喇叭，不可能有回授，評分照常。多人模式需搭配外接喇叭。
+        </p>
+      </div>
+
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🎙️ 麥克風效果
+          <button id="dryVoiceBtn" class="btn btn-secondary mixer-mini-btn" title="殘響與回音全部歸零">乾聲</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔆 柔化<small>壓高頻／防尖銳</small></label>
+          <input type="range" id="micToneSlider" min="0" max="1" step="0.05" value="0.4">
+          <span id="micToneText" class="slider-value">40%</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🏛️ 殘響<small>空間感</small></label>
+          <input type="range" id="micReverbSlider" min="0" max="1" step="0.05" value="0.25">
+          <span id="micReverbText" class="slider-value">25%</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔊 回音<small>音量</small></label>
+          <input type="range" id="micEchoSlider" min="0" max="1" step="0.05" value="0.15">
+          <span id="micEchoText" class="slider-value">15%</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔁 重複<small>回音次數</small></label>
+          <input type="range" id="micEchoRepeatSlider" min="0" max="1" step="0.05" value="0.4">
+          <span id="micEchoRepeatText" class="slider-value">40%</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>⏱️ 間隔<small>回音延遲</small></label>
+          <input type="range" id="micEchoTimeSlider" min="80" max="600" step="10" value="280">
+          <span id="micEchoTimeText" class="slider-value">280 ms</span>
+        </div>
+      </div>
+
+      <div class="mixer-section">
+        <div class="mixer-section-title">🖥️ 舞台顯示</div>
+        <div class="mixer-row">
+          <label>🎬 字幕同步<small>雙擊歸零</small></label>
+          <input type="range" id="lyricOffsetSlider" min="-1000" max="1000" step="10" value="0"
+                 title="往左＝字幕提前，往右＝字幕延後">
+          <span id="lyricOffsetText" class="slider-value">0 ms</span>
+        </div>
+        <div class="mixer-row">
+          <label>🎯 音準導唱線<small>舞台可按 P</small></label>
+          <button id="pitchToggleBtn" class="btn btn-secondary" style="margin-left: auto;">顯示中</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phone Pairing QR Modal -->
+  <div id="qrModal" class="modal-overlay">
+    <div class="modal-content">
+      <h3 style="font-size: 20px; font-weight: 800; color: #fff;">📱 手機掃碼點歌</h3>
+      <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">
+        讓朋友用手機相機掃描下方 QR Code，即可在手機上點歌、插播與切換伴奏！
+      </p>
+      <img id="qrImg" class="qr-code-img" src="/api/qrcode" alt="QR Code">
+      <div id="qrUrlText" style="font-size: 13px; color: var(--accent-cyan); font-family: monospace; word-break: break-all;"></div>
+      <button id="closeQrBtn" class="btn btn-secondary" style="margin-top: 16px; width: 100%;">關閉</button>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/controller.js"></script>
+</body>
+</html>

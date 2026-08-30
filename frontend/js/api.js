@@ -34,6 +34,20 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  async getFavorites() {
+    const res = await fetch(`${this.baseUrl}/api/favorites`);
+    return await res.json();
+  }
+
+  async toggleFavorite(songData) {
+    const res = await fetch(`${this.baseUrl}/api/favorites/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(songData)
+    });
+    return await res.json();
+  }
+
   async getQueue() {
     const res = await fetch(`${this.baseUrl}/api/queue`);
     return await res.json();

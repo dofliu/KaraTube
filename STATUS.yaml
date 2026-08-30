@@ -1,10 +1,10 @@
 name: KaraTube
 name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
-progress: 82
+progress: 84
 status: active
-last_updated: "2026-08-29"
-next_milestone: "以 CTC forced alignment 取代能量包絡，做到真正的逐字時間戳"
+last_updated: "2026-08-30"
+next_milestone: "已唱歷史分頁與唱畢總評分結算畫面（見 docs/ROADMAP.md）"
 technologies:
   - Python
   - FastAPI

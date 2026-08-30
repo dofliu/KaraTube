@@ -19,6 +19,7 @@ from backend.services.storage import SongStorage
 from backend.services.search_service import YouTubeSearchService
 from backend.services.queue_manager import QueueManager
 from backend.services.play_stats import PlayStats
+from backend.services.favorites import Favorites
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -40,6 +41,7 @@ storage = SongStorage(SONGS_DIR)
 search_service = YouTubeSearchService()
 song_processor = SongProcessor()
 play_stats = PlayStats(CACHE_DIR / "play_stats.json")
+favorites = Favorites(CACHE_DIR / "favorites.json")
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -188,6 +190,29 @@ async def get_rankings(limit: int = Query(20, ge=1, le=100)):
 @app.delete("/api/rankings")
 async def reset_rankings():
     play_stats.reset()
+    return {"status": "success"}
+
+
+@app.get("/api/favorites")
+async def get_favorites():
+    """我的最愛清單：最新收藏排最前面。"""
+    return {"favorites": favorites.list_all(), "ids": favorites.ids()}
+
+
+@app.post("/api/favorites/toggle")
+async def toggle_favorite(payload: Dict[str, Any] = Body(...)):
+    """收藏 ↔ 取消收藏，一顆按鈕搞定。"""
+    if not (payload.get("song_id") or payload.get("id")):
+        raise HTTPException(status_code=400, detail="Missing song_id parameter")
+    result = favorites.toggle(payload)
+    return {"status": "success", **result}
+
+
+@app.delete("/api/favorites/{song_id}")
+async def remove_favorite(song_id: str):
+    removed = favorites.remove(song_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Song not in favorites")
     return {"status": "success"}
 
 

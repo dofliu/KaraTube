@@ -1,0 +1,13 @@
+# CI / 開發測試用的最小依賴集。
+# 完整執行環境（torch / demucs / whisper / librosa）請照 requirements.txt 安裝；
+# 這裡只裝「模組層級 import 需要」+「測試框架」，讓 CI 幾十秒內能跑完。
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+httpx>=0.27.0
+pytest>=8.0.0
+numpy>=1.24.0
+requests>=2.31.0
+yt-dlp>=2024.3.10
+qrcode>=7.4.2
+pillow>=10.2.0
+aiofiles>=23.2.1

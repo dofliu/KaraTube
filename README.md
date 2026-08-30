@@ -1,6 +1,10 @@
 # KaraTube 🎤 - YouTube 隨選即唱 KTV 伴唱系統
 
+[![CI](https://github.com/dofliu/KaraTube/actions/workflows/ci.yml/badge.svg)](https://github.com/dofliu/KaraTube/actions/workflows/ci.yml)
+
 **KaraTube** 是一個隨時指定任何 YouTube 或 YouTube Music 歌曲，即可全自動轉換為專業 KTV 伴唱畫面的現代化卡拉OK系統。
+
+📖 文件：[使用說明書](docs/USER_GUIDE.md)｜[功能路線圖](docs/ROADMAP.md)｜[開發進度日誌](docs/PROGRESS_LOG.md)
 
 ---
 
@@ -45,7 +49,12 @@
    - 點歌台「🏆 點唱排行」分頁顯示名次、累計次數與最近演唱日期，一鍵再點一次。
    - 統計存在 `cache/play_stats.json`，重開機不會歸零。
 
-7. **📱 雙螢幕輸出與手機掃碼點歌**
+7. **⭐ 我的最愛 (Favorites)**
+   - 每張歌卡右上角的星星一鍵收藏／取消收藏常唱歌曲。
+   - 點歌台「⭐ 我的最愛」分頁集中管理，最新收藏排最前面，一鍵再點歌。
+   - 收藏存在 `cache/favorites.json`，重開機不會消失。
+
+8. **📱 雙螢幕輸出與手機掃碼點歌**
    - **螢幕 1（點歌台 / 手機控制端）**：搜尋歌曲、管理排隊清單、調音、音效、
      音樂音量、字幕同步、音準線顯示切換、點唱排行。
    - **螢幕 2（舞台大螢幕）**：全螢幕高畫質 MV、雙行卡拉OK字幕、音準導唱線、即時評分。
@@ -95,6 +104,7 @@ KaraTube/
 │   └── services/
 │       ├── storage.py           # 本地快取與資料庫
 │       ├── play_stats.py        # 點唱次數統計（熱門排行）
+│       ├── favorites.py         # 我的最愛（收藏清單）
 │       ├── search_service.py    # YouTube 即時搜尋
 │       └── queue_manager.py     # 點歌佇列與狀態廣播
 │
@@ -112,12 +122,30 @@ KaraTube/
 │       ├── pitch-engine.js      # 音準線與麥克風即時評分系統
 │       └── audio-effects.js     # Web Audio 混音、升降 Key、殘響 DSP
 │
+├── tests/                       # 後端單元與 API 測試（pytest）
+├── docs/                        # 使用說明書、路線圖、進度日誌
+├── .github/workflows/ci.yml    # CI：後端測試 + 前端語法檢查
 ├── cache/                       # 自動生成的歌曲快取目錄
-├── requirements.txt             # Python 依賴清單
+├── requirements.txt             # 完整執行依賴（含 AI 模型）
+├── requirements-dev.txt         # 測試 / CI 用最小依賴
 ├── rebuild_lyrics.py            # 重算快取歌曲的歌詞時間軸（改對齊邏輯後用）
 ├── run.py                       # 一鍵啟動腳本
 └── README.md
 ```
+
+---
+
+## 🧪 測試與 CI
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+重的 AI 模型（Demucs / Whisper / librosa）都是延遲載入，
+所以整個 FastAPI app 可以在不裝 torch 的環境直接 import 起來測。
+GitHub Actions 會在每個 PR 自動跑：後端 `compileall` + `pytest`、
+前端 `node --check` 全 JS 語法檢查。
 
 ---
 

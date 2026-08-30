@@ -58,12 +58,14 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentKeyShift = 0;
   let isPlaying = false;
   let showPitch = true;
+  // 已收藏歌曲的 song_id 集合，讓每張歌卡的星星即時反映收藏狀態
+  let favoriteIds = new Set();
 
   // Initialize WebSocket
   window.api.initWebSocket();
 
   // Load Cached Songs on Launch
-  loadCachedRecommendations();
+  refreshFavoriteIds().then(() => loadCachedRecommendations());
 
   // Search Action
   searchBtn.addEventListener("click", () => performSearch());
@@ -121,9 +123,42 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  async function refreshFavoriteIds() {
+    try {
+      const res = await window.api.getFavorites();
+      favoriteIds = new Set(res.ids || []);
+    } catch (e) {}
+  }
+
+  // 我的最愛：使用者主動收藏的常唱歌曲，最新收藏排最前面
+  async function loadFavorites() {
+    try {
+      const res = await window.api.getFavorites();
+      const list = res.favorites || [];
+      favoriteIds = new Set(res.ids || []);
+      libSummary.textContent = `已收藏 ${list.length} 首`;
+      if (list.length === 0) {
+        searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">還沒有收藏歌曲<br>點歌卡右上角的 ☆ 星星即可收藏常唱的歌！</div>`;
+        return;
+      }
+      renderSearchResults(
+        list.map(f => ({
+          ...f,
+          id: f.song_id,
+          uploader: f.artist,
+          thumbnail: f.thumbnail || `https://i.ytimg.com/vi/${f.song_id}/mqdefault.jpg`
+        })),
+        "⭐ 我的最愛"
+      );
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">收藏清單讀取失敗</div>`;
+    }
+  }
+
   function switchLibrary(which) {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
     if (which === "rankings") loadRankings();
+    else if (which === "favorites") loadFavorites();
     else loadCachedRecommendations();
   }
 
@@ -147,11 +182,16 @@ document.addEventListener("DOMContentLoaded", () => {
       const playCount = s.plays
         ? `<div class="play-count">🎤 已點唱 ${s.plays} 次${s.last_played ? " ・ 最近 " + s.last_played.slice(0, 10) : ""}</div>`
         : "";
+      const isFav = favoriteIds.has(s.id);
+      const favBtn = `<button class="fav-btn ${isFav ? "faved" : ""}" data-song-id="${s.id}"
+        onclick="window.toggleFavorite(event, '${s.id}', '${escapeAttr(s.title)}', '${escapeAttr(s.uploader || s.artist)}', '${s.thumbnail}')"
+        title="${isFav ? "取消收藏" : "收藏到我的最愛"}">${isFav ? "⭐" : "☆"}</button>`;
       return `
         <div class="song-card">
           <div class="song-thumb-wrapper">
             <img class="song-thumb" src="${s.thumbnail}" alt="${s.title}" loading="lazy">
             ${rankBadge}
+            ${favBtn}
             ${isCachedBadge}
             <span class="song-duration">${s.duration_string || (s.duration ? formatTime(s.duration) : '')}</span>
           </div>
@@ -183,6 +223,30 @@ document.addEventListener("DOMContentLoaded", () => {
       showNotification(priority ? "⚡ 已成功插播到下一首！" : "🎤 已加入點歌佇列！");
     } catch (e) {
       alert("點歌失敗: " + e.message);
+    }
+  };
+
+  // 收藏 / 取消收藏。星星就地更新，不重畫整個清單，
+  // 這樣在搜尋結果頁收藏不會把捲動位置弄丟。
+  window.toggleFavorite = async (event, id, title, artist, thumbnail) => {
+    event.stopPropagation();
+    try {
+      const res = await window.api.toggleFavorite({ id, title, artist, thumbnail });
+      if (res.favorited) favoriteIds.add(id);
+      else favoriteIds.delete(id);
+      document.querySelectorAll(`.fav-btn[data-song-id="${id}"]`).forEach(btn => {
+        btn.classList.toggle("faved", res.favorited);
+        btn.textContent = res.favorited ? "⭐" : "☆";
+        btn.title = res.favorited ? "取消收藏" : "收藏到我的最愛";
+      });
+      showNotification(res.favorited ? "⭐ 已收藏到我的最愛！" : "已從我的最愛移除");
+      // 我的最愛分頁裡取消收藏，該首要從清單消失
+      const activeTab = document.querySelector(".lib-tab.active");
+      if (!res.favorited && activeTab && activeTab.dataset.lib === "favorites") {
+        loadFavorites();
+      }
+    } catch (e) {
+      alert("收藏失敗: " + e.message);
     }
   };
 

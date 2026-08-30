@@ -691,3 +691,35 @@ input[type="range"] {
   border-color: var(--accent-cyan);
   color: var(--accent-cyan);
 }
+
+/* 我的最愛：歌卡右上角的收藏星星 */
+.fav-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 222, 89, 0.35);
+  background: rgba(10, 15, 28, 0.75);
+  color: var(--accent-yellow);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.fav-btn:hover {
+  transform: scale(1.15);
+  background: rgba(10, 15, 28, 0.95);
+}
+
+.fav-btn.faved {
+  background: rgba(255, 222, 89, 0.18);
+  border-color: var(--accent-yellow);
+  box-shadow: 0 0 10px rgba(255, 222, 89, 0.35);
+}

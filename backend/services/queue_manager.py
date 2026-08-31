@@ -206,6 +206,24 @@ class QueueManager:
                     "command": "RESTART"
                 })
 
+    def is_song_in_use(self, song_id: str) -> bool:
+        """歌曲正在演唱或還在佇列裡。使用中的快取不能刪，刪了舞台會直接斷片。"""
+        if self.current_song and self.current_song.get("song_id") == song_id:
+            return True
+        return any(item.get("song_id") == song_id for item in self.queue)
+
+    async def retry_item(self, queue_id: str) -> Optional[Dict[str, Any]]:
+        """重新處理佇列裡失敗的歌（下載被斷線、模型爆掉之類的暫時性錯誤）。"""
+        for item in self.queue:
+            if item["queue_id"] == queue_id and item["status"] == "ERROR":
+                item["status"] = "PENDING"
+                item["progress"] = 0
+                item["status_text"] = "Retrying..."
+                await self.broadcast_state()
+                asyncio.create_task(self._process_queue_item(item))
+                return item
+        return None
+
     async def remove_from_queue(self, queue_id: str):
         self.queue = [item for item in self.queue if item["queue_id"] != queue_id]
         await self.broadcast_state()

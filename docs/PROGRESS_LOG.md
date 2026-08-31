@@ -5,6 +5,47 @@
 
 ---
 
+## 2026-08-31（第 2 輪）— 快取管理 UI + 錯誤歌曲重新處理
+
+**目標**：發布前的運維必備 —— 機台磁碟總會滿、下載總會斷線。
+給店家/家用管理者一個看得到磁碟用量、刪得掉歌、救得回失敗處理的入口。
+
+### 新功能：🗂️ 快取管理分頁
+- `SongStorage` 新增 `get_song_size()` / `list_cache_entries()` / `cache_stats()`：
+  逐首歌統計磁碟用量、以四個必要檔案（metadata / instrumental / vocals / lyrics）判斷完整性、
+  `shutil.disk_usage` 回報磁碟剩餘空間。
+- `list_cache_entries()` 連 **沒有 metadata 的壞資料夾也列出來** ——
+  點歌清單把它們藏起來是對的，但它們照樣佔磁碟，管理介面必須看得到才刪得掉。
+- 新 API：`GET /api/cache`（總覽）、`DELETE /api/cache/{song_id}`（刪除）、
+  `POST /api/cache/{song_id}/reprocess`（砍掉快取重跑整條流水線，保留原 metadata 的顯示資訊）。
+- 刪除與重新處理都有守門：`QueueManager.is_song_in_use()` ——
+  演唱中或還在佇列裡的歌回 409，不然舞台會直接斷片。
+- 點歌台新增「🗂️ 快取管理」分頁：總用量 + 磁碟剩餘、每首歌一列
+  （磁碟用量、完整/不完整徽章、缺檔清單 tooltip）、點歌/重新處理/刪除按鈕（含確認對話框）。
+
+### 新功能：🔁 佇列失敗重試
+- `QueueManager.retry_item()`：只對狀態 ERROR 的佇列項生效，重置進度重跑 `_process_queue_item`。
+- 新 API：`POST /api/queue/{queue_id}/retry`。
+- 佇列裡「● 處理失敗」的歌多一顆 🔁 —— 網路斷線類的暫時性錯誤重跑一次通常就過，
+  不用刪掉重新搜尋。
+
+### 測試（70 條，全綠，+11）
+- `test_storage.py` +4：單曲磁碟用量、壞資料夾列舉與缺檔清單、快取總覽統計。
+- `test_queue_manager.py` +3：失敗重試成功上台（FlakyProcessor 第一次爆第二次過）、
+  重試只對 ERROR 生效、`is_song_in_use` 的三種狀態。
+- `test_api.py` +5：cache 總覽形狀、刪除與 404、使用中 409 守門、reprocess/retry 的 404。
+
+### 文件
+- README（核心特色 10 + 重新編號）、USER_GUIDE（快取管理章節、佇列重試、五分頁）、
+  ROADMAP 打勾兩項（系統類全數只剩設定頁與 Docker）、STATUS.yaml。
+
+### 下一步（建議下輪迭代）
+1. 導唱片頭卡（「演唱者：XXX」）＋男調/女調一鍵切換（演唱體驗）。
+2. 多人包廂暱稱：佇列顯示「誰點的」（手機端已可連入，只差身分）。
+3. Python lint（ruff）納入 CI、pipeline 純函數單元測試。
+
+---
+
 ## 2026-08-31 — 已唱歷史分頁 + 唱畢總評分結算畫面
 
 **目標**：補上商用 KTV 兩塊核心體驗 —— 「剛剛唱過什麼、再唱一次」的已唱歷史，

@@ -3,10 +3,13 @@
 只測不需要網路、不需要 AI 模型的端點。
 重的模型都是延遲載入，所以整個 app 可以直接 import。
 """
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app, favorites, song_history, score_history
+from backend.config import SONGS_DIR
+from backend.main import app, favorites, song_history, score_history, queue_manager, storage
 
 client = TestClient(app)
 
@@ -145,6 +148,64 @@ def test_best_score_unknown_song_is_null():
     res = client.get("/api/scores/definitely_never_sung/best")
     assert res.status_code == 200
     assert res.json()["best"] is None
+
+
+@pytest.fixture()
+def fake_cached_song():
+    """在本機快取目錄放一首 test_ 前綴的假歌，測完清掉。"""
+    song_id = "test_cache_song_01"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(
+        json.dumps({"id": song_id, "title": "快取測試歌", "artist": "測試"}),
+        encoding="utf-8")
+    (song_dir / "instrumental.mp3").write_bytes(b"x" * 100)
+    yield song_id
+    storage.delete_song(song_id)
+
+
+def test_cache_overview_shape(fake_cached_song):
+    res = client.get("/api/cache")
+    assert res.status_code == 200
+    data = res.json()
+    for key in ("songs", "song_count", "total_bytes", "disk_free_bytes",
+                "complete_count", "incomplete_count"):
+        assert key in data
+    entry = next(s for s in data["songs"] if s["song_id"] == fake_cached_song)
+    assert entry["title"] == "快取測試歌"
+    assert entry["complete"] is False  # 缺 vocals.mp3 與 lyrics.json
+    assert entry["size_bytes"] > 0
+
+
+def test_cache_delete(fake_cached_song):
+    res = client.delete(f"/api/cache/{fake_cached_song}")
+    assert res.status_code == 200
+    assert not (SONGS_DIR / fake_cached_song).exists()
+    res = client.delete(f"/api/cache/{fake_cached_song}")
+    assert res.status_code == 404
+
+
+def test_cache_delete_refuses_song_in_use(fake_cached_song):
+    """演唱中或佇列裡的歌不能刪快取，不然舞台會直接斷片。"""
+    queue_manager.queue.append({"queue_id": "test-q-1", "song_id": fake_cached_song,
+                                "status": "READY"})
+    try:
+        res = client.delete(f"/api/cache/{fake_cached_song}")
+        assert res.status_code == 409
+        assert (SONGS_DIR / fake_cached_song).exists()
+    finally:
+        queue_manager.queue[:] = [i for i in queue_manager.queue
+                                  if i.get("queue_id") != "test-q-1"]
+
+
+def test_cache_reprocess_missing_song_404():
+    res = client.post("/api/cache/definitely_not_cached/reprocess")
+    assert res.status_code == 404
+
+
+def test_queue_retry_unknown_item_404():
+    res = client.post("/api/queue/no-such-queue-id/retry")
+    assert res.status_code == 404
 
 
 def test_lyrics_missing_song_returns_empty():

@@ -129,6 +129,42 @@ async def get_cached_songs():
     songs = storage.list_cached_songs()
     return {"songs": songs}
 
+@app.get("/api/cache")
+async def get_cache_overview():
+    """快取管理總覽：每首歌的磁碟用量與完整性 + 磁碟剩餘空間。"""
+    return {"songs": storage.list_cache_entries(), **storage.cache_stats()}
+
+
+@app.delete("/api/cache/{song_id}")
+async def delete_cached_song(song_id: str):
+    """刪除一首快取歌曲（含壞資料夾）。演唱中或還在佇列裡的不能刪。"""
+    if queue_manager.is_song_in_use(song_id):
+        raise HTTPException(status_code=409, detail="歌曲演唱中或在佇列裡，不能刪除快取")
+    if not storage.delete_song(song_id):
+        raise HTTPException(status_code=404, detail="快取中沒有這首歌")
+    return {"status": "success", "song_id": song_id}
+
+
+@app.post("/api/cache/{song_id}/reprocess")
+async def reprocess_cached_song(song_id: str):
+    """砍掉快取重新跑整條流水線：處理壞掉的歌（字幕全歪、檔案缺漏）用。"""
+    if queue_manager.is_song_in_use(song_id):
+        raise HTTPException(status_code=409, detail="歌曲演唱中或在佇列裡，不能重新處理")
+    song_dir = SONGS_DIR / song_id
+    if not song_dir.exists():
+        raise HTTPException(status_code=404, detail="快取中沒有這首歌")
+    # 先留住舊 metadata 的顯示資訊，刪掉快取後排入佇列重新處理
+    meta = storage.get_song_metadata(song_id) or {}
+    storage.delete_song(song_id)
+    item = await queue_manager.add_song(
+        song_id,
+        title=meta.get("title", ""),
+        artist=meta.get("artist", ""),
+        thumbnail=meta.get("thumbnail", ""),
+    )
+    return {"status": "success", "item": item}
+
+
 @app.get("/api/queue")
 async def get_queue():
     return queue_manager.get_full_state()
@@ -151,6 +187,14 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
 async def remove_queue_item(queue_id: str):
     await queue_manager.remove_from_queue(queue_id)
     return {"status": "success"}
+
+@app.post("/api/queue/{queue_id}/retry")
+async def retry_queue_item(queue_id: str):
+    """重新處理佇列裡狀態為 ERROR 的歌。"""
+    item = await queue_manager.retry_item(queue_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="佇列裡沒有這首失敗的歌")
+    return {"status": "success", "item": item}
 
 @app.post("/api/queue/reorder")
 async def reorder_queue(payload: Dict[str, int] = Body(...)):

@@ -723,3 +723,96 @@ input[type="range"] {
   border-color: var(--accent-yellow);
   box-shadow: 0 0 10px rgba(255, 222, 89, 0.35);
 }
+
+/* 快取管理：一列一首歌，顯示磁碟用量與完整性，附刪除/重新處理按鈕 */
+.cache-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.cache-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.cache-row-thumb {
+  width: 72px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.cache-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.cache-row-title {
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cache-row-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cache-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 10px;
+}
+
+.cache-badge.ok {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.cache-badge.broken {
+  color: var(--accent-yellow);
+  background: rgba(255, 222, 89, 0.1);
+  border: 1px solid rgba(255, 222, 89, 0.35);
+}
+
+.cache-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cache-row-actions .btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.cache-del-btn:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+/* 手機上按鈕列自動換行，不擠爆一列 */
+@media (max-width: 640px) {
+  .cache-row {
+    flex-wrap: wrap;
+  }
+  .cache-row-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

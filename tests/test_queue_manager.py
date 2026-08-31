@@ -118,6 +118,60 @@ def test_reorder_queue(tmp_path):
     asyncio.run(scenario())
 
 
+class FlakyProcessor:
+    """假流水線：第一次爆炸，第二次成功。專門測「重試」。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def process_song(self, url, progress_callback=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("network died")
+        song_id = url.rsplit("v=", 1)[-1]
+        return {"title": f"重試成功 {song_id}", "artist": "測試", "thumbnail": ""}
+
+
+def test_retry_failed_item(tmp_path):
+    async def scenario():
+        storage = SongStorage(tmp_path / "songs")
+        manager = QueueManager(FlakyProcessor(), storage)
+        item = await manager.add_song("failsong0001")
+        await asyncio.sleep(0.05)  # 第一次處理失敗
+        assert manager.queue[0]["status"] == "ERROR"
+
+        retried = await manager.retry_item(item["queue_id"])
+        assert retried is not None
+        await asyncio.sleep(0.05)  # 第二次處理成功，且沒歌在播 → 直接上台
+        assert manager.current_song["song_id"] == "failsong0001"
+        assert manager.current_song["title"] == "重試成功 failsong0001"
+
+    asyncio.run(scenario())
+
+
+def test_retry_only_applies_to_error_items(tmp_path):
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002"])
+        await manager.add_song("song0000001")           # 直接上台
+        ready = await manager.add_song("song0000002")   # 排隊中，狀態 READY
+        assert await manager.retry_item(ready["queue_id"]) is None
+        assert await manager.retry_item("no-such-queue-id") is None
+
+    asyncio.run(scenario())
+
+
+def test_is_song_in_use(tmp_path):
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002"])
+        await manager.add_song("song0000001")   # 演唱中
+        await manager.add_song("song0000002")   # 佇列裡
+        assert manager.is_song_in_use("song0000001") is True
+        assert manager.is_song_in_use("song0000002") is True
+        assert manager.is_song_in_use("song0000003") is False
+
+    asyncio.run(scenario())
+
+
 def test_update_controls_clamps_values(tmp_path):
     async def scenario():
         manager, _ = make_manager(tmp_path)

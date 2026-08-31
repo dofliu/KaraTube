@@ -72,6 +72,32 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  async getCacheInfo() {
+    const res = await fetch(`${this.baseUrl}/api/cache`);
+    return await res.json();
+  }
+
+  async deleteCachedSong(songId) {
+    const res = await fetch(`${this.baseUrl}/api/cache/${songId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async reprocessSong(songId) {
+    const res = await fetch(`${this.baseUrl}/api/cache/${songId}/reprocess`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async retryQueueItem(queueId) {
+    const res = await fetch(`${this.baseUrl}/api/queue/${queueId}/retry`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
   async getQueue() {
     const res = await fetch(`${this.baseUrl}/api/queue`);
     return await res.json();

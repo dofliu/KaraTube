@@ -181,11 +181,84 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // 快取管理：看每首歌吃多少磁碟、刪除不唱的歌、重新處理壞掉的歌
+  async function loadCacheManager() {
+    try {
+      const res = await window.api.getCacheInfo();
+      const list = res.songs || [];
+      libSummary.textContent = `${res.song_count || 0} 首 ・ 佔用 ${formatBytes(res.total_bytes || 0)} ・ 磁碟剩餘 ${formatBytes(res.disk_free_bytes || 0)}`;
+      if (list.length === 0) {
+        searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">快取是空的<br>點過的歌會存在這裡，第二次點就能秒播！</div>`;
+        return;
+      }
+      const brokenNote = res.incomplete_count > 0
+        ? `<div style="grid-column: 1/-1; font-size: 12px; color: var(--accent-yellow);">⚠️ 有 ${res.incomplete_count} 首不完整（處理中斷或失敗的殘留），可直接刪除或重新處理。</div>`
+        : "";
+      const rowsHtml = list.map(s => {
+        const badge = s.complete
+          ? `<span class="cache-badge ok">完整</span>`
+          : `<span class="cache-badge broken" title="缺少：${(s.missing_files || []).join(", ")}">不完整</span>`;
+        const thumb = s.thumbnail || `https://i.ytimg.com/vi/${s.song_id}/mqdefault.jpg`;
+        const playBtn = s.complete
+          ? `<button class="btn btn-primary" onclick="window.addSong('${s.song_id}', '${escapeAttr(s.title)}', '${escapeAttr(s.artist)}', '${thumb}', false)">🎤 點歌</button>`
+          : "";
+        return `
+          <div class="cache-row">
+            <img class="cache-row-thumb" src="${thumb}" loading="lazy" onerror="this.style.visibility='hidden'">
+            <div class="cache-row-info">
+              <div class="cache-row-title" title="${s.title || s.song_id}">${s.title || s.song_id}</div>
+              <div class="cache-row-meta">${s.artist ? s.artist + " ・ " : ""}${formatBytes(s.size_bytes)} ${badge}</div>
+            </div>
+            <div class="cache-row-actions">
+              ${playBtn}
+              <button class="btn btn-secondary" onclick="window.reprocessSong('${s.song_id}', '${escapeAttr(s.title)}')" title="砍掉快取重新下載、分離、對字幕">🔁 重新處理</button>
+              <button class="btn btn-secondary cache-del-btn" onclick="window.deleteCachedSong('${s.song_id}', '${escapeAttr(s.title)}')" title="刪除快取釋放磁碟空間">🗑️</button>
+            </div>
+          </div>`;
+      }).join("");
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">🗂️ 快取管理</div>` + brokenNote + rowsHtml;
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">快取清單讀取失敗</div>`;
+    }
+  }
+
+  window.deleteCachedSong = async (id, title) => {
+    if (!confirm(`確定刪除「${title || id}」的快取嗎？\n下次再點這首會重新下載與處理。`)) return;
+    try {
+      await window.api.deleteCachedSong(id);
+      showNotification("🗑️ 已刪除快取");
+      loadCacheManager();
+    } catch (e) {
+      alert("刪除失敗: " + e.message);
+    }
+  };
+
+  window.reprocessSong = async (id, title) => {
+    if (!confirm(`重新處理「${title || id}」？\n會刪掉現有快取並重跑下載、AI 分離與字幕對齊（需要幾分鐘）。`)) return;
+    try {
+      await window.api.reprocessSong(id);
+      showNotification("🔁 已排入重新處理，完成後自動就緒");
+      loadCacheManager();
+    } catch (e) {
+      alert("重新處理失敗: " + e.message);
+    }
+  };
+
+  window.retryQueueItem = async (queueId) => {
+    try {
+      await window.api.retryQueueItem(queueId);
+      showNotification("🔁 重試中…");
+    } catch (e) {
+      alert("重試失敗: " + e.message);
+    }
+  };
+
   function switchLibrary(which) {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
     if (which === "rankings") loadRankings();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
+    else if (which === "cache") loadCacheManager();
     else loadCachedRecommendations();
   }
 
@@ -328,6 +401,12 @@ document.addEventListener("DOMContentLoaded", () => {
         statusIndicator = `<span style="color: var(--accent-cyan); animation: pulse 1.5s infinite;">⏳ ${item.status_text || '處理中'} (${item.progress}%)</span>`;
       }
 
+      // 處理失敗的歌給一顆重試鈕：網路斷線、影片暫時抓不到之類的暫時性錯誤，
+      // 重跑一次通常就過了，不用重新搜尋點歌。
+      const retryBtn = item.status === "ERROR"
+        ? `<button class="btn btn-secondary btn-icon" style="width: 32px; height: 32px;" onclick="window.retryQueueItem('${item.queue_id}')" title="重新處理">🔁</button>`
+        : "";
+
       return `
         <div class="queue-item">
           <img class="queue-item-thumb" src="${item.thumbnail}">
@@ -336,6 +415,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="queue-item-status">${statusIndicator}</div>
           </div>
           <div class="queue-item-actions">
+            ${retryBtn}
             <button class="btn btn-secondary btn-icon" style="width: 32px; height: 32px;" onclick="window.api.removeQueueItem('${item.queue_id}')" title="刪除">
               ✕
             </button>
@@ -590,6 +670,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const datePart = iso.slice(0, 10);
     const timePart = iso.slice(11, 16);
     return datePart === today ? `今天 ${timePart}` : `${datePart} ${timePart}`;
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    const v = bytes / Math.pow(1024, i);
+    return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
   }
 
   function formatTime(seconds) {

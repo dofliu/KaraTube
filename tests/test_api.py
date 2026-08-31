@@ -6,9 +6,23 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app, favorites
+from backend.main import app, favorites, song_history, score_history
 
 client = TestClient(app)
+
+
+@pytest.fixture()
+def snapshot_history_and_scores():
+    """測試前後還原已唱歷史與評分歷史，不汙染本機的 cache。"""
+    saved_history = [dict(e) for e in song_history._entries]
+    saved_scores = [dict(e) for e in score_history._entries]
+    saved_bests = {k: dict(v) for k, v in score_history._bests.items()}
+    yield
+    song_history._entries = saved_history
+    song_history._save()
+    score_history._entries = saved_scores
+    score_history._bests = saved_bests
+    score_history._save()
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +101,50 @@ def test_favorites_delete():
     assert res.status_code == 200
     res = client.delete("/api/favorites/test_fav_002")
     assert res.status_code == 404
+
+
+def test_history_shape():
+    res = client.get("/api/history")
+    assert res.status_code == 200
+    data = res.json()
+    assert "history" in data and "today_count" in data and "total_count" in data
+
+
+def test_scores_flow(snapshot_history_and_scores):
+    payload = {"song_id": "test_score_001", "title": "測試結算",
+               "score": 1234, "accuracy": 0.42, "max_combo": 17, "grade": "S"}
+    res = client.post("/api/scores", json=payload)
+    assert res.status_code == 200
+    result = res.json()["result"]
+    assert result["score"] == 1234
+    assert result["is_new_best"] is True
+    assert "beat_percent" in result
+
+    res = client.get("/api/scores")
+    assert res.status_code == 200
+    data = res.json()
+    assert any(e["song_id"] == "test_score_001" for e in data["scores"])
+    assert data["bests"]["test_score_001"]["score"] == 1234
+
+    res = client.get("/api/scores/test_score_001/best")
+    assert res.status_code == 200
+    assert res.json()["best"]["score"] == 1234
+
+
+def test_scores_requires_song_id():
+    res = client.post("/api/scores", json={"score": 100})
+    assert res.status_code == 400
+
+
+def test_scores_rejects_bad_score():
+    res = client.post("/api/scores", json={"song_id": "test_bad", "score": "xyz"})
+    assert res.status_code == 400
+
+
+def test_best_score_unknown_song_is_null():
+    res = client.get("/api/scores/definitely_never_sung/best")
+    assert res.status_code == 200
+    assert res.json()["best"] is None
 
 
 def test_lyrics_missing_song_returns_empty():

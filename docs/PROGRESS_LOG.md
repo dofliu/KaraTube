@@ -5,6 +5,57 @@
 
 ---
 
+## 2026-08-31 — 已唱歷史分頁 + 唱畢總評分結算畫面
+
+**目標**：補上商用 KTV 兩塊核心體驗 —— 「剛剛唱過什麼、再唱一次」的已唱歷史，
+以及整首唱完的總評分結算（含個人最佳與擊敗比例），一次做掉 ROADMAP 三項。
+
+### 新功能：🕘 已唱歷史分頁
+- 新增 `backend/services/song_history.py`：一次一筆的演唱時間序列（同一首唱三次就有三筆），
+  執行緒安全、JSON 持久化（`cache/song_history.json`），保留最近 500 筆。
+- `QueueManager.play_next()` 在歌曲真正上台時記錄（與點唱排行同一時機，排進佇列又被刪的不算）。
+- 新 API：`GET /api/history`（含 `today_count` 今天唱幾首）、`DELETE /api/history`。
+- 點歌台新增「🕘 已唱歷史」分頁：最新在前、標示「唱於 今天 21:34」、一鍵再點。
+
+### 新功能：🏁 唱畢總評分結算畫面
+- 新增 `backend/services/score_history.py`：評分歷史 + 每曲個人最佳 +
+  擊敗比例（這次分數贏過過往多少比例的演唱），持久化 `cache/score_history.json`。
+- 新 API：`POST /api/scores`（記錄成績，回傳個人最佳/是否破紀錄/擊敗比例，並廣播 `SCORE_FINAL`）、
+  `GET /api/scores`、`GET /api/scores/{song_id}/best`。
+- 舞台端（`player.js` + `player.html` + `karaoke.css`）：整首唱完自動亮出結算卡
+  —— 總分滾動動畫、SSS~C 等級、音準率、最大 COMBO、個人最佳、擊敗比例；
+  停留 9 秒（點擊可跳過）後才送 `SONG_ENDED` 進下一首；切歌會直接收掉結算不卡流程；
+  沒人開口唱（偵測到的發聲少於約 1 秒）不出結算。
+- 點歌台收到 `SCORE_FINAL` 顯示同步通知，包廂裡每支手機都看得到成績。
+
+### 評分引擎重構（`pitch-engine.js`）
+- 把「音高偵測 + 計分」從渲染函式抽成獨立的 `tick()`：
+  隱藏音準線（P 鍵）時評分照樣進行，唱畢結算才公平（原本隱藏音準線=停止計分）。
+- 新增結算統計：機會幀（有導唱音符）、命中幀、Perfect 幀、發聲幀；
+  `getFinalResult()` 產出總分、音準率、等級（SSS≥75% 命中率，逐幀命中很嚴格所以門檻下修）、最大 COMBO。
+- 修正 `setPitchData()` 沒重置 `maxCombo` 的舊 bug（上一首的 COMBO 會漏到下一首的結算）。
+
+### 修正
+- 結算畫面亮著時共享狀態仍是 `is_playing=true`，任何 STATE_UPDATE（如有人動滑桿）
+  會把唱完的歌又拉回來重播 —— 已在舞台端加結算中的播放守門。
+
+### 測試（59 條，全綠）
+- 新增 `tests/test_song_history.py`（8 條）：記錄順序、今天計數、持久化、壞檔復原、上限裁切。
+- 新增 `tests/test_score_history.py`（9 條）：個人最佳、擊敗比例、參數夾限、持久化、清空。
+- `tests/test_api.py` 加 6 條：history / scores 端點的形狀與錯誤處理（含測試後還原本機 cache）。
+- `tests/test_queue_manager.py` 驗證上台即記入已唱歷史。
+
+### 文件
+- README（核心特色 8、9 + 目錄結構）、USER_GUIDE（曲庫分頁、已唱歷史、唱畢結算章節）、
+  ROADMAP 打勾三項、STATUS.yaml。
+
+### 下一步（建議下輪迭代）
+1. 快取管理 UI + 錯誤歌曲重新處理按鈕（發布前的運維必備）。
+2. 導唱片頭卡（「演唱者：XXX」）＋男調/女調一鍵切換。
+3. Python lint（ruff）納入 CI、pipeline 純函數單元測試。
+
+---
+
 ## 2026-08-30 — 我的最愛 + CI 測試基礎建設
 
 **目標**：朝可發布系統邁進的第一輪迭代 —— 補上商用 KTV 必備的「我的最愛」，並建立 CI 品質防線。

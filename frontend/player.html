@@ -55,6 +55,34 @@
     <!-- Floating Up-Next Notification -->
     <div id="nextSongToast" class="next-song-toast" style="display: none;"></div>
 
+    <!-- 唱畢總評分結算畫面（點一下直接進下一首） -->
+    <div id="settlementOverlay" class="settlement-overlay">
+      <div class="settlement-card">
+        <div class="settlement-heading">🏁 演唱結束</div>
+        <div id="settleSongTitle" class="settlement-song"></div>
+        <div class="settlement-main">
+          <div class="settlement-score-block">
+            <div class="settlement-label">TOTAL SCORE</div>
+            <div id="settleScore" class="settlement-score">0</div>
+          </div>
+          <div id="settleGrade" class="settlement-grade">S</div>
+        </div>
+        <div class="settlement-stats">
+          <div class="settlement-stat">
+            <div class="settlement-label">🎯 音準率</div>
+            <div id="settleAccuracy" class="settlement-stat-value">0%</div>
+          </div>
+          <div class="settlement-stat">
+            <div class="settlement-label">🔥 最大 COMBO</div>
+            <div id="settleCombo" class="settlement-stat-value">0</div>
+          </div>
+        </div>
+        <div id="settleBest" class="settlement-best"></div>
+        <div id="settleBeat" class="settlement-beat"></div>
+        <div class="settlement-hint">點擊畫面進下一首</div>
+      </div>
+    </div>
+
     <!-- 字幕同步微調提示（按 ← → 調整，0 歸零） -->
     <div id="syncToast" class="sync-toast" style="display: none;"></div>
 

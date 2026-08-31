@@ -155,10 +155,37 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // 已唱歷史：今天唱過的歌一鍵再點。與排行不同，同一首唱三次就有三筆。
+  async function loadHistory() {
+    try {
+      const res = await window.api.getHistory(60);
+      const list = res.history || [];
+      libSummary.textContent = `今天唱了 ${res.today_count || 0} 首 ・ 累計 ${res.total_count || 0} 首`;
+      if (list.length === 0) {
+        searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">還沒有演唱紀錄<br>唱完第一首歌就會出現在這裡！</div>`;
+        return;
+      }
+      renderSearchResults(
+        list.map(h => ({
+          ...h,
+          id: h.song_id,
+          uploader: h.artist,
+          is_cached: true,
+          sung_at: h.sung_at,
+          thumbnail: h.thumbnail || `https://i.ytimg.com/vi/${h.song_id}/mqdefault.jpg`
+        })),
+        "🕘 已唱歷史（最新在前）"
+      );
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">已唱歷史讀取失敗</div>`;
+    }
+  }
+
   function switchLibrary(which) {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
     if (which === "rankings") loadRankings();
     else if (which === "favorites") loadFavorites();
+    else if (which === "history") loadHistory();
     else loadCachedRecommendations();
   }
 
@@ -181,7 +208,9 @@ document.addEventListener("DOMContentLoaded", () => {
         : "";
       const playCount = s.plays
         ? `<div class="play-count">🎤 已點唱 ${s.plays} 次${s.last_played ? " ・ 最近 " + s.last_played.slice(0, 10) : ""}</div>`
-        : "";
+        : (s.sung_at
+          ? `<div class="play-count">🕘 唱於 ${formatSungAt(s.sung_at)}</div>`
+          : "");
       const isFav = favoriteIds.has(s.id);
       const favBtn = `<button class="fav-btn ${isFav ? "faved" : ""}" data-song-id="${s.id}"
         onclick="window.toggleFavorite(event, '${s.id}', '${escapeAttr(s.title)}', '${escapeAttr(s.uploader || s.artist)}', '${s.thumbnail}')"
@@ -544,7 +573,25 @@ document.addEventListener("DOMContentLoaded", () => {
     qrModal.classList.remove("open");
   });
 
+  // 舞台端唱完一首會廣播結算結果，點歌台同步顯示，讓包廂裡每支手機都看得到
+  window.api.on("SCORE_FINAL", (msg) => {
+    const r = msg.data || {};
+    if (!r.title && !r.score) return;
+    const bestPart = r.is_new_best ? " ・ 🎉 刷新個人最佳！" : "";
+    showNotification(`🏁 ${r.title || "演唱結束"}：${r.score} 分（${r.grade || "-"}）${bestPart}`);
+  });
+
   // Helpers
+  function formatSungAt(iso) {
+    if (!iso) return "";
+    // sung_at 是伺服器本地時間，所以「今天」也要用本地日期算，不能用 UTC
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const datePart = iso.slice(0, 10);
+    const timePart = iso.slice(11, 16);
+    return datePart === today ? `今天 ${timePart}` : `${datePart} ${timePart}`;
+  }
+
   function formatTime(seconds) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);

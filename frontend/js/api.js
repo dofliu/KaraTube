@@ -48,6 +48,30 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  async getHistory(limit = 50) {
+    const res = await fetch(`${this.baseUrl}/api/history?limit=${limit}`);
+    return await res.json();
+  }
+
+  async clearHistory() {
+    const res = await fetch(`${this.baseUrl}/api/history`, { method: 'DELETE' });
+    return await res.json();
+  }
+
+  async submitScore(resultData) {
+    const res = await fetch(`${this.baseUrl}/api/scores`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resultData)
+    });
+    return await res.json();
+  }
+
+  async getScores(limit = 50) {
+    const res = await fetch(`${this.baseUrl}/api/scores?limit=${limit}`);
+    return await res.json();
+  }
+
   async getQueue() {
     const res = await fetch(`${this.baseUrl}/api/queue`);
     return await res.json();

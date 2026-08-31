@@ -8,6 +8,7 @@ import json
 
 from backend.services.play_stats import PlayStats
 from backend.services.queue_manager import QueueManager
+from backend.services.song_history import SongHistory
 from backend.services.storage import SongStorage
 
 
@@ -30,7 +31,9 @@ def make_manager(tmp_path, cached_ids=()):
             json.dumps({"id": song_id, "title": f"快取歌 {song_id}", "artist": "歌手"}),
             encoding="utf-8")
     stats = PlayStats(tmp_path / "play_stats.json")
-    return QueueManager(FakeProcessor(), storage, play_stats=stats), stats
+    history = SongHistory(tmp_path / "song_history.json")
+    return QueueManager(FakeProcessor(), storage, play_stats=stats,
+                        song_history=history), stats
 
 
 def test_cached_song_plays_immediately(tmp_path):
@@ -39,10 +42,12 @@ def test_cached_song_plays_immediately(tmp_path):
         item = await manager.add_song("cached00001")
         assert item["status"] == "READY"
         assert item["title"] == "快取歌 cached00001"
-        # 沒有歌在播 → 直接上台，並計入點唱統計
+        # 沒有歌在播 → 直接上台，並計入點唱統計與已唱歷史
         assert manager.current_song["song_id"] == "cached00001"
         assert manager.is_playing is True
         assert stats.total_plays() == 1
+        assert manager.song_history.total_count() == 1
+        assert manager.song_history.recent()[0]["song_id"] == "cached00001"
         assert manager.queue == []
 
     asyncio.run(scenario())

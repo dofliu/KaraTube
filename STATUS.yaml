@@ -1,10 +1,10 @@
 name: KaraTube
 name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
-progress: 84
+progress: 87
 status: active
-last_updated: "2026-08-30"
-next_milestone: "已唱歷史分頁與唱畢總評分結算畫面（見 docs/ROADMAP.md）"
+last_updated: "2026-08-31"
+next_milestone: "快取管理 UI、錯誤歌曲重新處理、導唱片頭卡（見 docs/ROADMAP.md）"
 technologies:
   - Python
   - FastAPI

@@ -89,6 +89,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const OUTPUT_DEV_KEY = "karatube_output_device";
 
   let currentSongId = null;
+  let currentSongMeta = null;
   let isPlaying = false;
   let lastTimeBroadcast = 0;
   let isAudioUnlocked = false;
@@ -161,6 +162,100 @@ document.addEventListener("DOMContentLoaded", () => {
       restartCurrentSong();
     }
   });
+
+  // --- 唱畢總評分結算畫面 ---
+  // 歌唱完先亮 9 秒成績單（總分、等級、音準率、最大 Combo、個人最佳、擊敗比例），
+  // 再通知後端切下一首。中途 切歌/點下一首 會直接收掉，不會卡住流程。
+  const settlementOverlay = document.getElementById("settlementOverlay");
+  const settleSongTitle = document.getElementById("settleSongTitle");
+  const settleScore = document.getElementById("settleScore");
+  const settleGrade = document.getElementById("settleGrade");
+  const settleAccuracy = document.getElementById("settleAccuracy");
+  const settleCombo = document.getElementById("settleCombo");
+  const settleBest = document.getElementById("settleBest");
+  const settleBeat = document.getElementById("settleBeat");
+  const SETTLEMENT_MS = 9000;
+  let settlementTimer = null;
+
+  function hideSettlement() {
+    if (settlementTimer) { clearTimeout(settlementTimer); settlementTimer = null; }
+    if (settlementOverlay) settlementOverlay.classList.remove("show");
+  }
+
+  function finishSettlement() {
+    if (!settlementTimer) return; // 已被切歌等流程收掉，別重複送 SONG_ENDED
+    clearTimeout(settlementTimer);
+    settlementTimer = null;
+    settlementOverlay.classList.remove("show");
+    window.api.send("SONG_ENDED");
+  }
+
+  // 分數從 0 滾動到總分，商用機結算畫面的儀式感
+  function animateScoreCount(target) {
+    const durationMs = 1400;
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      settleScore.textContent = Math.round(target * eased).toLocaleString();
+      if (t < 1 && settlementOverlay.classList.contains("show")) {
+        requestAnimationFrame(step);
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  async function showSettlement(song, result) {
+    if (!settlementOverlay) {
+      window.api.send("SONG_ENDED");
+      return;
+    }
+    settleSongTitle.textContent = song.title || "";
+    settleGrade.textContent = result.grade;
+    settleGrade.dataset.grade = result.grade;
+    settleAccuracy.textContent = `${Math.round(result.accuracy * 100)}%`;
+    settleCombo.textContent = `${result.max_combo}`;
+    settleBest.textContent = "";
+    settleBeat.textContent = "";
+    settlementOverlay.classList.add("show");
+    animateScoreCount(result.score);
+
+    settlementTimer = setTimeout(finishSettlement, SETTLEMENT_MS);
+
+    try {
+      const res = await window.api.submitScore({
+        song_id: song.song_id,
+        title: song.title,
+        artist: song.artist,
+        thumbnail: song.thumbnail,
+        score: result.score,
+        accuracy: result.accuracy,
+        max_combo: result.max_combo,
+        grade: result.grade
+      });
+      const r = (res && res.result) || {};
+      if (r.is_new_best) {
+        settleBest.textContent = r.previous_best != null
+          ? `🎉 刷新個人最佳！（原紀錄 ${r.previous_best.toLocaleString()} 分）`
+          : "🎉 本曲首次演唱，個人最佳紀錄達成！";
+      } else if (r.best_score != null) {
+        settleBest.textContent = `🏆 本曲個人最佳 ${r.best_score.toLocaleString()} 分`;
+      }
+      if (r.beat_percent != null) {
+        settleBeat.textContent = `擊敗全場 ${r.beat_percent}% 的演唱`;
+      }
+    } catch (e) {
+      console.warn("結算成績上傳失敗:", e);
+    }
+  }
+
+  if (settlementOverlay) {
+    // 點一下結算畫面直接進下一首，不用等倒數
+    settlementOverlay.addEventListener("click", (e) => {
+      e.stopPropagation();
+      finishSettlement();
+    });
+  }
 
   // --- 字幕同步微調 ---
   function showToast(html) {
@@ -335,6 +430,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (song && song.status === "READY") {
       if (song.song_id !== currentSongId) {
         loadAndPlaySong(song);
+      } else if (settlementTimer) {
+        // 結算畫面亮著時歌已唱完但共享狀態仍是 is_playing，
+        // 這裡不能把唱完的歌又拉回來重播
       } else {
         if (state.is_playing && (audioInst.paused || videoBg.paused)) {
           playMedia();
@@ -343,7 +441,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     } else if (!song) {
+      hideSettlement();
       currentSongId = null;
+      currentSongMeta = null;
       titleEl.textContent = "KaraTube 伴唱系統";
       artistEl.textContent = "請使用點歌台或掃描 QR Code 點播歌曲";
       pauseMedia();
@@ -353,7 +453,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function loadAndPlaySong(song) {
+    // 切歌或下一首開始時，把還亮著的結算畫面收掉（不送 SONG_ENDED，佇列已前進）
+    hideSettlement();
     currentSongId = song.song_id;
+    currentSongMeta = song;
     titleEl.textContent = song.title;
     artistEl.textContent = song.artist || "YouTube Music";
 
@@ -402,6 +505,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function restartCurrentSong() {
+    // 結算畫面亮著時按重唱：收掉結算（不送 SONG_ENDED），從頭再來
+    hideSettlement();
+    // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
+    pitchEngine.resetScoring();
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;
     audioVoc.currentTime = 0;
@@ -446,6 +553,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     karaokeRenderer.update(displayTime);
+    // 評分心跳與畫面分離：音準線隱藏時照樣計分，唱畢結算才公平
+    pitchEngine.tick(displayTime);
     if (showPitch) pitchEngine.updateAndRender(displayTime);
 
     if (nowMs - lastTimeBroadcast > 400) {
@@ -458,8 +567,14 @@ document.addEventListener("DOMContentLoaded", () => {
   audioInst.addEventListener("playing", () => clock.seekedTo(audioInst.currentTime));
 
   audioInst.addEventListener("ended", () => {
-    console.log("Song audio finished. Advancing to next song...");
-    window.api.send("SONG_ENDED");
+    console.log("Song audio finished.");
+    const result = pitchEngine.getFinalResult();
+    if (result.sang && currentSongMeta) {
+      // 有真的開口唱才亮結算畫面；純放歌（沒人唱）直接進下一首
+      showSettlement(currentSongMeta, result);
+    } else {
+      window.api.send("SONG_ENDED");
+    }
   });
 
   requestAnimationFrame(renderLoop);

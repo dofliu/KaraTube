@@ -16,6 +16,14 @@ class PitchEngine {
 
     this.userPitchHistory = []; // [ { time, midi } ]
     this.lastHitTime = 0;
+    this.lastUserMidi = 0;
+
+    // 唱畢結算用的統計：有導唱音符的幀數（機會）、唱準的幀數（命中）、
+    // 幾乎全準的幀數（Perfect）、有唱出聲音的幀數
+    this.noteFrames = 0;
+    this.hitFrames = 0;
+    this.perfectFrames = 0;
+    this.sangFrames = 0;
 
     this.resizeCanvas();
     window.addEventListener('resize', () => this.resizeCanvas());
@@ -31,9 +39,20 @@ class PitchEngine {
 
   setPitchData(data) {
     this.pitchData = data || { notes: [], points: [] };
+    this.resetScoring();
+  }
+
+  /** 歸零整首歌的評分統計（換歌與重唱都要呼叫，成績單才不會累計到上一輪）。 */
+  resetScoring() {
     this.score = 0;
     this.combo = 0;
+    this.maxCombo = 0;
     this.userPitchHistory = [];
+    this.lastUserMidi = 0;
+    this.noteFrames = 0;
+    this.hitFrames = 0;
+    this.perfectFrames = 0;
+    this.sangFrames = 0;
     this.updateScoreDisplay();
   }
 
@@ -99,6 +118,53 @@ class PitchEngine {
     return 0;
   }
 
+  /**
+   * 每一幀都要呼叫的評分心跳：偵測歌聲音高、對照導唱音符計分。
+   * 與畫面渲染分離 —— 音準線隱藏時評分照常進行，唱畢結算才公平。
+   */
+  tick(currentTime) {
+    const userMidi = this.detectUserPitch(currentTime);
+    this.lastUserMidi = userMidi;
+
+    // 有導唱音符的時刻才算「機會」，前奏間奏不列入音準率分母
+    const activeNote = this.pitchData.notes
+      ? this.pitchData.notes.find(n => currentTime >= n.start && currentTime <= n.end)
+      : null;
+    if (activeNote) this.noteFrames++;
+
+    if (userMidi > 0) {
+      this.sangFrames++;
+      this.userPitchHistory.push({ time: currentTime, midi: userMidi });
+      if (this.userPitchHistory.length > 120) this.userPitchHistory.shift();
+      this.evaluateSingingScore(currentTime, userMidi, activeNote);
+    }
+  }
+
+  /**
+   * 唱畢結算：把整首歌的統計濃縮成一張成績單。
+   * 音準率 = 命中幀 / 有導唱音符的幀；等級門檻參考商用機的手感
+   * （逐幀命中其實很嚴格，門檻不能照直覺的 90/80 分切）。
+   */
+  getFinalResult() {
+    const accuracy = this.noteFrames > 0 ? this.hitFrames / this.noteFrames : 0;
+    let grade;
+    if (accuracy >= 0.75) grade = "SSS";
+    else if (accuracy >= 0.6) grade = "SS";
+    else if (accuracy >= 0.45) grade = "S";
+    else if (accuracy >= 0.3) grade = "A";
+    else if (accuracy >= 0.15) grade = "B";
+    else grade = "C";
+    return {
+      score: this.score,
+      accuracy: Math.round(accuracy * 1000) / 1000,
+      max_combo: this.maxCombo,
+      perfect_frames: this.perfectFrames,
+      grade,
+      // 唱不到一秒（約 60 幀偵測到聲音）視同沒唱，不出結算畫面
+      sang: this.sangFrames >= 60 && this.noteFrames > 0
+    };
+  }
+
   updateAndRender(currentTime) {
     if (!this.canvas) return;
     const width = this.canvas.offsetWidth;
@@ -160,15 +226,8 @@ class PitchEngine {
       });
     }
 
-    // Detect user singing pitch
-    const userMidi = this.detectUserPitch(currentTime);
-    if (userMidi > 0) {
-      this.userPitchHistory.push({ time: currentTime, midi: userMidi });
-      if (this.userPitchHistory.length > 120) this.userPitchHistory.shift();
-
-      // Check hit against reference pitch
-      this.evaluateSingingScore(currentTime, userMidi);
-    }
+    // 音高偵測與計分在 tick() 完成，這裡只負責畫出最新結果
+    const userMidi = this.lastUserMidi;
 
     // Draw User Pitch Trail
     if (this.userPitchHistory.length > 1) {
@@ -208,11 +267,7 @@ class PitchEngine {
     }
   }
 
-  evaluateSingingScore(currentTime, userMidi) {
-    if (!this.pitchData.notes) return;
-
-    // Check if there is an active reference note right now
-    const activeNote = this.pitchData.notes.find(n => currentTime >= n.start && currentTime <= n.end);
+  evaluateSingingScore(currentTime, userMidi, activeNote) {
     if (activeNote) {
       const diff = Math.abs(userMidi - activeNote.midi);
       if (diff <= 1.5) {
@@ -220,6 +275,8 @@ class PitchEngine {
         this.score += 15;
         this.combo += 1;
         this.maxCombo = Math.max(this.maxCombo, this.combo);
+        this.hitFrames++;
+        if (diff < 0.6) this.perfectFrames++;
         this.updateScoreDisplay();
 
         if (currentTime - this.lastHitTime > 1.2 && this.combo > 5) {

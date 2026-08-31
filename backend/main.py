@@ -20,6 +20,8 @@ from backend.services.search_service import YouTubeSearchService
 from backend.services.queue_manager import QueueManager
 from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
+from backend.services.song_history import SongHistory
+from backend.services.score_history import ScoreHistory
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -42,6 +44,8 @@ search_service = YouTubeSearchService()
 song_processor = SongProcessor()
 play_stats = PlayStats(CACHE_DIR / "play_stats.json")
 favorites = Favorites(CACHE_DIR / "favorites.json")
+song_history = SongHistory(CACHE_DIR / "song_history.json")
+score_history = ScoreHistory(CACHE_DIR / "score_history.json")
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -70,7 +74,8 @@ class ConnectionManager:
             self.disconnect(dead)
 
 ws_manager = ConnectionManager()
-queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast, play_stats=play_stats)
+queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
+                             play_stats=play_stats, song_history=song_history)
 
 # Helper: Get Local Network IP
 def get_local_ip() -> str:
@@ -214,6 +219,49 @@ async def remove_favorite(song_id: str):
     if not removed:
         raise HTTPException(status_code=404, detail="Song not in favorites")
     return {"status": "success"}
+
+
+@app.get("/api/history")
+async def get_history(limit: int = Query(50, ge=1, le=200)):
+    """已唱歷史：最近實際上台演唱過的歌，最新的排最前面。"""
+    return {
+        "history": song_history.recent(limit),
+        "today_count": song_history.today_count(),
+        "total_count": song_history.total_count(),
+    }
+
+
+@app.delete("/api/history")
+async def clear_history():
+    song_history.clear()
+    return {"status": "success"}
+
+
+@app.post("/api/scores")
+async def submit_score(payload: Dict[str, Any] = Body(...)):
+    """唱畢結算：舞台端送來總分，回傳含個人最佳與擊敗比例的結算資料。"""
+    result = score_history.record(payload)
+    if result is None:
+        raise HTTPException(status_code=400, detail="Missing song_id or invalid score")
+    # 廣播給所有端（點歌台 / 手機）同步顯示結算結果
+    await ws_manager.broadcast({"type": "SCORE_FINAL", "data": result})
+    return {"status": "success", "result": result}
+
+
+@app.get("/api/scores")
+async def get_scores(limit: int = Query(50, ge=1, le=200)):
+    """評分歷史：最近的演唱成績與每首歌的個人最佳。"""
+    return {
+        "scores": score_history.recent(limit),
+        "bests": score_history.bests(),
+        "total_count": score_history.total_count(),
+    }
+
+
+@app.get("/api/scores/{song_id}/best")
+async def get_best_score(song_id: str):
+    """單曲個人最佳。還沒唱過回傳 null，讓前端自己決定顯示。"""
+    return {"song_id": song_id, "best": score_history.best_for(song_id)}
 
 
 @app.get("/api/songs/{song_id}/lyrics")

@@ -5,16 +5,19 @@ from typing import List, Dict, Any, Optional, Callable
 from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
+from backend.services.song_history import SongHistory
 
 logger = logging.getLogger("KaraTube.QueueManager")
 
 class QueueManager:
     def __init__(self, song_processor: SongProcessor, storage: SongStorage,
-                 broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None):
+                 broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None,
+                 song_history: Optional[SongHistory] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
         self.play_stats = play_stats
+        self.song_history = song_history
 
         self.current_song: Optional[Dict[str, Any]] = None
         self.queue: List[Dict[str, Any]] = []
@@ -178,9 +181,11 @@ class QueueManager:
                 self.history.append(self.current_song)
             self.current_song = next_item
             self.is_playing = True
-            # 真正上台才計入點唱排行，排進佇列又被移除的不算
+            # 真正上台才計入點唱排行與已唱歷史，排進佇列又被移除的不算
             if self.play_stats:
                 self.play_stats.record_play(next_item)
+            if self.song_history:
+                self.song_history.record(next_item)
             await self.broadcast_state()
             return next_item
         else:

@@ -179,8 +179,10 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
     artist = payload.get("artist", "")
     thumbnail = payload.get("thumbnail", "")
     priority = payload.get("priority", False)
+    requested_by = payload.get("requested_by", "")
 
-    item = await queue_manager.add_song(url_or_id, title, artist, thumbnail, priority)
+    item = await queue_manager.add_song(url_or_id, title, artist, thumbnail, priority,
+                                        requested_by=requested_by)
     return {"status": "success", "item": item}
 
 @app.delete("/api/queue/{queue_id}")

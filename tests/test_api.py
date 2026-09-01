@@ -203,6 +203,25 @@ def test_cache_reprocess_missing_song_404():
     assert res.status_code == 404
 
 
+def test_queue_add_records_requester(fake_cached_song):
+    """多人包廂：點歌 API 帶 requested_by，佇列項目就記得是誰點的。"""
+    saved_current = queue_manager.current_song
+    # 先佔住舞台，讓新點的歌留在佇列裡（不然快取歌會直接上台）
+    queue_manager.current_song = {"song_id": "occupied", "queue_id": "busy"}
+    try:
+        res = client.post("/api/queue/add",
+                          json={"id": fake_cached_song, "requested_by": "  小美  "})
+        assert res.status_code == 200
+        item = res.json()["item"]
+        assert item["requested_by"] == "小美"
+        state = client.get("/api/queue").json()
+        assert any(i.get("requested_by") == "小美" for i in state["queue"])
+    finally:
+        queue_manager.queue[:] = [i for i in queue_manager.queue
+                                  if i.get("song_id") != fake_cached_song]
+        queue_manager.current_song = saved_current
+
+
 def test_queue_retry_unknown_item_404():
     res = client.post("/api/queue/no-such-queue-id/retry")
     assert res.status_code == 404

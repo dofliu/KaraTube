@@ -21,6 +21,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const keyUpBtn = document.getElementById("keyUpBtn");
   const keyResetBtn = document.getElementById("keyResetBtn");
   const keyValueText = document.getElementById("keyValueText");
+  const keyOrigBtn = document.getElementById("keyOrigBtn");
+  const keyMaleBtn = document.getElementById("keyMaleBtn");
+  const keyFemaleBtn = document.getElementById("keyFemaleBtn");
+  const nickBtn = document.getElementById("nickBtn");
+  const nickText = document.getElementById("nickText");
   const micVolumeSlider = document.getElementById("micVolumeSlider");
   const micVolumeText = document.getElementById("micVolumeText");
   const micReverbSlider = document.getElementById("micReverbSlider");
@@ -60,6 +65,29 @@ document.addEventListener("DOMContentLoaded", () => {
   let showPitch = true;
   // 已收藏歌曲的 song_id 集合，讓每張歌卡的星星即時反映收藏狀態
   let favoriteIds = new Set();
+
+  // --- 多人包廂暱稱 ---
+  // 每台裝置（桌機點歌台、每支掃碼進來的手機）各自記自己的暱稱，
+  // 點歌時一起送出，佇列與舞台片頭卡就看得到「這首是誰點的」。
+  const NICK_STORAGE_KEY = "karatube_nickname";
+  let nickname = "";
+  try { nickname = (localStorage.getItem(NICK_STORAGE_KEY) || "").trim(); } catch (e) { }
+
+  function updateNickUI() {
+    if (nickText) nickText.textContent = nickname ? nickname : "設定暱稱";
+  }
+
+  function promptNickname() {
+    const input = prompt("輸入你的暱稱（顯示在點歌佇列與舞台片頭卡）：", nickname);
+    if (input === null) return; // 按取消不動
+    nickname = input.trim().slice(0, 24);
+    try { localStorage.setItem(NICK_STORAGE_KEY, nickname); } catch (e) { }
+    updateNickUI();
+    showNotification(nickname ? `👤 暱稱已設定為「${nickname}」` : "已清除暱稱");
+  }
+
+  if (nickBtn) nickBtn.addEventListener("click", promptNickname);
+  updateNickUI();
 
   // Initialize WebSocket
   window.api.initWebSocket();
@@ -320,7 +348,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Global Add Song Action
   window.addSong = async (id, title, artist, thumbnail, priority) => {
     try {
-      await window.api.addToQueue({ id, title, artist, thumbnail }, priority);
+      await window.api.addToQueue({ id, title, artist, thumbnail, requested_by: nickname }, priority);
       // Brief feedback toast
       showNotification(priority ? "⚡ 已成功插播到下一首！" : "🎤 已加入點歌佇列！");
     } catch (e) {
@@ -407,12 +435,17 @@ document.addEventListener("DOMContentLoaded", () => {
         ? `<button class="btn btn-secondary btn-icon" style="width: 32px; height: 32px;" onclick="window.retryQueueItem('${item.queue_id}')" title="重新處理">🔁</button>`
         : "";
 
+      // 多人包廂：顯示這首是誰點的
+      const requester = item.requested_by
+        ? ` <span class="queue-requester">👤 ${escapeHtml(item.requested_by)}</span>`
+        : "";
+
       return `
         <div class="queue-item">
           <img class="queue-item-thumb" src="${item.thumbnail}">
           <div class="queue-item-info">
             <div class="queue-item-title" title="${item.title}">${item.title}</div>
-            <div class="queue-item-status">${statusIndicator}</div>
+            <div class="queue-item-status">${statusIndicator}${requester}</div>
           </div>
           <div class="queue-item-actions">
             ${retryBtn}
@@ -449,6 +482,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (state.show_pitch !== undefined && state.show_pitch !== showPitch) {
       updatePitchToggleLabel(state.show_pitch);
+    }
+
+    // 升降 Key：手機端與桌機端可能同時開著，任何一邊改（含男調/女調）都要同步回來
+    if (state.pitch_shift !== undefined && state.pitch_shift !== currentKeyShift) {
+      currentKeyShift = state.pitch_shift;
+      renderKeyUI();
     }
 
     // 麥克風效果：手機端與桌機端可能同時開著，任何一邊改都要同步回來
@@ -500,6 +539,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Key Shift (+/- Semitones)
+  // 男調/女調一鍵切換：商用點歌機的固定偏移慣例 —— 女歌男唱降 4 個 Key、男歌女唱升 4 個 Key。
+  const KEY_PRESET_MALE = -4;
+  const KEY_PRESET_FEMALE = 4;
+
   keyUpBtn.addEventListener("click", () => {
     if (currentKeyShift < 6) {
       currentKeyShift++;
@@ -519,8 +562,19 @@ document.addEventListener("DOMContentLoaded", () => {
     updateKeyShift();
   });
 
-  function updateKeyShift() {
+  keyOrigBtn.addEventListener("click", () => { currentKeyShift = 0; updateKeyShift(); });
+  keyMaleBtn.addEventListener("click", () => { currentKeyShift = KEY_PRESET_MALE; updateKeyShift(); });
+  keyFemaleBtn.addEventListener("click", () => { currentKeyShift = KEY_PRESET_FEMALE; updateKeyShift(); });
+
+  function renderKeyUI() {
     keyValueText.textContent = (currentKeyShift > 0 ? `+${currentKeyShift}` : `${currentKeyShift}`);
+    keyOrigBtn.classList.toggle("active", currentKeyShift === 0);
+    keyMaleBtn.classList.toggle("active", currentKeyShift === KEY_PRESET_MALE);
+    keyFemaleBtn.classList.toggle("active", currentKeyShift === KEY_PRESET_FEMALE);
+  }
+
+  function updateKeyShift() {
+    renderKeyUI();
     window.api.updateControl({ pitch_shift: currentKeyShift });
   }
 
@@ -689,6 +743,11 @@ document.addEventListener("DOMContentLoaded", () => {
   function escapeAttr(str) {
     if (!str) return "";
     return str.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
   function showNotification(msg) {

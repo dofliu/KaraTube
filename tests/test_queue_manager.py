@@ -189,6 +189,37 @@ def test_update_controls_clamps_values(tmp_path):
         assert manager.lyric_offset_ms == -2000
         assert manager.sing_mode == "solo"
         assert manager.pitch_shift == 3
+        # 升降 Key 夾在 ±6 半音，超出範圍的值不能讓變調器爆掉
+        await manager.update_controls({"pitch_shift": 99})
+        assert manager.pitch_shift == 6
+        await manager.update_controls({"pitch_shift": -99})
+        assert manager.pitch_shift == -6
+
+    asyncio.run(scenario())
+
+
+def test_requested_by_recorded_and_sanitized(tmp_path):
+    """多人包廂：點歌時記下是誰點的，前後空白修掉、過長截斷。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002", "song0000003"])
+        await manager.add_song("song0000001")  # 直接上台，佔住舞台
+        item = await manager.add_song("song0000002", requested_by="  小明  ")
+        assert item["requested_by"] == "小明"
+        # 沒給暱稱 → 空字串，前端不顯示標籤
+        anon = await manager.add_song("song0000003")
+        assert anon["requested_by"] == ""
+        # 上台後 current_song 也帶著點歌人，舞台片頭卡才有得顯示
+        await manager.skip_current()
+        assert manager.current_song["requested_by"] == "小明"
+
+    asyncio.run(scenario())
+
+
+def test_requested_by_truncated_to_24_chars(tmp_path):
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001"])
+        item = await manager.add_song("song0000001", requested_by="甲" * 50)
+        assert item["requested_by"] == "甲" * 24
 
     asyncio.run(scenario())
 

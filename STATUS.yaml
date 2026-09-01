@@ -1,10 +1,10 @@
 name: KaraTube
 name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
-progress: 89
+progress: 91
 status: active
-last_updated: "2026-08-31"
-next_milestone: "導唱片頭卡、男調/女調一鍵切換、多人包廂暱稱（見 docs/ROADMAP.md）"
+last_updated: "2026-09-01"
+next_milestone: "ruff lint 納入 CI、pipeline 純函數單元測試、設定頁（見 docs/ROADMAP.md）"
 technologies:
   - Python
   - FastAPI
@@ -18,4 +18,4 @@ outputs:
   - tool
 description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment and real-time pitch scoring"
 description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、即時音準導唱與評分"
-key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；前端補償音訊輸出延遲並提供 ±1s 即時微調；舞台版面可切換音準線、點唱排行持久化"
+key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；前端補償音訊輸出延遲並提供 ±1s 即時微調；導唱片頭卡、男調/女調一鍵變調、多人包廂暱稱；73 條後端測試全綠"

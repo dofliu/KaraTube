@@ -816,3 +816,20 @@ input[type="range"] {
     justify-content: flex-end;
   }
 }
+
+/* 多人包廂：佇列上「誰點的」標籤 */
+.queue-requester {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+  background: rgba(255, 222, 89, 0.12);
+  padding: 1px 8px;
+  border-radius: 10px;
+  vertical-align: middle;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

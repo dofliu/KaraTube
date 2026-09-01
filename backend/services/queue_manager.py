@@ -77,7 +77,8 @@ class QueueManager:
             "show_pitch": self.show_pitch
         }
 
-    async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "", priority: bool = False) -> Dict[str, Any]:
+    async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "",
+                       priority: bool = False, requested_by: str = "") -> Dict[str, Any]:
         """Add song to queue or insert at top (插播)."""
         # Resolve song_id
         import re
@@ -108,7 +109,9 @@ class QueueManager:
             "thumbnail": thumbnail or f"https://img.youtube.com/vi/{song_id}/hqdefault.jpg",
             "status": status,
             "progress": progress,
-            "status_text": "Queued" if status == "PENDING" else "Ready (Cached)"
+            "status_text": "Queued" if status == "PENDING" else "Ready (Cached)",
+            # 多人包廂：這首是誰點的。長度截 24 字，防手機端惡搞塞爆佇列版面。
+            "requested_by": str(requested_by or "").strip()[:24],
         }
 
         if priority:
@@ -238,7 +241,7 @@ class QueueManager:
         if "vocal_volume" in params:
             self.vocal_volume = float(params["vocal_volume"])
         if "pitch_shift" in params:
-            self.pitch_shift = int(params["pitch_shift"])
+            self.pitch_shift = int(max(-6, min(6, int(params["pitch_shift"]))))
         if "music_volume" in params:
             self.music_volume = float(params["music_volume"])
         if "mic_volume" in params:

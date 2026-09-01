@@ -206,6 +206,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function showSettlement(song, result) {
+    hideIntroCard(); // 極短的歌可能唱完時片頭卡還亮著
     if (!settlementOverlay) {
       window.api.send("SONG_ENDED");
       return;
@@ -255,6 +256,31 @@ document.addEventListener("DOMContentLoaded", () => {
       e.stopPropagation();
       finishSettlement();
     });
+  }
+
+  // --- 導唱片頭卡 ---
+  // 商用點歌機在前奏亮出「歌名 / 演唱者 / 點歌人」的開場卡。
+  // 只在歌曲從頭開始（點播、重唱）時顯示，暫停再繼續不會重出。
+  const introCard = document.getElementById("introCard");
+  const introTitle = document.getElementById("introTitle");
+  const introArtist = document.getElementById("introArtist");
+  const introRequester = document.getElementById("introRequester");
+  const INTRO_CARD_MS = 8000;
+  let introCardTimer = null;
+
+  function hideIntroCard() {
+    if (introCardTimer) { clearTimeout(introCardTimer); introCardTimer = null; }
+    if (introCard) introCard.classList.remove("show");
+  }
+
+  function showIntroCard(song) {
+    if (!introCard || !song) return;
+    hideIntroCard();
+    introTitle.textContent = song.title || "";
+    introArtist.textContent = song.artist ? `演唱者：${song.artist}` : "";
+    introRequester.textContent = song.requested_by ? `點歌：${song.requested_by}` : "";
+    introCard.classList.add("show");
+    introCardTimer = setTimeout(hideIntroCard, INTRO_CARD_MS);
   }
 
   // --- 字幕同步微調 ---
@@ -442,6 +468,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } else if (!song) {
       hideSettlement();
+      hideIntroCard();
       currentSongId = null;
       currentSongMeta = null;
       titleEl.textContent = "KaraTube 伴唱系統";
@@ -459,6 +486,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentSongMeta = song;
     titleEl.textContent = song.title;
     artistEl.textContent = song.artist || "YouTube Music";
+    showIntroCard(song);
 
     const songBaseUrl = `/media/songs/${song.song_id}`;
 
@@ -509,6 +537,7 @@ document.addEventListener("DOMContentLoaded", () => {
     hideSettlement();
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
+    showIntroCard(currentSongMeta);
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;
     audioVoc.currentTime = 0;

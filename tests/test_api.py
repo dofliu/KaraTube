@@ -222,6 +222,30 @@ def test_queue_add_records_requester(fake_cached_song):
         queue_manager.current_song = saved_current
 
 
+def test_queue_reorder_endpoint():
+    """拖曳排序走的 API：把第 2 首拉到第 0 位，順序要換、其他欄位不動。"""
+    fake_items = [{"queue_id": f"test-reorder-{i}", "song_id": f"test_ro_{i}",
+                   "status": "READY"} for i in range(3)]
+    saved_queue = list(queue_manager.queue)
+    queue_manager.queue[:] = fake_items
+    try:
+        res = client.post("/api/queue/reorder", json={"from_idx": 2, "to_idx": 0})
+        assert res.status_code == 200
+        state = client.get("/api/queue").json()
+        ids = [i["queue_id"] for i in state["queue"] if i["queue_id"].startswith("test-reorder-")]
+        assert ids == ["test-reorder-2", "test-reorder-0", "test-reorder-1"]
+
+        # 超出範圍與負索引都不該動到佇列（拖曳中佇列可能被別人改掉）
+        for payload in ({"from_idx": 99, "to_idx": 0}, {"from_idx": -1, "to_idx": 1}):
+            res = client.post("/api/queue/reorder", json=payload)
+            assert res.status_code == 200
+            state = client.get("/api/queue").json()
+            ids2 = [i["queue_id"] for i in state["queue"] if i["queue_id"].startswith("test-reorder-")]
+            assert ids2 == ids
+    finally:
+        queue_manager.queue[:] = saved_queue
+
+
 def test_queue_retry_unknown_item_404():
     res = client.post("/api/queue/no-such-queue-id/retry")
     assert res.status_code == 404

@@ -112,6 +112,15 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  async reorderQueue(fromIdx, toIdx) {
+    const res = await fetch(`${this.baseUrl}/api/queue/reorder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_idx: fromIdx, to_idx: toIdx })
+    });
+    return await res.json();
+  }
+
   async removeQueueItem(queueId) {
     const res = await fetch(`${this.baseUrl}/api/queue/${queueId}`, { method: 'DELETE' });
     return await res.json();

@@ -28,9 +28,9 @@ def describe(lyrics):
     """回報一份歌詞時間軸的健康度指標。"""
     if not lyrics:
         return "0 行"
-    overlaps = sum(1 for a, b in zip(lyrics, lyrics[1:]) if b["start"] < a["end"] - 0.01)
-    backwards = sum(1 for a, b in zip(lyrics, lyrics[1:]) if b["start"] < a["start"])
-    longest = max(l["end"] - l["start"] for l in lyrics)
+    overlaps = sum(1 for a, b in zip(lyrics, lyrics[1:], strict=False) if b["start"] < a["end"] - 0.01)
+    backwards = sum(1 for a, b in zip(lyrics, lyrics[1:], strict=False) if b["start"] < a["start"])
+    longest = max(ln["end"] - ln["start"] for ln in lyrics)
     return (f"{len(lyrics)} 行 | 重疊 {overlaps} | 逆序 {backwards} | "
             f"最長行 {longest:.1f}s | {lyrics[0]['start']:.2f}s ~ {lyrics[-1]['end']:.2f}s")
 

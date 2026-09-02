@@ -1,19 +1,16 @@
-import os
 import io
 import json
 import socket
 import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, Response, FileResponse
+from fastapi.responses import Response
 import qrcode
-from PIL import Image
 
-from backend.config import FRONTEND_DIR, SONGS_DIR, CACHE_DIR, HOST, PORT, DEVICE
+from backend.config import FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PORT, DEVICE
 from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
 from backend.services.search_service import YouTubeSearchService
@@ -114,7 +111,7 @@ async def get_qrcode_image():
     qr.add_data(target_url)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
-    
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")
@@ -174,7 +171,7 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
     url_or_id = payload.get("url") or payload.get("id")
     if not url_or_id:
         raise HTTPException(status_code=400, detail="Missing url or id parameter")
-    
+
     title = payload.get("title", "")
     artist = payload.get("artist", "")
     thumbnail = payload.get("thumbnail", "")

@@ -397,7 +397,81 @@ document.addEventListener("DOMContentLoaded", () => {
     progressBar.style.width = `${pct}%`;
   });
 
+  // --- 佇列拖曳排序 ---
+  // 拖曳進行中不能讓 STATE_UPDATE 重畫佇列（DOM 一換，抓在手上的節點就沒了），
+  // 先把最新狀態存起來，放手後補畫。
+  let queueDragging = false;
+  let pendingQueueState = null;
+
+  function queueItems() {
+    return Array.from(queueList.querySelectorAll(".queue-item"));
+  }
+
+  function startQueueDrag(e) {
+    const handle = e.currentTarget;
+    const item = handle.closest(".queue-item");
+    if (!item) return;
+    e.preventDefault();
+    const fromIdx = queueItems().indexOf(item);
+    if (fromIdx < 0) return;
+    queueDragging = true;
+    item.classList.add("dragging");
+    try { handle.setPointerCapture(e.pointerId); } catch (err) { }
+
+    const onMove = (ev) => {
+      ev.preventDefault();
+      // 手機上佇列可能比可視範圍長，拖到邊緣時自動捲動
+      const listRect = queueList.getBoundingClientRect();
+      if (ev.clientY < listRect.top + 44) queueList.scrollTop -= 10;
+      else if (ev.clientY > listRect.bottom - 44) queueList.scrollTop += 10;
+
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const over = el && el.closest ? el.closest(".queue-item") : null;
+      if (!over || over === item || over.parentElement !== queueList) return;
+      const rect = over.getBoundingClientRect();
+      const before = ev.clientY < rect.top + rect.height / 2;
+      queueList.insertBefore(item, before ? over : over.nextSibling);
+    };
+
+    const finish = async (commit) => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onCancel);
+      item.classList.remove("dragging");
+      queueDragging = false;
+      const toIdx = queueItems().indexOf(item);
+      if (commit && toIdx >= 0 && toIdx !== fromIdx) {
+        try {
+          await window.api.reorderQueue(fromIdx, toIdx);
+        } catch (err) {
+          showNotification("排序同步失敗，請再試一次");
+        }
+      }
+      // 拖曳期間擋下的更新補畫回來（成功的話伺服器也會再廣播一次最新順序）
+      if (pendingQueueState) {
+        const s = pendingQueueState;
+        pendingQueueState = null;
+        renderQueue(s);
+      }
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onCancel);
+  }
+
+  function attachQueueDragHandlers() {
+    queueList.querySelectorAll(".queue-drag-handle").forEach(h => {
+      h.addEventListener("pointerdown", startQueueDrag);
+    });
+  }
+
   function renderQueue(state) {
+    if (queueDragging) {
+      pendingQueueState = state;
+      return;
+    }
     const cur = state.current_song;
     if (cur) {
       nowPlayingTitle.textContent = cur.title;
@@ -440,8 +514,14 @@ document.addEventListener("DOMContentLoaded", () => {
         ? ` <span class="queue-requester">👤 ${escapeHtml(item.requested_by)}</span>`
         : "";
 
+      // 一首歌沒得排，兩首以上才給拖曳把手
+      const dragHandle = queue.length > 1
+        ? `<div class="queue-drag-handle" title="按住拖曳調整順序">⠿</div>`
+        : "";
+
       return `
         <div class="queue-item">
+          ${dragHandle}
           <img class="queue-item-thumb" src="${item.thumbnail}">
           <div class="queue-item-info">
             <div class="queue-item-title" title="${item.title}">${item.title}</div>
@@ -456,6 +536,8 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       `;
     }).join("");
+
+    attachQueueDragHandlers();
   }
 
   function updateDeckControls(state) {
@@ -503,6 +585,16 @@ document.addEventListener("DOMContentLoaded", () => {
         parseInt(micEchoTimeSlider.value, 10) !== state.mic_echo_time_ms) {
       micEchoTimeSlider.value = state.mic_echo_time_ms;
       micEchoTimeText.textContent = `${state.mic_echo_time_ms} ms`;
+    }
+
+    // 效果風格按鈕：參數剛好等於某個風格就點亮那顆，手動微調過就全部熄掉
+    if (state.mic_reverb !== undefined) {
+      updateMicPresetHighlight({
+        mic_reverb: state.mic_reverb,
+        mic_echo: state.mic_echo,
+        mic_echo_repeat: state.mic_echo_repeat,
+        mic_echo_time_ms: state.mic_echo_time_ms,
+      });
     }
   }
 
@@ -626,6 +718,46 @@ document.addEventListener("DOMContentLoaded", () => {
     const ms = parseInt(e.target.value, 10);
     micEchoTimeText.textContent = `${ms} ms`;
     window.api.updateControl({ mic_echo_time_ms: ms });
+  });
+
+  // --- 麥克風效果風格預設 ---
+  // 商用點歌機的「包廂 / 劇場 / 演唱會」一鍵風格：只動殘響與回音四個參數。
+  // 柔化（防嘯叫）是場地相依的設定，不跟著風格走；乾聲照舊是獨立的止血鍵。
+  const MIC_PRESETS = {
+    room:    { mic_reverb: 0.25, mic_echo: 0.15, mic_echo_repeat: 0.40, mic_echo_time_ms: 280 },
+    theater: { mic_reverb: 0.45, mic_echo: 0.25, mic_echo_repeat: 0.35, mic_echo_time_ms: 220 },
+    concert: { mic_reverb: 0.60, mic_echo: 0.40, mic_echo_repeat: 0.55, mic_echo_time_ms: 380 },
+  };
+  const micPresetBtns = document.querySelectorAll(".mic-preset-btn");
+
+  function updateMicPresetHighlight(vals) {
+    micPresetBtns.forEach(btn => {
+      const p = MIC_PRESETS[btn.dataset.preset];
+      const match = p &&
+        Math.abs(vals.mic_reverb - p.mic_reverb) < 0.001 &&
+        Math.abs(vals.mic_echo - p.mic_echo) < 0.001 &&
+        Math.abs(vals.mic_echo_repeat - p.mic_echo_repeat) < 0.001 &&
+        Math.round(vals.mic_echo_time_ms) === p.mic_echo_time_ms;
+      btn.classList.toggle("active", !!match);
+    });
+  }
+
+  function applyMicPreset(name) {
+    const p = MIC_PRESETS[name];
+    if (!p) return;
+    micReverbSlider.value = p.mic_reverb; pct(micReverbText, p.mic_reverb);
+    micEchoSlider.value = p.mic_echo; pct(micEchoText, p.mic_echo);
+    micEchoRepeatSlider.value = p.mic_echo_repeat; pct(micEchoRepeatText, p.mic_echo_repeat);
+    micEchoTimeSlider.value = p.mic_echo_time_ms;
+    micEchoTimeText.textContent = `${p.mic_echo_time_ms} ms`;
+    updateMicPresetHighlight(p);
+    window.api.updateControl({ ...p });
+    const labels = { room: "🚪 包廂", theater: "🎭 劇場", concert: "🏟️ 演唱會" };
+    showNotification(`🎚️ 已套用 ${labels[name]} 效果風格`);
+  }
+
+  micPresetBtns.forEach(btn => {
+    btn.addEventListener("click", () => applyMicPreset(btn.dataset.preset));
   });
 
   // 一鍵乾聲：現場破音或嘯叫時最快的止血按鈕

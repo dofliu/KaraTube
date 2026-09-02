@@ -91,7 +91,7 @@ class SongProcessor:
             if progress_callback:
                 progress_callback(song_id, "Fetching & Aligning Karaoke Lyrics (Word-Level)...", 75)
             logger.info(f"[{song_id}] Aligning lyrics...")
-            lyrics_data = await loop.run_in_executor(
+            await loop.run_in_executor(
                 None, self.lyrics_aligner.align, voc_path, title, artist, lyrics_file
             )
 
@@ -99,7 +99,7 @@ class SongProcessor:
             if progress_callback:
                 progress_callback(song_id, "Extracting Pitch Curve & Guide Notes...", 90)
             logger.info(f"[{song_id}] Extracting pitch...")
-            pitch_data = await loop.run_in_executor(
+            await loop.run_in_executor(
                 None, self.pitch_extractor.extract_pitch, voc_path, pitch_file
             )
 

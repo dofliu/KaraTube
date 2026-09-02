@@ -25,6 +25,9 @@ jobs:
       - name: Syntax check (all Python sources)
         run: python -m compileall -q backend run.py rebuild_lyrics.py tests
 
+      - name: Lint (ruff)
+        run: ruff check .
+
       - name: Run unit & API tests
         run: python -m pytest tests/ -v
 

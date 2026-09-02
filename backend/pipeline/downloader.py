@@ -1,9 +1,7 @@
-import os
-import re
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import yt_dlp
 
 logger = logging.getLogger("KaraTube.Downloader")

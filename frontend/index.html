@@ -188,6 +188,15 @@
         </div>
 
         <div class="mixer-row">
+          <label>🎚️ 效果風格<small>一鍵套用</small></label>
+          <div class="mode-switch" style="flex: 1;">
+            <button class="mode-btn mic-preset-btn" data-preset="room" title="標準包廂：貼近商用點歌機的預設手感">🚪 包廂</button>
+            <button class="mode-btn mic-preset-btn" data-preset="theater" title="劇場：殘響厚一點、回音收斂">🎭 劇場</button>
+            <button class="mode-btn mic-preset-btn" data-preset="concert" title="演唱會：大空間、長回音">🏟️ 演唱會</button>
+          </div>
+        </div>
+
+        <div class="mixer-row">
           <label>🔆 柔化<small>壓高頻／防尖銳</small></label>
           <input type="range" id="micToneSlider" min="0" max="1" step="0.05" value="0.4">
           <span id="micToneText" class="slider-value">40%</span>

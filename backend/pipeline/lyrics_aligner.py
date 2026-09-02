@@ -11,7 +11,6 @@
 而不是丟掉 LRC 時間、改用 Whisper 轉錄結果重新模糊比對 ——
 後者會把一份 47 行的正確歌詞打成 30 行、還帶重疊與亂序。
 """
-import os
 import re
 import json
 import logging
@@ -474,8 +473,8 @@ class LyricsAligner:
         if va is not None and frac.size:
             e_pts = va.energy_split_times(start, end, frac.tolist())
             if e_pts:
-                bounds = [ENERGY_WEIGHT * e + (1.0 - ENERGY_WEIGHT) * l
-                          for e, l in zip(e_pts, linear)]
+                bounds = [ENERGY_WEIGHT * e + (1.0 - ENERGY_WEIGHT) * lin
+                          for e, lin in zip(e_pts, linear, strict=False)]
 
         pts = [start] + list(bounds) + [end]
         min_dur = min(0.05, span / n)
@@ -595,8 +594,8 @@ class LyricsAligner:
         out = []
         for line in lyrics:
             out.extend(expand(line))
-        for i, l in enumerate(out):
-            l['line_idx'] = i
+        for i, ln in enumerate(out):
+            ln['line_idx'] = i
         return out
 
     @staticmethod
@@ -612,9 +611,9 @@ class LyricsAligner:
         if total <= 0:
             return 0.0
         covered = np.zeros(va.n_frames, dtype=bool)
-        for l in lyrics:
-            a = int(np.clip(round(l['start'] / va.frame_sec), 0, va.n_frames))
-            b = int(np.clip(round(l['end'] / va.frame_sec), 0, va.n_frames))
+        for ln in lyrics:
+            a = int(np.clip(round(ln['start'] / va.frame_sec), 0, va.n_frames))
+            b = int(np.clip(round(ln['end'] / va.frame_sec), 0, va.n_frames))
             if b > a:
                 covered[a:b] = True
         return float((voiced & covered).sum() / total)

@@ -318,6 +318,33 @@ header {
   border-color: var(--accent-cyan);
 }
 
+/* 拖曳排序把手。touch-action: none 是手機拖得動的關鍵 ——
+   不擋掉瀏覽器的捲動手勢，pointermove 會被捲動吃掉。 */
+.queue-drag-handle {
+  flex-shrink: 0;
+  padding: 8px 2px;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.queue-drag-handle:active {
+  cursor: grabbing;
+  color: var(--accent-cyan);
+}
+
+.queue-item.dragging {
+  opacity: 0.92;
+  border-color: var(--accent-cyan);
+  box-shadow: 0 6px 24px rgba(0, 240, 255, 0.25);
+  transform: scale(1.02);
+  position: relative;
+  z-index: 5;
+}
+
 .queue-item-thumb {
   width: 54px;
   height: 38px;

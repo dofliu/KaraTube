@@ -8,7 +8,7 @@
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 logger = logging.getLogger("KaraTube.VocalActivity")
 

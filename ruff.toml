@@ -1,0 +1,20 @@
+# Python lint 設定（CI 會跑 `ruff check .`）。
+# backend/ 下的 inspect_bu7 / test_acoustic_* / test_segment_anchor
+# 是歌詞對齊實驗時期的一次性腳本，需要 GPU 與快取歌曲才跑得動，不納入 lint。
+target-version = "py310"
+line-length = 120
+
+extend-exclude = [
+    "backend/inspect_bu7.py",
+    "backend/test_acoustic_final.py",
+    "backend/test_acoustic_first.py",
+    "backend/test_segment_anchor.py",
+]
+
+[lint]
+# E/W: pycodestyle、F: pyflakes、B: bugbear（可變預設參數等實際會咬人的）。
+# 不開 import 排序（I）與 pyupgrade（UP），避免無意義的大量搬行。
+select = ["E4", "E7", "E9", "F", "W", "B"]
+
+# B008：FastAPI 的 Depends/Query/Body 慣例就是在參數預設值呼叫函數。
+ignore = ["B008"]

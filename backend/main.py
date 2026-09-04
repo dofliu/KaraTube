@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import socket
@@ -11,6 +12,7 @@ from fastapi.responses import Response
 import qrcode
 
 from backend.config import FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PORT, DEVICE
+from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
 from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
 from backend.services.search_service import YouTubeSearchService
@@ -19,6 +21,7 @@ from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
+from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -36,9 +39,15 @@ app.add_middleware(
 )
 
 # Initialize Services
+# 設定要先讀起來 —— 模型選擇與響度目標在建構流水線時就要用到
+settings = SystemSettings(CACHE_DIR / "settings.json")
 storage = SongStorage(SONGS_DIR)
 search_service = YouTubeSearchService()
-song_processor = SongProcessor()
+song_processor = SongProcessor(
+    whisper_model=settings.get("whisper_model"),
+    demucs_model=settings.get("demucs_model"),
+    loudness_target_lufs=settings.get("loudness_target_lufs", -14.0),
+)
 play_stats = PlayStats(CACHE_DIR / "play_stats.json")
 favorites = Favorites(CACHE_DIR / "favorites.json")
 song_history = SongHistory(CACHE_DIR / "song_history.json")
@@ -72,7 +81,10 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
-                             play_stats=play_stats, song_history=song_history)
+                             play_stats=play_stats, song_history=song_history,
+                             settings=settings)
+# 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
+queue_manager.apply_control_defaults()
 
 # Helper: Get Local Network IP
 def get_local_ip() -> str:
@@ -307,6 +319,93 @@ async def get_best_score(song_id: str):
     return {"song_id": song_id, "best": score_history.best_for(song_id)}
 
 
+@app.get("/api/settings")
+async def get_settings():
+    """系統設定：目前值、預設值，以及讓前端長出表單的欄位規格。"""
+    return {
+        "settings": settings.all(),
+        "defaults": default_settings(),
+        "spec": SETTINGS_SPEC,
+        "runtime": {
+            # 模型是在伺服器啟動時載入的，設定改了要重開才生效，UI 要能提示
+            "active_whisper_model": song_processor.whisper_model,
+            "active_demucs_model": song_processor.demucs_model,
+            "device": DEVICE,
+        },
+    }
+
+
+async def _broadcast_settings():
+    await ws_manager.broadcast({"type": "SETTINGS_UPDATE", "data": settings.all()})
+
+
+@app.post("/api/settings")
+async def update_settings(payload: Dict[str, Any] = Body(...)):
+    """更新設定。認不得的欄位與越界的值會被忽略／夾回範圍，不會回 500。"""
+    updated = settings.update(payload)
+    # 響度目標改了，之後新處理的歌要照新目標量測
+    song_processor.loudness_target_lufs = updated.get("loudness_target_lufs", -14.0)
+    await _broadcast_settings()
+    return {"status": "success", "settings": updated}
+
+
+@app.delete("/api/settings")
+async def reset_settings():
+    """一鍵恢復原廠設定。"""
+    updated = settings.reset()
+    song_processor.loudness_target_lufs = updated.get("loudness_target_lufs", -14.0)
+    await _broadcast_settings()
+    return {"status": "success", "settings": updated}
+
+
+@app.post("/api/settings/apply-defaults")
+async def apply_default_controls():
+    """把設定頁的預設調音參數立刻套到現在的演唱狀態（不用重開伺服器）。"""
+    applied = queue_manager.apply_control_defaults()
+    await queue_manager.broadcast_state()
+    return {"status": "success", "applied": applied}
+
+
+@app.get("/api/songs/{song_id}/loudness")
+async def get_song_loudness(song_id: str):
+    """
+    這首歌該套多少增益（自動音量平衡）。
+
+    metadata 沒有響度資料時（設定啟用前就快取好的舊歌）現場量一次並補寫回去，
+    所以舊曲庫不用整批重跑流水線也能享受音量平衡。
+    量不到就回 0 dB —— 寧可不動，也不要亂調。
+    """
+    target = float(settings.get("loudness_target_lufs", -14.0))
+    enabled = bool(settings.get("loudness_normalize", True))
+    meta = storage.get_song_metadata(song_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="快取中沒有這首歌")
+
+    info = meta.get("loudness")
+    if not info or info.get("lufs") is None:
+        inst_path = SONGS_DIR / song_id / "instrumental.mp3"
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, analyze_audio_file, inst_path, target)
+        if info:
+            storage.update_song_metadata(song_id, {"loudness": info})
+
+    if not info or info.get("lufs") is None:
+        return {"song_id": song_id, "enabled": enabled, "gain_db": 0.0,
+                "lufs": None, "target_lufs": target, "measured": False}
+
+    # 目標響度可能在量測之後被改過，所以增益一律照當下的設定重算
+    gain_db = gain_db_for_target(info["lufs"], target, info.get("peak_dbfs"))
+    return {
+        "song_id": song_id,
+        "enabled": enabled,
+        "gain_db": gain_db if enabled else 0.0,
+        "lufs": info["lufs"],
+        "peak_dbfs": info.get("peak_dbfs"),
+        "target_lufs": target,
+        "measured": True,
+    }
+
+
 @app.get("/api/songs/{song_id}/lyrics")
 async def get_lyrics(song_id: str):
     lyrics = storage.get_song_lyrics(song_id)
@@ -326,6 +425,11 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.send_text(json.dumps({
         "type": "STATE_UPDATE",
         "data": queue_manager.get_full_state()
+    }))
+    # 舞台端的片頭卡秒數、結算畫面開關都在設定裡，一連上就要拿到
+    await websocket.send_text(json.dumps({
+        "type": "SETTINGS_UPDATE",
+        "data": settings.all()
     }))
 
     try:

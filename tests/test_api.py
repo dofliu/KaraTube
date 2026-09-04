@@ -9,7 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.config import SONGS_DIR
-from backend.main import app, favorites, song_history, score_history, queue_manager, storage
+from backend.main import (
+    app,
+    favorites,
+    queue_manager,
+    score_history,
+    settings,
+    song_history,
+    storage,
+)
 
 client = TestClient(app)
 
@@ -261,3 +269,109 @@ def test_frontend_is_served():
     res = client.get("/")
     assert res.status_code == 200
     assert "KaraTube" in res.text
+
+
+# --- 系統設定 ---
+
+@pytest.fixture()
+def restore_settings():
+    """設定是全域狀態，測完要還原，否則會把開發機的設定改掉。"""
+    saved = settings.all()
+    yield
+    settings.update(saved)
+
+
+def test_settings_endpoint_returns_values_defaults_and_spec():
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    data = res.json()
+    assert set(data["settings"]) == set(data["defaults"]) == set(data["spec"])
+    # 前端要靠 spec 長出表單，型別與範圍不能少
+    assert data["spec"]["loudness_target_lufs"]["type"] == "float"
+    assert data["spec"]["whisper_model"]["choices"]
+    assert data["runtime"]["active_whisper_model"]
+
+
+def test_settings_update_and_reset(restore_settings):
+    res = client.post("/api/settings", json={"loudness_target_lufs": -18.0,
+                                             "cache_limit_gb": 20})
+    assert res.status_code == 200
+    assert res.json()["settings"]["loudness_target_lufs"] == -18.0
+    assert client.get("/api/settings").json()["settings"]["cache_limit_gb"] == 20.0
+
+    res = client.delete("/api/settings")
+    assert res.status_code == 200
+    assert res.json()["settings"]["loudness_target_lufs"] == -14.0
+
+
+def test_settings_update_ignores_junk_instead_of_failing(restore_settings):
+    """手機端送了越界值或舊欄位，機台不能回 500 ——夾回範圍、忽略未知欄位就好。"""
+    res = client.post("/api/settings", json={"default_mic_reverb": 9.9,
+                                             "totally_unknown": "x"})
+    assert res.status_code == 200
+    data = res.json()["settings"]
+    assert data["default_mic_reverb"] == 1.0
+    assert "totally_unknown" not in data
+
+
+def test_apply_defaults_pushes_settings_into_live_controls(restore_settings):
+    saved = queue_manager.get_full_state()
+    try:
+        client.post("/api/settings", json={"default_mic_reverb": 0.75,
+                                           "default_pitch_shift": 3})
+        res = client.post("/api/settings/apply-defaults")
+        assert res.status_code == 200
+        state = client.get("/api/queue").json()
+        assert state["mic_reverb"] == 0.75
+        assert state["pitch_shift"] == 3
+    finally:
+        queue_manager._apply_controls(saved)
+
+
+def test_loudness_endpoint_404_for_unknown_song():
+    res = client.get("/api/songs/nonexistent_song/loudness")
+    assert res.status_code == 404
+
+
+def test_loudness_endpoint_uses_stored_measurement(restore_settings):
+    """已量測過的歌不重算，而且增益要跟著目前的目標響度走。"""
+    song_id = "test_loudness_song"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(json.dumps({
+        "id": song_id, "title": "響度測試",
+        # 峰值留 12 dB 空間，這樣測到的是「目標響度算出來的增益」本身，
+        # 而不是峰值保護的夾限（那條有自己的單元測試）
+        "loudness": {"lufs": -20.0, "peak_dbfs": -12.0, "target_lufs": -14.0, "gain_db": 6.0},
+    }), encoding="utf-8")
+    try:
+        data = client.get(f"/api/songs/{song_id}/loudness").json()
+        assert data["measured"] is True
+        assert data["gain_db"] == pytest.approx(6.0)
+
+        # 目標改成 -18 之後，同一首歌的增益要重算成 +2 dB
+        client.post("/api/settings", json={"loudness_target_lufs": -18.0})
+        assert client.get(f"/api/songs/{song_id}/loudness").json()["gain_db"] == pytest.approx(2.0)
+
+        # 關掉自動音量平衡就一律 0 dB
+        client.post("/api/settings", json={"loudness_normalize": False})
+        data = client.get(f"/api/songs/{song_id}/loudness").json()
+        assert data["enabled"] is False
+        assert data["gain_db"] == 0.0
+    finally:
+        storage.delete_song(song_id)
+
+
+def test_loudness_endpoint_reports_unmeasurable_song_as_zero_gain():
+    """沒有音檔可量的歌回 0 dB，播放端就照原音量播，不會爆音也不會忽然變小聲。"""
+    song_id = "test_loudness_nofile"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(
+        json.dumps({"id": song_id, "title": "沒有音檔"}), encoding="utf-8")
+    try:
+        data = client.get(f"/api/songs/{song_id}/loudness").json()
+        assert data["measured"] is False
+        assert data["gain_db"] == 0.0
+    finally:
+        storage.delete_song(song_id)

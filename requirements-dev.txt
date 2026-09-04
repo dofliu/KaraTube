@@ -8,6 +8,9 @@ pytest>=8.0.0
 ruff>=0.5.0
 numpy>=1.24.0
 requests>=2.31.0
+# 歌詞對齊的簡繁轉換。純 Python、幾百 KB，裝了 CI 才測得到真正的解析行為
+# （沒裝的話 _to_traditional_chinese 會走 except 分支，測到的是退化路徑）
+zhconv>=1.4.3
 yt-dlp>=2024.3.10
 qrcode>=7.4.2
 pillow>=10.2.0

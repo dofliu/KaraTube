@@ -109,6 +109,14 @@ document.addEventListener("DOMContentLoaded", () => {
   } catch (e) { /* 無痕模式沒有 localStorage，忽略 */ }
   document.body.classList.toggle("hide-pitch", !showPitch);
 
+  // 片頭卡與結算畫面的秒數／開關可在點歌台的系統設定頁調整。
+  // 這裡先放商用機的慣用值，連上 WebSocket 收到 SETTINGS_UPDATE 後覆寫。
+  // （宣告放在最上面：SETTINGS_UPDATE 的處理器在下方註冊，不能落在暫時死區裡。）
+  let introCardMs = 8000;
+  let introCardEnabled = true;
+  let settlementMs = 9000;
+  let settlementEnabled = true;
+
   let outputLatency = 0.05;
   let syncToastTimer = null;
   let lastVocResync = 0;
@@ -163,6 +171,34 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // --- 系統設定 ---
+  // 片頭卡、結算畫面、自動音量平衡的參數都在點歌台的設定頁，改了立刻生效。
+  window.api.on("SETTINGS_UPDATE", (msg) => {
+    const s = msg.data || {};
+    if (s.intro_card_enabled !== undefined) introCardEnabled = !!s.intro_card_enabled;
+    if (s.intro_card_seconds !== undefined) introCardMs = Math.round(s.intro_card_seconds * 1000);
+    if (s.settlement_enabled !== undefined) settlementEnabled = !!s.settlement_enabled;
+    if (s.settlement_seconds !== undefined) settlementMs = Math.round(s.settlement_seconds * 1000);
+    // 響度目標或開關改了，正在唱的這首要立刻跟上，不用等下一首
+    if (currentSongId) applyLoudness(currentSongId);
+  });
+
+  // --- 自動音量平衡 (EBU R128) ---
+  // 伺服器已依這首歌的整合響度與設定的目標值算好增益，這裡只負責套上去。
+  async function applyLoudness(songId) {
+    try {
+      const info = await window.api.getLoudness(songId);
+      // 等回應的期間可能已經切歌了，那就別把上一首的增益套到這一首
+      if (songId !== currentSongId) return;
+      const applied = window.audioEngine.setNormalizationDb(info.gain_db || 0);
+      if (info.measured) {
+        console.log(`[KaraTube] 音量平衡：${info.lufs} LUFS → 目標 ${info.target_lufs}，套用 ${applied} dB`);
+      }
+    } catch (e) {
+      window.audioEngine.setNormalizationDb(0);
+    }
+  }
+
   // --- 唱畢總評分結算畫面 ---
   // 歌唱完先亮 9 秒成績單（總分、等級、音準率、最大 Combo、個人最佳、擊敗比例），
   // 再通知後端切下一首。中途 切歌/點下一首 會直接收掉，不會卡住流程。
@@ -174,7 +210,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleCombo = document.getElementById("settleCombo");
   const settleBest = document.getElementById("settleBest");
   const settleBeat = document.getElementById("settleBeat");
-  const SETTLEMENT_MS = 9000;
   let settlementTimer = null;
 
   function hideSettlement() {
@@ -207,7 +242,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function showSettlement(song, result) {
     hideIntroCard(); // 極短的歌可能唱完時片頭卡還亮著
-    if (!settlementOverlay) {
+    if (!settlementOverlay || !settlementEnabled) {
+      // 設定關掉結算畫面時仍要記成績，只是不佔用畫面時間，直接進下一首
+      if (settlementEnabled === false && song) {
+        window.api.submitScore({
+          song_id: song.song_id, title: song.title, artist: song.artist,
+          thumbnail: song.thumbnail, score: result.score, accuracy: result.accuracy,
+          max_combo: result.max_combo, grade: result.grade
+        }).catch(() => {});
+      }
       window.api.send("SONG_ENDED");
       return;
     }
@@ -221,7 +264,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settlementOverlay.classList.add("show");
     animateScoreCount(result.score);
 
-    settlementTimer = setTimeout(finishSettlement, SETTLEMENT_MS);
+    settlementTimer = setTimeout(finishSettlement, settlementMs);
 
     try {
       const res = await window.api.submitScore({
@@ -265,7 +308,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const introTitle = document.getElementById("introTitle");
   const introArtist = document.getElementById("introArtist");
   const introRequester = document.getElementById("introRequester");
-  const INTRO_CARD_MS = 8000;
   let introCardTimer = null;
 
   function hideIntroCard() {
@@ -274,13 +316,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function showIntroCard(song) {
-    if (!introCard || !song) return;
+    if (!introCard || !song || !introCardEnabled) return;
     hideIntroCard();
     introTitle.textContent = song.title || "";
     introArtist.textContent = song.artist ? `演唱者：${song.artist}` : "";
     introRequester.textContent = song.requested_by ? `點歌：${song.requested_by}` : "";
     introCard.classList.add("show");
-    introCardTimer = setTimeout(hideIntroCard, INTRO_CARD_MS);
+    introCardTimer = setTimeout(hideIntroCard, introCardMs);
   }
 
   // --- 字幕同步微調 ---
@@ -493,6 +535,10 @@ document.addEventListener("DOMContentLoaded", () => {
     videoBg.src = `${songBaseUrl}/original_video.mp4`;
     audioInst.src = `${songBaseUrl}/instrumental.mp3`;
     audioVoc.src = `${songBaseUrl}/vocals.mp3`;
+
+    // 音量平衡不擋播放：量測資料要現算的舊歌可能要花一兩秒，
+    // 先用上一首的增益開唱，算完再平滑接上（setTargetAtTime 不會有爆音）。
+    applyLoudness(song.song_id);
 
     const [lyrics, pitch] = await Promise.all([
       window.api.getLyrics(song.song_id),

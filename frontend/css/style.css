@@ -664,6 +664,52 @@ input[type="range"] {
   text-decoration: line-through;
 }
 
+/* --- 系統設定頁 --- */
+.setting-toggle {
+  min-width: 74px;
+  padding: 4px 14px;
+  font-size: 12px;
+  opacity: 0.5;
+}
+
+.setting-toggle.on {
+  opacity: 1;
+  color: var(--accent-cyan);
+  border-color: rgba(0, 240, 255, 0.5);
+  background: rgba(0, 240, 255, 0.12);
+}
+
+.setting-select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+}
+
+.setting-select option {
+  /* 下拉選單的選項是作業系統畫的，深色底才看得到白字 */
+  background: #12131a;
+  color: #fff;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 0 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-actions .btn {
+  flex: 1;
+  min-width: 150px;
+  justify-content: center;
+}
+
 /* 手機直式：控制列的滑桿排成兩欄 */
 @media (max-width: 720px) {
   .control-deck {

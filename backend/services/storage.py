@@ -2,7 +2,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Iterable, List, Dict, Any, Optional
 from backend.config import SONGS_DIR
 
 logger = logging.getLogger("KaraTube.Storage")
@@ -75,6 +75,50 @@ class SongStorage:
             except OSError:
                 pass
         return total
+
+    def update_song_metadata(self, song_id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """就地補寫 metadata 的欄位（例如事後補算的響度）。沒有 metadata 就不動。"""
+        meta = self.get_song_metadata(song_id)
+        if meta is None:
+            return None
+        meta.update(patch)
+        meta_file = self.storage_dir / song_id / "metadata.json"
+        try:
+            meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"metadata 更新失敗 {song_id}: {e}")
+            return None
+        return meta
+
+    def enforce_cache_limit(self, limit_bytes: int,
+                            protected_ids: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+        """
+        快取超過上限時，從最舊的歌開始刪到低於上限為止。
+
+        兩條保護：演唱中／佇列裡的歌（protected_ids）絕對不刪，
+        limit_bytes <= 0 代表不限制、直接不動作。
+        回傳被刪掉的項目，讓呼叫端能寫 log 或通知前端。
+        """
+        if limit_bytes <= 0:
+            return []
+        protected = set(protected_ids or ())
+        entries = self.list_cache_entries()
+        total = sum(e["size_bytes"] for e in entries)
+        if total <= limit_bytes:
+            return []
+
+        # list_cache_entries 是最新在前，刪除要從最舊的開始
+        removed = []
+        for entry in reversed(entries):
+            if total <= limit_bytes:
+                break
+            if entry["song_id"] in protected:
+                continue
+            if self.delete_song(entry["song_id"]):
+                total -= entry["size_bytes"]
+                removed.append(entry)
+                logger.info(f"快取超過上限，已清除 {entry['song_id']}（{entry['size_bytes']} bytes）")
+        return removed
 
     def list_cache_entries(self) -> List[Dict[str, Any]]:
         """快取管理用的完整清單：連沒有 metadata 的壞資料夾也列出來。

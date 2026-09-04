@@ -34,14 +34,22 @@ class AudioEngine {
       this.masterGain.gain.value = 1.0;
       this.masterGain.connect(this.ctx.destination);
 
+      // 自動音量平衡（EBU R128）的每曲增益。
+      // 只掛在伴奏＋人聲這條路徑上 —— 麥克風與罐頭音效直接接 masterGain，
+      // 所以換一首歌調整音量平衡時，唱歌的人不會忽然覺得自己的聲音變大變小。
+      this.normGain = this.ctx.createGain();
+      this.normGain.gain.value = 1.0;
+      this.normGain.connect(this.masterGain);
+      this.normalizationDb = 0;
+
       // Instrumental & Vocal tracks gain
       this.gainInst = this.ctx.createGain();
       this.gainInst.gain.value = 1.0;
-      this.gainInst.connect(this.masterGain);
+      this.gainInst.connect(this.normGain);
 
       this.gainVoc = this.ctx.createGain();
       this.gainVoc.gain.value = 0.0; // Default to accompaniment only
-      this.gainVoc.connect(this.masterGain);
+      this.gainVoc.connect(this.normGain);
 
       this._initReverb();
     }
@@ -90,6 +98,24 @@ class AudioEngine {
     if (this.gainInst && this.ctx) {
       this.gainInst.gain.setTargetAtTime(Math.max(0, Math.min(1, volume)), this.ctx.currentTime, 0.05);
     }
+  }
+
+  /**
+   * 自動音量平衡：套用這首歌的正規化增益（dB）。
+   *
+   * 伺服器已經用 EBU R128 量好每首歌的整合響度並算出增益，這裡只負責套用。
+   * 夾在 ±12 dB：超出這個範圍通常是檔案本身有問題（近乎靜音的伴奏軌），
+   * 硬拉只會把底噪一起放大。
+   */
+  setNormalizationDb(db) {
+    const clamped = Math.max(-12, Math.min(12, Number(db) || 0));
+    this.normalizationDb = clamped;
+    if (this.normGain && this.ctx) {
+      const linear = Math.pow(10, clamped / 20);
+      // 0.08s 時間常數：換歌時聽不出切換動作，又快到前奏第一拍就位
+      this.normGain.gain.setTargetAtTime(linear, this.ctx.currentTime, 0.08);
+    }
+    return clamped;
   }
 
   setMasterVolume(volume) {

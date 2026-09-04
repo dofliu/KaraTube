@@ -98,6 +98,40 @@ class KaraTubeAPI {
     return data;
   }
 
+  // --- 系統設定 ---
+  async getSettings() {
+    const res = await fetch(`${this.baseUrl}/api/settings`);
+    return await res.json();
+  }
+
+  async updateSettings(patch) {
+    const res = await fetch(`${this.baseUrl}/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async resetSettings() {
+    const res = await fetch(`${this.baseUrl}/api/settings`, { method: 'DELETE' });
+    return await res.json();
+  }
+
+  async applyDefaultSettings() {
+    const res = await fetch(`${this.baseUrl}/api/settings/apply-defaults`, { method: 'POST' });
+    return await res.json();
+  }
+
+  // 自動音量平衡：這首歌該套多少增益（伺服器已依目前設定算好）
+  async getLoudness(songId) {
+    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/loudness`);
+    if (!res.ok) return { gain_db: 0, enabled: false, measured: false };
+    return await res.json();
+  }
+
   async getQueue() {
     const res = await fetch(`${this.baseUrl}/api/queue`);
     return await res.json();

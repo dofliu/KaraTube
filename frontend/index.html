@@ -23,6 +23,9 @@
       <button class="btn btn-secondary" id="qrBtn">
         📱 手機點歌 QR
       </button>
+      <button class="btn btn-secondary" id="settingsBtn" title="開機預設音效、自動音量平衡、快取上限、AI 模型">
+        ⚙️ 系統設定
+      </button>
     </div>
   </header>
 
@@ -240,6 +243,31 @@
           <button id="pitchToggleBtn" class="btn btn-secondary" style="margin-left: auto;">顯示中</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- 系統設定：開機預設、音量平衡、快取、模型 -->
+  <div id="settingsModal" class="modal-overlay">
+    <div class="modal-content mixer-content">
+      <div class="mixer-header">
+        <h3>⚙️ 系統設定</h3>
+        <button id="closeSettingsBtn" class="btn btn-secondary" style="padding: 4px 12px;">關閉</button>
+      </div>
+      <p class="mixer-hint" style="margin-top: 0;">
+        設定會自動存檔（<code>cache/settings.json</code>），重開機沿用。
+      </p>
+      <div id="settingsBody">
+        <div style="text-align: center; padding: 30px; color: var(--text-muted);">讀取設定中…</div>
+      </div>
+      <div class="settings-actions">
+        <button id="applyDefaultsBtn" class="btn btn-primary" title="不用重開伺服器，立刻把上面的預設調音參數套到現在的演唱狀態">
+          ⤵️ 套用預設到現在
+        </button>
+        <button id="resetSettingsBtn" class="btn btn-secondary" title="所有設定恢復出廠值">
+          ♻️ 恢復原廠設定
+        </button>
+      </div>
+      <p id="settingsRuntimeHint" class="mixer-hint"></p>
     </div>
   </div>
 

@@ -7,15 +7,23 @@ from backend.config import SONGS_DIR, DEMUCS_MODEL, WHISPER_MODEL_SIZE, DEVICE, 
 from backend.pipeline.downloader import YouTubeDownloader
 from backend.pipeline.separator import VocalSeparator
 from backend.pipeline.lyrics_aligner import LyricsAligner
+from backend.pipeline.loudness import analyze_audio_file
 from backend.pipeline.pitch_extractor import PitchExtractor
 
 logger = logging.getLogger("KaraTube.SongProcessor")
 
 class SongProcessor:
-    def __init__(self):
+    def __init__(self, whisper_model: Optional[str] = None, demucs_model: Optional[str] = None,
+                 loudness_target_lufs: float = -14.0):
+        # 模型可由系統設定頁指定；沒指定就用環境變數／內建預設。
+        # 模型是在建構時決定的，改設定要重開伺服器才生效（設定頁上有標註）。
+        self.whisper_model = whisper_model or WHISPER_MODEL_SIZE
+        self.demucs_model = demucs_model or DEMUCS_MODEL
+        self.loudness_target_lufs = loudness_target_lufs
         self.downloader = YouTubeDownloader(output_dir=SONGS_DIR)
-        self.separator = VocalSeparator(model_name=DEMUCS_MODEL, device=DEVICE)
-        self.lyrics_aligner = LyricsAligner(model_size=WHISPER_MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+        self.separator = VocalSeparator(model_name=self.demucs_model, device=DEVICE)
+        self.lyrics_aligner = LyricsAligner(model_size=self.whisper_model, device=DEVICE,
+                                            compute_type=COMPUTE_TYPE)
         self.pitch_extractor = PitchExtractor()
 
     def is_song_ready(self, song_id: str) -> bool:
@@ -102,6 +110,18 @@ class SongProcessor:
             await loop.run_in_executor(
                 None, self.pitch_extractor.extract_pitch, voc_path, pitch_file
             )
+
+            # 5. 響度量測（自動音量平衡）
+            # 量伴奏軌，因為那才是實際播放出來的主體。量不到就當作沒有這筆資料，
+            # 播放端會退回不套用任何增益 —— 不能因為量測失敗就讓整首歌處理失敗。
+            if progress_callback:
+                progress_callback(song_id, "Measuring Loudness (EBU R128)...", 96)
+            loudness = await loop.run_in_executor(
+                None, analyze_audio_file, inst_path, self.loudness_target_lufs
+            )
+            if loudness:
+                meta["loudness"] = loudness
+                logger.info(f"[{song_id}] 響度 {loudness['lufs']} LUFS，建議增益 {loudness['gain_db']} dB")
 
             # Update Metadata
             meta["instrumental_path"] = str(inst_file)

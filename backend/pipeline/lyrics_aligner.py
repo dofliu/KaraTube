@@ -315,7 +315,9 @@ class LyricsAligner:
     def parse_lrc_with_timestamps(self, lrc_text: str) -> List[Dict[str, Any]]:
         """解析 LRC。保留每一行與原順序，不做任何丟棄式過濾。"""
         lines = []
-        time_tag_pattern = re.compile(r'\[(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?\]')
+        # 小數位接受 1~3 位：標準寫法是百分秒（[00:12.50]），
+        # 但實際流通的 LRC 有寫成 [00:12.5] 的，整行丟掉會少一句歌詞。
+        time_tag_pattern = re.compile(r'\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]')
         for raw_line in lrc_text.splitlines():
             raw_line = raw_line.strip()
             if not raw_line:

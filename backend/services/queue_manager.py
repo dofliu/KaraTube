@@ -12,12 +12,14 @@ logger = logging.getLogger("KaraTube.QueueManager")
 class QueueManager:
     def __init__(self, song_processor: SongProcessor, storage: SongStorage,
                  broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None,
-                 song_history: Optional[SongHistory] = None):
+                 song_history: Optional[SongHistory] = None, settings: Optional[Any] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
         self.play_stats = play_stats
         self.song_history = song_history
+        # 系統設定（可為 None：測試與舊呼叫端不必提供）
+        self.settings = settings
 
         self.current_song: Optional[Dict[str, Any]] = None
         self.queue: List[Dict[str, Any]] = []
@@ -152,6 +154,9 @@ class QueueManager:
             item["progress"] = 100
             item["status_text"] = "Ready"
 
+            # 剛多了一首歌的磁碟用量，這時候檢查上限最準
+            self._cleanup_cache_if_needed()
+
             # Auto-play if nothing is currently playing and this is the head of queue
             if self.current_song is None and self.queue and self.queue[0]["queue_id"] == item["queue_id"]:
                 await self.play_next()
@@ -237,7 +242,39 @@ class QueueManager:
             self.queue.insert(to_idx, item)
             await self.broadcast_state()
 
-    async def update_controls(self, params: Dict[str, Any]):
+    def apply_control_defaults(self) -> Dict[str, Any]:
+        """
+        把系統設定裡的「開機預設」套進目前的控制狀態。
+
+        開機時呼叫一次（此時還沒有人連線，不需要廣播），
+        設定頁按下「套用到現在」時也會走這條，只是那邊會再廣播一次。
+        """
+        if not self.settings:
+            return {}
+        defaults = self.settings.control_defaults()
+        self._apply_controls(defaults)
+        return defaults
+
+    def _cleanup_cache_if_needed(self):
+        """快取自動清理：超過設定的上限就從最舊的歌開始刪，演唱中／佇列裡的不動。"""
+        if not self.settings or not self.settings.get("cache_auto_cleanup"):
+            return
+        limit = self.settings.cache_limit_bytes()
+        if limit <= 0:
+            return
+        protected = {item["song_id"] for item in self.queue}
+        if self.current_song:
+            protected.add(self.current_song["song_id"])
+        try:
+            removed = self.storage.enforce_cache_limit(limit, protected)
+        except Exception as e:
+            logger.warning(f"快取自動清理失敗: {e}")
+            return
+        if removed:
+            logger.info(f"快取自動清理：釋放 {len(removed)} 首歌的空間")
+
+    def _apply_controls(self, params: Dict[str, Any]):
+        """把控制參數夾進合法範圍後寫入狀態。不廣播 —— 廣播由呼叫端決定。"""
         if "vocal_volume" in params:
             self.vocal_volume = float(params["vocal_volume"])
         if "pitch_shift" in params:
@@ -265,4 +302,6 @@ class QueueManager:
         if "is_playing" in params:
             self.is_playing = bool(params["is_playing"])
 
+    async def update_controls(self, params: Dict[str, Any]):
+        self._apply_controls(params)
         await self.broadcast_state()

@@ -819,6 +819,228 @@ document.addEventListener("DOMContentLoaded", () => {
     window.api.updateControl({ lyric_offset_ms: 0 });
   });
 
+  // --- 系統設定頁 ---
+  // 表單是照後端回傳的欄位規格（型別、範圍、選項）長出來的，
+  // 後端加一個設定欄位，這裡只要補一行標題文字就會自動多一列。
+  const settingsBtn = document.getElementById("settingsBtn");
+  const settingsModal = document.getElementById("settingsModal");
+  const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+  const settingsBody = document.getElementById("settingsBody");
+  const settingsRuntimeHint = document.getElementById("settingsRuntimeHint");
+  const applyDefaultsBtn = document.getElementById("applyDefaultsBtn");
+  const resetSettingsBtn = document.getElementById("resetSettingsBtn");
+
+  const SETTINGS_LABELS = {
+    default_music_volume: { label: "音樂音量", hint: "伴奏", percent: true },
+    default_mic_volume: { label: "麥克風音量", percent: true },
+    default_vocal_volume: { label: "導唱人聲", hint: "0 = 純伴奏", percent: true },
+    default_pitch_shift: { label: "升降 Key", unit: " 半音" },
+    default_mic_reverb: { label: "殘響", hint: "空間感", percent: true },
+    default_mic_echo: { label: "回音音量", percent: true },
+    default_mic_echo_repeat: { label: "回音重複", percent: true },
+    default_mic_echo_time_ms: { label: "回音間隔", unit: " ms" },
+    default_mic_tone: { label: "高頻柔化", hint: "防尖銳", percent: true },
+    default_sing_mode: { label: "演唱模式", choiceLabels: { solo: "🎧 單人", party: "🔊 多人" } },
+    default_show_pitch: { label: "顯示音準導唱線" },
+    loudness_normalize: { label: "啟用自動音量平衡", hint: "各首歌一樣大聲" },
+    loudness_target_lufs: { label: "目標響度", unit: " LUFS", step: 0.5 },
+    cache_limit_gb: { label: "快取上限", unit: " GB", hint: "0 = 不限制", step: 1 },
+    cache_auto_cleanup: { label: "自動清理最舊的歌", hint: "超過上限時" },
+    whisper_model: { label: "歌詞辨識模型", hint: "Whisper" },
+    demucs_model: { label: "人聲分離模型", hint: "Demucs" },
+    intro_card_enabled: { label: "顯示導唱片頭卡" },
+    intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
+    settlement_enabled: { label: "顯示唱畢結算畫面" },
+    settlement_seconds: { label: "結算畫面秒數", unit: " 秒", step: 0.5 },
+  };
+
+  const SETTINGS_GROUPS = [
+    {
+      title: "🎚️ 開機預設調音",
+      hint: "伺服器重開後的初始值。改完可按下方「套用預設到現在」立刻生效。",
+      keys: ["default_music_volume", "default_mic_volume", "default_vocal_volume",
+             "default_pitch_shift", "default_mic_reverb", "default_mic_echo",
+             "default_mic_echo_repeat", "default_mic_echo_time_ms", "default_mic_tone",
+             "default_sing_mode", "default_show_pitch"],
+    },
+    {
+      title: "🔊 自動音量平衡 (EBU R128)",
+      hint: "每首歌在處理時量一次整合響度，播放時自動補到同一個目標，" +
+            "不用再為了下一首手動轉音量。-14 LUFS 是串流平台通用值。",
+      keys: ["loudness_normalize", "loudness_target_lufs"],
+    },
+    {
+      title: "🗂️ 快取",
+      hint: "超過上限時從最舊的歌開始刪，演唱中與佇列裡的歌絕對不刪。",
+      keys: ["cache_limit_gb", "cache_auto_cleanup"],
+    },
+    {
+      title: "🤖 AI 模型",
+      hint: "模型在伺服器啟動時載入，改完要重開伺服器才會生效。模型越大越準也越慢。",
+      keys: ["whisper_model", "demucs_model"],
+    },
+    {
+      title: "🖥️ 舞台演出",
+      hint: "片頭卡與結算畫面的開關與停留時間，改完舞台端立刻套用。",
+      keys: ["intro_card_enabled", "intro_card_seconds", "settlement_enabled",
+             "settlement_seconds"],
+    },
+  ];
+
+  let settingsSpec = null;
+  let settingsValues = null;
+  // 最後一次本機操作設定頁的時間，用來擋掉自己造成的廣播重畫
+  let lastSettingsInteraction = 0;
+
+  function formatSettingValue(key, value) {
+    const meta = SETTINGS_LABELS[key] || {};
+    if (meta.percent) return `${Math.round(value * 100)}%`;
+    const shown = Number.isInteger(value) ? value : Math.round(value * 100) / 100;
+    return `${shown}${meta.unit || ""}`;
+  }
+
+  function settingRowHtml(key) {
+    const spec = settingsSpec[key];
+    if (!spec) return "";
+    const meta = SETTINGS_LABELS[key] || {};
+    const value = settingsValues[key];
+    const label = `<label>${meta.label || key}${meta.hint ? `<small>${meta.hint}</small>` : ""}</label>`;
+
+    if (spec.type === "bool") {
+      return `<div class="mixer-row">${label}
+        <button class="btn btn-secondary setting-toggle ${value ? "on" : ""}"
+                data-key="${key}" style="margin-left: auto;">${value ? "開啟" : "關閉"}</button>
+      </div>`;
+    }
+    if (spec.type === "choice") {
+      const options = spec.choices.map(c => {
+        const text = (meta.choiceLabels && meta.choiceLabels[c]) || c;
+        return `<option value="${c}"${c === value ? " selected" : ""}>${text}</option>`;
+      }).join("");
+      return `<div class="mixer-row">${label}
+        <select class="setting-select" data-key="${key}">${options}</select>
+      </div>`;
+    }
+    // int / float 都用滑桿：手機上滑桿比數字輸入框好按太多
+    const step = meta.step || (spec.type === "int" ? 1 : 0.05);
+    return `<div class="mixer-row">${label}
+      <input type="range" class="setting-range" data-key="${key}"
+             min="${spec.min}" max="${spec.max}" step="${step}" value="${value}">
+      <span class="slider-value" data-value-for="${key}">${formatSettingValue(key, value)}</span>
+    </div>`;
+  }
+
+  function renderSettings() {
+    if (!settingsSpec || !settingsValues) return;
+    settingsBody.innerHTML = SETTINGS_GROUPS.map(group => `
+      <div class="mixer-section">
+        <div class="mixer-section-title">${group.title}</div>
+        ${group.keys.map(settingRowHtml).join("")}
+        ${group.hint ? `<p class="mixer-hint">${group.hint}</p>` : ""}
+      </div>`).join("");
+
+    settingsBody.querySelectorAll(".setting-range").forEach(el => {
+      el.addEventListener("input", (e) => {
+        const key = e.target.dataset.key;
+        const v = parseFloat(e.target.value);
+        lastSettingsInteraction = performance.now();
+        settingsValues[key] = v;
+        const out = settingsBody.querySelector(`[data-value-for="${key}"]`);
+        if (out) out.textContent = formatSettingValue(key, v);
+        queueSettingSave(key, v);
+      });
+    });
+    settingsBody.querySelectorAll(".setting-select").forEach(el => {
+      el.addEventListener("change", (e) => {
+        const key = e.target.dataset.key;
+        lastSettingsInteraction = performance.now();
+        settingsValues[key] = e.target.value;
+        saveSetting(key, e.target.value);
+      });
+    });
+    settingsBody.querySelectorAll(".setting-toggle").forEach(el => {
+      el.addEventListener("click", (e) => {
+        const key = e.currentTarget.dataset.key;
+        lastSettingsInteraction = performance.now();
+        const next = !settingsValues[key];
+        settingsValues[key] = next;
+        e.currentTarget.classList.toggle("on", next);
+        e.currentTarget.textContent = next ? "開啟" : "關閉";
+        saveSetting(key, next);
+      });
+    });
+  }
+
+  // 滑桿拖曳時不要每一格都打一次 API，放手後 350ms 內沒再動才送
+  const settingSaveTimers = {};
+  function queueSettingSave(key, value) {
+    clearTimeout(settingSaveTimers[key]);
+    settingSaveTimers[key] = setTimeout(() => saveSetting(key, value, true), 350);
+  }
+
+  async function saveSetting(key, value, quiet = false) {
+    try {
+      const res = await window.api.updateSettings({ [key]: value });
+      settingsValues = res.settings || settingsValues;
+      if (!quiet) {
+        const meta = SETTINGS_LABELS[key] || {};
+        showNotification(`⚙️ 已更新「${meta.label || key}」`);
+      }
+    } catch (e) {
+      alert("設定儲存失敗: " + e.message);
+    }
+  }
+
+  async function openSettings() {
+    settingsModal.classList.add("open");
+    try {
+      const res = await window.api.getSettings();
+      settingsSpec = res.spec || {};
+      settingsValues = res.settings || {};
+      renderSettings();
+      const rt = res.runtime || {};
+      settingsRuntimeHint.textContent =
+        `目前運行中：Whisper ${rt.active_whisper_model} ・ Demucs ${rt.active_demucs_model} ・ 運算裝置 ${rt.device}`;
+    } catch (e) {
+      settingsBody.innerHTML = `<div style="text-align: center; padding: 30px; color: #ff007f;">設定讀取失敗</div>`;
+    }
+  }
+
+  if (settingsBtn) settingsBtn.addEventListener("click", openSettings);
+  if (closeSettingsBtn) closeSettingsBtn.addEventListener("click", () => settingsModal.classList.remove("open"));
+  if (settingsModal) {
+    settingsModal.addEventListener("click", (e) => {
+      if (e.target === settingsModal) settingsModal.classList.remove("open");
+    });
+  }
+
+  if (applyDefaultsBtn) {
+    applyDefaultsBtn.addEventListener("click", async () => {
+      await window.api.applyDefaultSettings();
+      showNotification("⤵️ 已把預設調音參數套用到目前狀態");
+    });
+  }
+
+  if (resetSettingsBtn) {
+    resetSettingsBtn.addEventListener("click", async () => {
+      if (!confirm("確定把所有系統設定恢復成原廠值嗎？")) return;
+      const res = await window.api.resetSettings();
+      settingsValues = res.settings || settingsValues;
+      renderSettings();
+      showNotification("♻️ 已恢復原廠設定");
+    });
+  }
+
+  // 別台裝置改了設定，這裡開著設定頁的話要跟著更新。
+  // 但自己剛動過的話不重畫 —— 伺服器會把我們自己的儲存廣播回來，
+  // 這時重畫會把手上正在拖的滑桿整個換掉。
+  window.api.on("SETTINGS_UPDATE", (msg) => {
+    if (!msg.data) return;
+    settingsValues = msg.data;
+    const busy = performance.now() - lastSettingsInteraction < 2000;
+    if (!busy && settingsModal.classList.contains("open") && settingsSpec) renderSettings();
+  });
+
   // Sound FX Buttons
   document.querySelectorAll(".sfx-btn").forEach(btn => {
     btn.addEventListener("click", () => {

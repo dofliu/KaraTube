@@ -1,5 +1,7 @@
 """本地歌曲快取（SongStorage）單元測試。"""
 import json
+import os
+import time
 
 from backend.services.storage import SongStorage
 
@@ -104,3 +106,63 @@ def test_cache_stats(tmp_path):
     assert stats["incomplete_count"] == 1
     assert stats["total_bytes"] >= 2000
     assert stats["disk_total_bytes"] > 0
+
+
+def test_update_song_metadata_patches_in_place(tmp_path):
+    """事後補算的響度要能寫回 metadata，而不是整個蓋掉原本的欄位。"""
+    storage = SongStorage(tmp_path)
+    make_complete_song(tmp_path, "abc", title="我的歌")
+    updated = storage.update_song_metadata("abc", {"loudness": {"lufs": -18.0}})
+    assert updated["title"] == "我的歌"
+    assert updated["loudness"]["lufs"] == -18.0
+    # 重新讀檔也要看得到
+    assert storage.get_song_metadata("abc")["loudness"]["lufs"] == -18.0
+
+
+def test_update_song_metadata_on_missing_song(tmp_path):
+    assert SongStorage(tmp_path).update_song_metadata("nope", {"x": 1}) is None
+
+
+def _age(song_dir, seconds_ago):
+    """把資料夾的 mtime 往前調，模擬「比較舊的快取」。"""
+    stamp = time.time() - seconds_ago
+    os.utime(song_dir, (stamp, stamp))
+
+
+def test_enforce_cache_limit_deletes_oldest_first(tmp_path):
+    storage = SongStorage(tmp_path)
+    _age(make_complete_song(tmp_path, "old", payload=b"x" * 2000), 3000)
+    _age(make_complete_song(tmp_path, "mid", payload=b"x" * 2000), 2000)
+    _age(make_complete_song(tmp_path, "new", payload=b"x" * 2000), 1000)
+
+    total = storage.cache_stats()["total_bytes"]
+    removed = storage.enforce_cache_limit(int(total * 0.7))
+
+    assert [r["song_id"] for r in removed] == ["old"]
+    assert {e["song_id"] for e in storage.list_cache_entries()} == {"mid", "new"}
+
+
+def test_enforce_cache_limit_never_deletes_songs_in_use(tmp_path):
+    """演唱中或還在佇列裡的歌被刪掉的話，舞台會直接斷片。"""
+    storage = SongStorage(tmp_path)
+    _age(make_complete_song(tmp_path, "old", payload=b"x" * 2000), 3000)
+    _age(make_complete_song(tmp_path, "new", payload=b"x" * 2000), 1000)
+
+    removed = storage.enforce_cache_limit(1000, protected_ids={"old"})
+
+    assert [r["song_id"] for r in removed] == ["new"]
+    assert {e["song_id"] for e in storage.list_cache_entries()} == {"old"}
+
+
+def test_enforce_cache_limit_does_nothing_when_under_limit(tmp_path):
+    storage = SongStorage(tmp_path)
+    make_complete_song(tmp_path, "a")
+    assert storage.enforce_cache_limit(10 * 1024 ** 3) == []
+    assert len(storage.list_cache_entries()) == 1
+
+
+def test_zero_limit_means_unlimited(tmp_path):
+    storage = SongStorage(tmp_path)
+    make_complete_song(tmp_path, "a")
+    assert storage.enforce_cache_limit(0) == []
+    assert len(storage.list_cache_entries()) == 1

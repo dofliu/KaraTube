@@ -67,6 +67,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const syncToast = document.getElementById("syncToast");
   const subtitlesContainer = document.getElementById("subtitlesContainer");
   const pitchCanvas = document.getElementById("pitchCanvas");
+  const practiceBadge = document.getElementById("practiceBadge");
+  const practiceBadgeText = document.getElementById("practiceBadgeText");
   const audioPromptOverlay = document.getElementById("audioPromptOverlay");
   const audioSetupBtn = document.getElementById("audioSetupBtn");
   const audioSetupPanel = document.getElementById("audioSetupPanel");
@@ -122,6 +124,12 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastVocResync = 0;
   let lastVideoResync = 0;
 
+  // 練唱模式（A-B 區段循環）。區間是共享狀態，任何一台裝置設好，這裡就照著跳。
+  let loopEnabled = false;
+  let loopStart = null;
+  let loopEnd = null;
+  let lastLoopJump = 0;
+
   // Initialize Web Audio Engine
   window.audioEngine.setupTracks(audioInst, audioVoc);
 
@@ -168,6 +176,8 @@ document.addEventListener("DOMContentLoaded", () => {
   window.api.on("CONTROL_COMMAND", (msg) => {
     if (msg.command === "RESTART") {
       restartCurrentSong();
+    } else if (msg.command === "SEEK") {
+      seekMedia(msg.position || 0);
     }
   });
 
@@ -495,6 +505,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setShowPitch(state.show_pitch, false);
     }
 
+    applyLoopState(state);
+
     if (song && song.status === "READY") {
       if (song.song_id !== currentSongId) {
         loadAndPlaySong(song);
@@ -591,6 +603,58 @@ document.addEventListener("DOMContentLoaded", () => {
     playMedia();
   }
 
+  /**
+   * 跳到指定秒數。三條軌（伴奏、人聲、MV）一起搬，時鐘重新錨定。
+   *
+   * 卡在最後 0.15 秒之外：seek 到 duration 會立刻觸發 ended，
+   * 使用者想跳到尾奏卻直接被結算掉，那不是他要的。
+   */
+  function seekMedia(seconds) {
+    if (!currentSongId) return;
+    let target = Math.max(0, Number(seconds) || 0);
+    const duration = audioInst.duration;
+    if (duration && target > duration - 0.15) target = Math.max(0, duration - 0.15);
+
+    videoBg.currentTime = target;
+    audioInst.currentTime = target;
+    audioVoc.currentTime = target;
+    clock.seekedTo(target);
+    lastVocResync = lastVideoResync = performance.now();
+    // 舊的音高軌跡時間都落在新位置的「未來」，留著會在導唱線上畫出鬼影。分數不歸零。
+    pitchEngine.clearTrail();
+  }
+
+  // --- 練唱模式：A-B 區段循環 ---
+  function updatePracticeBadge() {
+    if (!practiceBadge) return;
+    if (!loopEnabled || loopStart === null || loopEnd === null) {
+      practiceBadge.style.display = "none";
+      return;
+    }
+    practiceBadge.style.display = "flex";
+    practiceBadgeText.textContent = `練唱循環 ${formatClock(loopStart)} – ${formatClock(loopEnd)}`;
+  }
+
+  function formatClock(seconds) {
+    const s = Math.max(0, Math.floor(seconds || 0));
+    return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  function applyLoopState(state) {
+    const wasEnabled = loopEnabled;
+    loopEnabled = !!state.loop_enabled;
+    loopStart = state.loop_start === null || state.loop_start === undefined ? null : Number(state.loop_start);
+    loopEnd = state.loop_end === null || state.loop_end === undefined ? null : Number(state.loop_end);
+    updatePracticeBadge();
+    if (loopEnabled && !wasEnabled && loopStart !== null && loopEnd !== null) {
+      showToast(`🔁 練唱循環開啟 ${formatClock(loopStart)} – ${formatClock(loopEnd)}`);
+      // 剛開循環時人已經唱過 B 點的話，先拉回 A 點，不必等這一輪跑完整首
+      if (clock.now() > loopEnd) seekMedia(loopStart);
+    } else if (!loopEnabled && wasEnabled) {
+      showToast("▶️ 練唱循環已關閉");
+    }
+  }
+
   // Master Clock & 60 FPS Render Loop
   function renderLoop() {
     requestAnimationFrame(renderLoop);
@@ -601,6 +665,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const audioTime = clock.now();
     const duration = audioInst.duration || 0;
+
+    // 練唱循環：唱過 B 點就跳回 A 點。
+    // 200ms 冷卻是必要的 —— mp3 的 seek 只能落在解碼區塊邊界，
+    // 跳回去之後補間時鐘要一兩幀才重新錨定，沒有冷卻會在 B 點瘋狂連續跳。
+    if (loopEnabled && loopStart !== null && loopEnd !== null && audioTime >= loopEnd) {
+      const nowMsLoop = performance.now();
+      if (nowMsLoop - lastLoopJump > 200) {
+        lastLoopJump = nowMsLoop;
+        seekMedia(loopStart);
+      }
+      return;
+    }
 
     // 字幕要對齊的是「現在聽到的聲音」，不是「已經送進音效卡的位置」，
     // 所以要扣掉輸出延遲；lyricOffsetMs 讓使用者再補場地差異。

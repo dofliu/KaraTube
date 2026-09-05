@@ -50,6 +50,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const musicVolumeSlider = document.getElementById("musicVolumeSlider");
   const musicVolumeText = document.getElementById("musicVolumeText");
   const pitchToggleBtn = document.getElementById("pitchToggleBtn");
+  // 練唱模式（A-B 循環）
+  const progressTrack = document.getElementById("progressTrack");
+  const loopRangeMark = document.getElementById("loopRangeMark");
+  const loopSetABtn = document.getElementById("loopSetABtn");
+  const loopSetBBtn = document.getElementById("loopSetBBtn");
+  const loopToggleBtn = document.getElementById("loopToggleBtn");
+  const loopClearBtn = document.getElementById("loopClearBtn");
+  const loopChorusBtn = document.getElementById("loopChorusBtn");
+  const loopAText = document.getElementById("loopAText");
+  const loopBText = document.getElementById("loopBText");
+  const loopHint = document.getElementById("loopHint");
+  const sectionList = document.getElementById("sectionList");
   const libTabs = document.querySelectorAll(".lib-tab");
   const libSummary = document.getElementById("libSummary");
 
@@ -63,6 +75,13 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentKeyShift = 0;
   let isPlaying = false;
   let showPitch = true;
+  // 舞台端每 400ms 回報一次播放位置；點歌台自己不播音樂，這是唯一的時間來源
+  let lastKnownTime = 0;
+  let lastKnownDuration = 0;
+  // 練唱 A-B 區間（共享狀態的鏡像）與這首歌的曲式分析快取
+  let loopState = { enabled: false, start: null, end: null };
+  let currentSongId = null;
+  let sectionCache = { songId: null, data: null };
   // 已收藏歌曲的 song_id 集合，讓每張歌卡的星星即時反映收藏狀態
   let favoriteIds = new Set();
 
@@ -391,10 +410,15 @@ document.addEventListener("DOMContentLoaded", () => {
   window.api.on("TIME_UPDATE", (msg) => {
     const cur = msg.currentTime || 0;
     const dur = msg.duration || 1;
+    // 舞台端每 400ms 回報一次，這是點歌台唯一知道的播放位置 ——
+    // 設 A/B 點與進度條跳轉都以它為準
+    lastKnownTime = cur;
+    lastKnownDuration = msg.duration || 0;
     timeCurrent.textContent = formatTime(cur);
     timeDuration.textContent = formatTime(dur);
     const pct = Math.min(100, (cur / dur) * 100);
     progressBar.style.width = `${pct}%`;
+    renderLoopRangeMark();
   });
 
   // --- 佇列拖曳排序 ---
@@ -543,6 +567,23 @@ document.addEventListener("DOMContentLoaded", () => {
   function updateDeckControls(state) {
     isPlaying = state.is_playing;
     playPauseBtn.textContent = isPlaying ? "⏸ 暫停" : "▶ 播放";
+
+    // 換歌就重抓曲式分析（副歌位置、段落清單都是跟著歌走的）
+    const songId = state.current_song ? state.current_song.song_id : null;
+    if (songId !== currentSongId) {
+      currentSongId = songId;
+      lastKnownTime = 0;
+      lastKnownDuration = 0;
+      onCurrentSongChanged();
+    }
+
+    // A-B 練唱區間：任何一台裝置（含手機）改過都要同步回來
+    loopState = {
+      enabled: !!state.loop_enabled,
+      start: state.loop_start === undefined ? null : state.loop_start,
+      end: state.loop_end === undefined ? null : state.loop_end,
+    };
+    renderLoopUI();
 
     if (state.vocal_volume !== undefined) {
       vocalSlider.value = state.vocal_volume;
@@ -812,6 +853,163 @@ document.addEventListener("DOMContentLoaded", () => {
     updatePitchToggleLabel(!showPitch);
     window.api.updateControl({ show_pitch: showPitch });
   });
+
+  // --- 練唱模式：A-B 區段循環 + 段落跳轉 ---
+  // 伺服器不持有播放位置（媒體在舞台端），所以這裡以 TIME_UPDATE 回報的位置為準，
+  // A-B 點則存在共享狀態裡，包廂裡每一台裝置看到的圈選範圍都一樣。
+
+  function renderLoopRangeMark() {
+    if (!loopRangeMark) return;
+    if (!lastKnownDuration || loopState.start === null || loopState.end === null) {
+      loopRangeMark.style.display = "none";
+      return;
+    }
+    const left = Math.max(0, Math.min(100, (loopState.start / lastKnownDuration) * 100));
+    const right = Math.max(0, Math.min(100, (loopState.end / lastKnownDuration) * 100));
+    loopRangeMark.style.display = "block";
+    loopRangeMark.style.left = `${left}%`;
+    loopRangeMark.style.width = `${Math.max(0.6, right - left)}%`;
+  }
+
+  function renderLoopUI() {
+    if (!loopToggleBtn) return;
+    loopAText.textContent = loopState.start === null ? "--:--" : formatTime(loopState.start);
+    loopBText.textContent = loopState.end === null ? "--:--" : formatTime(loopState.end);
+    const ready = loopState.start !== null && loopState.end !== null;
+    loopToggleBtn.disabled = !ready;
+    loopToggleBtn.style.opacity = ready ? "1" : "0.5";
+    loopToggleBtn.textContent = loopState.enabled ? "⏹ 停止循環" : "🔁 開始循環";
+    loopToggleBtn.classList.toggle("looping", loopState.enabled);
+    if (loopHint && loopState.enabled) {
+      loopHint.textContent = `🔁 循環中：${formatTime(loopState.start)} – ${formatTime(loopState.end)}，唱到終點會自動跳回起點。`;
+    } else if (loopHint) {
+      loopHint.innerHTML = "播放中按 <b>A</b> 標起點、按 <b>B</b> 標終點，就會在這一段反覆練唱；也可以直接按「副歌重唱」。";
+    }
+    renderLoopRangeMark();
+  }
+
+  function setLoopPoint(which) {
+    if (!currentSongId) {
+      showNotification("⚠️ 目前沒有正在演唱的歌曲");
+      return;
+    }
+    const pos = Math.max(0, lastKnownTime);
+    const patch = which === "A" ? { loop_start: pos } : { loop_end: pos };
+    // 兩個點都齊了就直接開始循環：商用點歌機按完 B 就跳回 A，不必再按第三顆鍵
+    const other = which === "A" ? loopState.end : loopState.start;
+    if (other !== null) patch.loop_enabled = true;
+    window.api.updateControl(patch);
+    showNotification(`${which === "A" ? "🅰️" : "🅱️"} ${which} 點設在 ${formatTime(pos)}`);
+  }
+
+  if (loopSetABtn) loopSetABtn.addEventListener("click", () => setLoopPoint("A"));
+  if (loopSetBBtn) loopSetBBtn.addEventListener("click", () => setLoopPoint("B"));
+
+  if (loopToggleBtn) {
+    loopToggleBtn.addEventListener("click", () => {
+      if (loopState.start === null || loopState.end === null) return;
+      const next = !loopState.enabled;
+      window.api.updateControl({ loop_enabled: next });
+      // 開始循環時直接跳到起點，馬上就能練
+      if (next) window.api.seek(Math.min(loopState.start, loopState.end));
+    });
+  }
+
+  if (loopClearBtn) {
+    loopClearBtn.addEventListener("click", () => {
+      window.api.updateControl({ loop_enabled: false, loop_start: null, loop_end: null });
+      showNotification("已清除 A-B 練唱區間");
+    });
+  }
+
+  // 一鍵副歌：伺服器分析歌詞的重複結構找出副歌，直接圈起來循環
+  if (loopChorusBtn) {
+    loopChorusBtn.addEventListener("click", async () => {
+      const data = await ensureSections();
+      const chorus = data && data.chorus;
+      if (!chorus) {
+        showNotification("😕 這首歌找不到重複的副歌段落，請手動設 A-B 點");
+        return;
+      }
+      await window.api.updateControl({
+        loop_start: chorus.start, loop_end: chorus.end, loop_enabled: true
+      });
+      await window.api.seek(chorus.start);
+      showNotification(`🔁 副歌循環 ${formatTime(chorus.start)} – ${formatTime(chorus.end)}（全曲重複 ${chorus.repeats} 次）`);
+    });
+  }
+
+  // 進度條點一下就跳過去（歌太長時想直接練後半段）
+  if (progressTrack) {
+    progressTrack.addEventListener("click", (e) => {
+      if (!currentSongId || !lastKnownDuration) return;
+      const rect = progressTrack.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const target = ratio * lastKnownDuration;
+      window.api.seek(target);
+      showNotification(`⏩ 跳到 ${formatTime(target)}`);
+    });
+  }
+
+  // 段落清單：點標籤跳到該段，點 🔁 直接循環該段
+  if (sectionList) {
+    sectionList.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const start = parseFloat(btn.dataset.start);
+      if (Number.isNaN(start)) return;
+      if (btn.classList.contains("section-loop")) {
+        const end = parseFloat(btn.dataset.end);
+        window.api.updateControl({ loop_start: start, loop_end: end, loop_enabled: true });
+        showNotification(`🔁 循環「${btn.dataset.label}」`);
+      } else {
+        showNotification(`⏩ 跳到「${btn.dataset.label}」`);
+      }
+      window.api.seek(start);
+    });
+  }
+
+  function renderSections(data) {
+    if (!sectionList) return;
+    const sections = (data && data.sections) || [];
+    if (sections.length === 0) {
+      sectionList.innerHTML = `<span style="font-size: 12px; color: var(--text-muted);">這首歌還沒有段落資訊（歌詞處理中，或沒抓到歌詞）</span>`;
+      return;
+    }
+    sectionList.innerHTML = sections.map(s => {
+      const label = escapeHtml(s.label);
+      const attrs = `data-start="${s.start}" data-end="${s.end}" data-label="${escapeHtml(s.label)}"`;
+      return `
+        <div class="section-chip ${s.kind === "chorus" ? "is-chorus" : ""}">
+          <button class="section-jump" ${attrs} title="${escapeHtml(s.preview || s.label)}">
+            ${label}<span class="section-time">${formatTime(s.start)}</span>
+          </button>
+          <button class="section-loop" ${attrs} title="循環練唱這一段">🔁</button>
+        </div>`;
+    }).join("");
+  }
+
+  // 曲式分析是純計算、每首歌結果固定，同一首只跟伺服器要一次
+  async function ensureSections() {
+    if (!currentSongId) return null;
+    if (sectionCache.songId === currentSongId) return sectionCache.data;
+    try {
+      const data = await window.api.getSections(currentSongId);
+      sectionCache = { songId: currentSongId, data };
+      return data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function onCurrentSongChanged() {
+    if (!currentSongId) {
+      if (sectionList) sectionList.innerHTML = "";
+      sectionCache = { songId: null, data: null };
+      return;
+    }
+    renderSections(await ensureSections());
+  }
 
   lyricOffsetSlider.addEventListener("dblclick", () => {
     lyricOffsetSlider.value = 0;

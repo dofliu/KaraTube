@@ -231,3 +231,120 @@ def test_full_state_contains_control_fields(tmp_path):
                 "pitch_shift", "music_volume", "mic_volume", "lyric_offset_ms",
                 "show_pitch", "sing_mode"):
         assert key in state
+
+
+# --- 練唱模式：A-B 區段循環 ---
+
+def test_loop_range_stored_and_broadcast(tmp_path):
+    """A-B 點是共享狀態：設好之後每台裝置拿到的完整狀態裡都要有。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"loop_start": 61.5, "loop_end": 92.25,
+                                       "loop_enabled": True})
+        state = manager.get_full_state()
+        assert state["loop_start"] == 61.5
+        assert state["loop_end"] == 92.25
+        assert state["loop_enabled"] is True
+
+    asyncio.run(scenario())
+
+
+def test_loop_points_can_be_set_one_at_a_time(tmp_path):
+    """先按 A、再按 B 是實際的操作順序，中間那個半成品狀態不能壞。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"loop_start": 30.0})
+        assert manager.loop_start == 30.0 and manager.loop_end is None
+        # 只有 A 點時循環開不起來，否則舞台不知道要跳回哪裡
+        await manager.update_controls({"loop_enabled": True})
+        assert manager.loop_enabled is False
+        await manager.update_controls({"loop_end": 45.0, "loop_enabled": True})
+        assert manager.loop_enabled is True
+
+    asyncio.run(scenario())
+
+
+def test_reversed_loop_points_are_swapped(tmp_path):
+    """聽到一半才想圈這段，先按 B 再按 A 很自然 —— 順序反了要自動對調而不是報錯。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"loop_start": 90.0, "loop_end": 60.0,
+                                       "loop_enabled": True})
+        assert manager.loop_start == 60.0
+        assert manager.loop_end == 90.0
+        assert manager.loop_enabled is True
+
+    asyncio.run(scenario())
+
+
+def test_too_short_loop_is_rejected(tmp_path):
+    """連按兩下設出來的零長度區間會讓舞台在同一秒瘋狂 seek，一律不准開循環。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"loop_start": 60.0, "loop_end": 60.2,
+                                       "loop_enabled": True})
+        assert manager.loop_enabled is False
+        # 區間本身保留，使用者只要把 B 點往後挪就能用
+        assert manager.loop_start == 60.0 and manager.loop_end == 60.2
+
+    asyncio.run(scenario())
+
+
+def test_loop_positions_are_sanitized(tmp_path):
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"loop_start": -10, "loop_end": "abc"})
+        assert manager.loop_start == 0.0
+        assert manager.loop_end is None
+        await manager.update_controls({"loop_end": float("nan")})
+        assert manager.loop_end is None
+        # null 代表「清掉這個點」
+        await manager.update_controls({"loop_start": 12.0, "loop_end": 30.0})
+        await manager.update_controls({"loop_start": None})
+        assert manager.loop_start is None
+
+    asyncio.run(scenario())
+
+
+def test_loop_cleared_when_next_song_takes_stage(tmp_path):
+    """A-B 點屬於某一首歌。換人上台還留著，下一首會在莫名其妙的地方跳回去。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002"])
+        await manager.add_song("song0000001")
+        await manager.add_song("song0000002")
+        await manager.update_controls({"loop_start": 20.0, "loop_end": 40.0,
+                                       "loop_enabled": True})
+        assert manager.loop_enabled is True
+
+        await manager.skip_current()
+        assert manager.current_song["song_id"] == "song0000002"
+        assert manager.loop_enabled is False
+        assert manager.loop_start is None and manager.loop_end is None
+
+    asyncio.run(scenario())
+
+
+def test_seek_broadcasts_clamped_position(tmp_path):
+    """跳轉是舞台端的媒體操作，伺服器只送指令、不改自己的狀態。"""
+    sent = []
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        manager.set_broadcast_callback(lambda msg: _record(msg))
+        assert await manager.seek_to(75.256) == 75.256
+        assert await manager.seek_to(-5) == 0.0
+        assert await manager.seek_to("not a number") == 0.0
+
+    async def _record(msg):
+        sent.append(msg)
+
+    asyncio.run(scenario())
+    assert [m["command"] for m in sent] == ["SEEK", "SEEK", "SEEK"]
+    assert [m["position"] for m in sent] == [75.256, 0.0, 0.0]
+
+
+def test_full_state_contains_loop_fields(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    state = manager.get_full_state()
+    for key in ("loop_enabled", "loop_start", "loop_end"):
+        assert key in state

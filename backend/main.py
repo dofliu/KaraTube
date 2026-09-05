@@ -12,6 +12,7 @@ from fastapi.responses import Response
 import qrcode
 
 from backend.config import FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PORT, DEVICE
+from backend.pipeline.chorus_detector import analyze_song_structure
 from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
 from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
@@ -224,6 +225,12 @@ async def restart_song():
     await queue_manager.restart_current()
     return {"status": "success"}
 
+@app.post("/api/seek")
+async def seek_playback(payload: Dict[str, Any] = Body(...)):
+    """跳到指定秒數：進度條拖曳、段落跳轉、回到 A 點練唱都用這支。"""
+    position = await queue_manager.seek_to(payload.get("position", 0))
+    return {"status": "success", "position": position}
+
 @app.post("/api/control")
 async def control_playback(payload: Dict[str, Any] = Body(...)):
     await queue_manager.update_controls(payload)
@@ -415,6 +422,21 @@ async def get_lyrics(song_id: str):
 async def get_pitch(song_id: str):
     pitch = storage.get_song_pitch(song_id)
     return {"song_id": song_id, "pitch": pitch}
+
+
+@app.get("/api/songs/{song_id}/sections")
+async def get_song_sections(song_id: str):
+    """
+    練唱模式用的曲式分析：副歌在哪裡、整首怎麼分段。
+
+    從已對齊的歌詞算，不碰音訊也不用模型，所以是即算即回、不需要快取。
+    沒有歌詞（還在處理中、或這首歌根本沒抓到詞）就回空的結構，
+    前端退回手動設 A-B 點，不會壞。
+    """
+    lyrics = storage.get_song_lyrics(song_id)
+    meta = storage.get_song_metadata(song_id) or {}
+    structure = analyze_song_structure(lyrics, duration=meta.get("duration"))
+    return {"song_id": song_id, "duration": meta.get("duration"), **structure}
 
 # --- WebSocket Hub ---
 

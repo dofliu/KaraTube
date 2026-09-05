@@ -9,6 +9,23 @@ from backend.services.song_history import SongHistory
 
 logger = logging.getLogger("KaraTube.QueueManager")
 
+# 練唱循環的最短長度。比這更短的 A-B 區間只會變成跳針，多半是使用者連按兩下設錯的。
+MIN_LOOP_SECONDS = 1.0
+
+
+def coerce_position(value: Any) -> Optional[float]:
+    """把前端送來的秒數轉成合法的播放位置。看不懂或是 NaN 就回 None（代表沒設）。"""
+    if value is None:
+        return None
+    try:
+        pos = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pos != pos:  # NaN
+        return None
+    return round(max(0.0, pos), 3)
+
+
 class QueueManager:
     def __init__(self, song_processor: SongProcessor, storage: SongStorage,
                  broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None,
@@ -47,6 +64,12 @@ class QueueManager:
         self.lyric_offset_ms: int = 0
         # 舞台是否顯示音準導唱線。關掉可以讓 MV 畫面完整露出來。
         self.show_pitch: bool = True
+        # 練唱模式：A-B 區段循環（商用點歌機的「副歌重播」）。
+        # 三個欄位放在共享狀態裡，點歌台設好的區間，舞台端與其他手機看到的是同一組。
+        # A-B 點屬於「這一首歌」，換歌時要清掉，否則下一首會在莫名其妙的地方跳回去。
+        self.loop_enabled: bool = False
+        self.loop_start: Optional[float] = None
+        self.loop_end: Optional[float] = None
 
     def set_broadcast_callback(self, cb: Callable):
         self.broadcast_cb = cb
@@ -76,7 +99,10 @@ class QueueManager:
             "mic_tone": self.mic_tone,
             "sing_mode": self.sing_mode,
             "lyric_offset_ms": self.lyric_offset_ms,
-            "show_pitch": self.show_pitch
+            "show_pitch": self.show_pitch,
+            "loop_enabled": self.loop_enabled,
+            "loop_start": self.loop_start,
+            "loop_end": self.loop_end
         }
 
     async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "",
@@ -188,6 +214,8 @@ class QueueManager:
             if self.current_song:
                 self.history.append(self.current_song)
             self.current_song = next_item
+            # 上一首圈起來的練唱區間對這一首沒有意義，換人上台就歸零
+            self.clear_loop()
             self.is_playing = True
             # 真正上台才計入點唱排行與已唱歷史，排進佇列又被移除的不算
             if self.play_stats:
@@ -213,6 +241,43 @@ class QueueManager:
                     "type": "CONTROL_COMMAND",
                     "command": "RESTART"
                 })
+
+    async def seek_to(self, position: Any) -> float:
+        """
+        要舞台端跳到指定秒數（進度條拖曳、段落跳轉、回到 A 點都走這條）。
+
+        跳轉是舞台端的媒體操作，伺服器不持有播放位置，所以只送指令不改狀態。
+        回傳夾限後真正送出去的位置，讓 API 可以回報給呼叫端。
+        """
+        pos = coerce_position(position) or 0.0
+        if self.broadcast_cb:
+            await self.broadcast_cb({
+                "type": "CONTROL_COMMAND",
+                "command": "SEEK",
+                "position": pos
+            })
+        return pos
+
+    def clear_loop(self):
+        """關掉 A-B 循環並清掉區間。"""
+        self.loop_enabled = False
+        self.loop_start = None
+        self.loop_end = None
+
+    def _normalize_loop(self):
+        """
+        把 A-B 區間收斂成合法狀態。
+
+        先按 B 再按 A 是很自然的操作（聽到一半才想圈這段），所以順序反了就對調，
+        而不是報錯。區間缺一角或短到會跳針時，循環一律關掉 ——
+        寧可不循環，也不要讓舞台在同一秒鐘上瘋狂 seek。
+        """
+        if (self.loop_start is not None and self.loop_end is not None
+                and self.loop_end < self.loop_start):
+            self.loop_start, self.loop_end = self.loop_end, self.loop_start
+        if (self.loop_start is None or self.loop_end is None
+                or self.loop_end - self.loop_start < MIN_LOOP_SECONDS):
+            self.loop_enabled = False
 
     def is_song_in_use(self, song_id: str) -> bool:
         """歌曲正在演唱或還在佇列裡。使用中的快取不能刪，刪了舞台會直接斷片。"""
@@ -301,6 +366,14 @@ class QueueManager:
             self.show_pitch = bool(params["show_pitch"])
         if "is_playing" in params:
             self.is_playing = bool(params["is_playing"])
+        # 練唱 A-B 循環：三個欄位可以分開送（先設 A、再設 B、最後才開循環）
+        if "loop_start" in params:
+            self.loop_start = coerce_position(params["loop_start"])
+        if "loop_end" in params:
+            self.loop_end = coerce_position(params["loop_end"])
+        if "loop_enabled" in params:
+            self.loop_enabled = bool(params["loop_enabled"])
+        self._normalize_loop()
 
     async def update_controls(self, params: Dict[str, Any]):
         self._apply_controls(params)

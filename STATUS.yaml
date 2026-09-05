@@ -1,10 +1,10 @@
 name: KaraTube
 name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
-progress: 94
+progress: 95
 status: active
-last_updated: "2026-09-04"
-next_milestone: "副歌重唱／A-B 循環練唱、歌手/語言分類瀏覽、Docker 一鍵部署與 release 打包（見 docs/ROADMAP.md）"
+last_updated: "2026-09-05"
+next_milestone: "歌手/語言分類瀏覽與新歌榜、Docker 一鍵部署與 release 打包（見 docs/ROADMAP.md）"
 technologies:
   - Python
   - FastAPI
@@ -18,4 +18,4 @@ outputs:
   - tool
 description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment, EBU R128 loudness normalization and real-time pitch scoring"
 description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、EBU R128 自動音量平衡、即時音準導唱與評分"
-key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；自動音量平衡：自實作 ITU-R BS.1770-4 K 加權與雙重閘門，48kHz 係數與規格書一致到小數第 9 位、-20 dBFS 1kHz 正弦量得 -19.99 LUFS；系統設定頁（預設調音/快取上限/模型選擇/舞台演出）；ruff lint 納入 CI、156 條測試全綠"
+key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；自動音量平衡：自實作 ITU-R BS.1770-4 K 加權與雙重閘門，48kHz 係數與規格書一致到小數第 9 位、-20 dBFS 1kHz 正弦量得 -19.99 LUFS；練唱模式：歌詞重複結構分析自動找副歌（含長度守門與單行鉤子退路）＋ A-B 區段循環與段落跳轉；ruff lint 納入 CI、185 條測試全綠"

@@ -906,3 +906,104 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* --- 練唱模式（A-B 循環） --- */
+
+/* 進度條改成可點擊跳轉。position: relative 是 A-B 區間標記定位的基準 */
+.progress-track {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  margin-top: 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.progress-bar {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-pink));
+  transition: width 0.3s linear;
+}
+
+/* A-B 區間在進度條上的黃色區塊，一眼看得出現在圈了哪一段 */
+.loop-range-mark {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(255, 222, 89, 0.45);
+  border-left: 2px solid var(--accent-yellow);
+  border-right: 2px solid var(--accent-yellow);
+  pointer-events: none;
+}
+
+.loop-points {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+
+.loop-point-btn {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 循環進行中：開始鍵改成醒目的黃色，關掉時退回一般樣式 */
+.loop-point-btn.looping {
+  background: linear-gradient(135deg, var(--accent-yellow), #ff9e00);
+  color: #000;
+  box-shadow: 0 0 15px rgba(255, 222, 89, 0.4);
+}
+
+/* 段落跳轉：前奏 / 主歌 / 副歌 / 間奏 一列膠囊，點一下就跳過去 */
+.section-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.section-chip {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.section-chip.is-chorus {
+  border-color: var(--accent-yellow);
+  background: rgba(255, 222, 89, 0.1);
+}
+
+.section-chip button {
+  background: none;
+  border: none;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.section-chip button:hover {
+  background: rgba(0, 240, 255, 0.15);
+  color: var(--accent-cyan);
+}
+
+.section-chip .section-loop {
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 5px 8px;
+}
+
+.section-chip .section-time {
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: 4px;
+}

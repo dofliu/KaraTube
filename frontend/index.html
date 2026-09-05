@@ -76,9 +76,10 @@
       <div style="min-width: 0; flex: 1;">
         <div id="nowPlayingTitle" style="font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">尚未播放歌曲</div>
         <div id="nowPlayingArtist" style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">請從上方搜尋點歌</div>
-        <!-- Mini Progress -->
-        <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 6px; overflow: hidden;">
-          <div id="progressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-pink)); transition: width 0.3s linear;"></div>
+        <!-- Mini Progress（可點擊跳轉） -->
+        <div id="progressTrack" class="progress-track" title="點一下跳到該處播放">
+          <div id="progressBar" class="progress-bar"></div>
+          <div id="loopRangeMark" class="loop-range-mark" style="display: none;"></div>
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 2px;">
           <span id="timeCurrent">00:00</span>
@@ -228,6 +229,39 @@
           <input type="range" id="micEchoTimeSlider" min="80" max="600" step="10" value="280">
           <span id="micEchoTimeText" class="slider-value">280 ms</span>
         </div>
+      </div>
+
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🔁 練唱模式（A-B 循環）
+          <button id="loopClearBtn" class="btn btn-secondary mixer-mini-btn" title="清除 A-B 點並停止循環">清除</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🅰️🅱️ 區間<small>播到定點按下即可</small></label>
+          <div class="loop-points">
+            <button id="loopSetABtn" class="btn btn-secondary loop-point-btn" title="把目前播放位置設為 A 點（循環起點）">
+              A <span id="loopAText">--:--</span>
+            </button>
+            <button id="loopSetBBtn" class="btn btn-secondary loop-point-btn" title="把目前播放位置設為 B 點（循環終點）">
+              B <span id="loopBText">--:--</span>
+            </button>
+            <button id="loopToggleBtn" class="btn btn-primary loop-point-btn" title="開始 / 停止 A-B 循環">
+              🔁 開始循環
+            </button>
+          </div>
+        </div>
+
+        <div class="mixer-row">
+          <label>🎯 一鍵副歌<small>自動找重複段落</small></label>
+          <button id="loopChorusBtn" class="btn btn-secondary" style="margin-left: auto;"
+                  title="分析歌詞的重複結構，直接圈出副歌來循環">副歌重唱</button>
+        </div>
+
+        <div id="sectionList" class="section-list"></div>
+        <p id="loopHint" class="mixer-hint">
+          播放中按 <b>A</b> 標起點、按 <b>B</b> 標終點，就會在這一段反覆練唱；也可以直接按「副歌重唱」。
+        </p>
       </div>
 
       <div class="mixer-section">

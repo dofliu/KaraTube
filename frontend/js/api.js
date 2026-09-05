@@ -170,6 +170,16 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // 跳到指定秒數：進度條拖曳、段落跳轉、回到 A 點
+  async seek(position) {
+    const res = await fetch(`${this.baseUrl}/api/seek`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position })
+    });
+    return await res.json();
+  }
+
   async updateControl(controlData) {
     const res = await fetch(`${this.baseUrl}/api/control`, {
       method: 'POST',
@@ -198,6 +208,13 @@ class KaraTubeAPI {
     const res = await fetch(`${this.baseUrl}/api/songs/${songId}/pitch`);
     const data = await res.json();
     return data.pitch;
+  }
+
+  // 練唱模式用的曲式分析：副歌位置與段落清單
+  async getSections(songId) {
+    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/sections`);
+    if (!res.ok) return { chorus: null, sections: [] };
+    return await res.json();
   }
 
   // --- WebSocket Connection ---

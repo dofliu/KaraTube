@@ -56,6 +56,17 @@ class PitchEngine {
     this.updateScoreDisplay();
   }
 
+  /**
+   * 只清掉使用者音高軌跡，分數與統計保留。
+   *
+   * 跳轉（進度條、段落跳轉、A-B 循環跳回 A 點）之後舊軌跡的時間都落在新位置的未來，
+   * 留著會在導唱線上畫出一條不存在的鬼影；但那些幀是真的唱過的，分數不能沒收。
+   */
+  clearTrail() {
+    this.userPitchHistory = [];
+    this.lastUserMidi = 0;
+  }
+
   setAnalyser(analyser) {
     this.analyser = analyser;
   }

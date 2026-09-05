@@ -645,3 +645,33 @@ body.hide-pitch .pitch-visualizer-container {
   font-weight: 600;
   color: var(--accent-pink);
 }
+
+/* 練唱模式徽章：A-B 循環開著時常駐在右下角。
+   沒有這個標示，台上的人只會覺得「機器怎麼一直跳針」。 */
+.practice-badge {
+  position: absolute;
+  bottom: 24px;
+  right: 40px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(10px);
+  padding: 8px 18px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+  border-left: 3px solid var(--accent-yellow);
+}
+
+.practice-badge-icon {
+  font-size: 16px;
+  animation: practiceSpin 2.4s linear infinite;
+}
+
+@keyframes practiceSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}

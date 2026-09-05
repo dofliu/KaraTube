@@ -375,3 +375,83 @@ def test_loudness_endpoint_reports_unmeasurable_song_as_zero_gain():
         assert data["gain_db"] == 0.0
     finally:
         storage.delete_song(song_id)
+
+
+# --- 練唱模式：曲式分析與跳轉 ---
+
+@pytest.fixture()
+def fake_song_with_lyrics():
+    """放一首帶「主歌-副歌-主歌-副歌」歌詞的假歌，測完清掉。"""
+    song_id = "test_sections_song"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(
+        json.dumps({"id": song_id, "title": "段落測試歌", "artist": "測試", "duration": 200}),
+        encoding="utf-8")
+
+    def line(start, text):
+        return {"line_idx": 0, "start": start, "end": start + 3.0, "text": text, "words": []}
+
+    verse1 = ["第一段第一句", "第一段第二句", "第一段第三句", "第一段第四句"]
+    chorus = ["副歌第一句", "副歌第二句", "副歌第三句", "副歌第四句"]
+    verse2 = ["第二段第一句", "第二段第二句", "第二段第三句", "第二段第四句"]
+
+    lyrics, t = [], 12.0
+    for block in (verse1, chorus, verse2, chorus):
+        for text in block:
+            lyrics.append(line(round(t, 3), text))
+            t += 3.5
+        t += 9.0  # 段落之間的間奏
+    (song_dir / "lyrics.json").write_text(
+        json.dumps(lyrics, ensure_ascii=False), encoding="utf-8")
+    yield song_id
+    storage.delete_song(song_id)
+
+
+def test_sections_endpoint_finds_chorus_and_blocks(fake_song_with_lyrics):
+    res = client.get(f"/api/songs/{fake_song_with_lyrics}/sections")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["song_id"] == fake_song_with_lyrics
+    assert data["duration"] == 200
+
+    chorus = data["chorus"]
+    assert chorus is not None
+    assert chorus["lines"] == 4
+    assert chorus["repeats"] == 2
+    assert chorus["end"] > chorus["start"]
+
+    kinds = [s["kind"] for s in data["sections"]]
+    assert kinds[0] == "intro"          # 第一句在 12 秒
+    assert kinds.count("chorus") == 2
+    assert kinds.count("verse") == 2
+    assert "outro" in kinds             # metadata 有 duration 才標得出尾奏
+
+
+def test_sections_endpoint_survives_song_without_lyrics():
+    """還在處理中、或根本沒抓到歌詞的歌不能讓端點爆掉 —— 前端要退回手動設 A-B 點。"""
+    res = client.get("/api/songs/no_such_song_at_all/sections")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["chorus"] is None
+    assert data["sections"] == []
+
+
+def test_seek_endpoint_clamps_position():
+    assert client.post("/api/seek", json={"position": 42.5}).json()["position"] == 42.5
+    assert client.post("/api/seek", json={"position": -3}).json()["position"] == 0.0
+    # 少帶欄位也不能回 500，跳回開頭就好
+    assert client.post("/api/seek", json={}).json()["position"] == 0.0
+
+
+def test_control_endpoint_accepts_loop_range():
+    try:
+        res = client.post("/api/control", json={"loop_start": 30.0, "loop_end": 55.0,
+                                                "loop_enabled": True})
+        assert res.status_code == 200
+        state = res.json()["state"]
+        assert state["loop_start"] == 30.0
+        assert state["loop_end"] == 55.0
+        assert state["loop_enabled"] is True
+    finally:
+        queue_manager.clear_loop()

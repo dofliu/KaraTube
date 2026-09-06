@@ -20,6 +20,7 @@ from backend.services.search_service import YouTubeSearchService
 from backend.services.queue_manager import QueueManager
 from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
+from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
 from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
@@ -53,6 +54,8 @@ play_stats = PlayStats(CACHE_DIR / "play_stats.json")
 favorites = Favorites(CACHE_DIR / "favorites.json")
 song_history = SongHistory(CACHE_DIR / "song_history.json")
 score_history = ScoreHistory(CACHE_DIR / "score_history.json")
+# 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
+library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -173,6 +176,39 @@ async def reprocess_cached_song(song_id: str):
         thumbnail=meta.get("thumbnail", ""),
     )
     return {"status": "success", "item": item}
+
+
+@app.get("/api/library")
+async def get_library_facets():
+    """分類瀏覽的分類軸：每個語言別幾首、每位歌手幾首。"""
+    return {**library.facets(), "language_spec": LANGUAGE_SPEC}
+
+
+@app.get("/api/library/songs")
+async def browse_library(
+    language: str = Query("", description="語言別代碼，空值或 all 代表不篩選"),
+    artist: str = Query("", description="歌手名，空值或 all 代表不篩選"),
+    sort: str = Query("recent", pattern="^(recent|plays|title|artist)$"),
+    limit: int = Query(120, ge=1, le=500),
+):
+    """依語言 / 歌手瀏覽曲庫。分類是從歌名、頻道名與歌詞判定並快取在 metadata。"""
+    songs = library.browse(language=language, artist=artist, sort=sort, limit=limit)
+    return {"songs": songs, "count": len(songs),
+            "language": language, "artist": artist, "sort": sort}
+
+
+@app.get("/api/library/new")
+async def get_new_songs(limit: int = Query(24, ge=1, le=100)):
+    """新歌榜：最近加入曲庫的歌。"""
+    songs = library.new_songs(limit)
+    return {"songs": songs, "count": len(songs), "new_days": NEW_SONG_DAYS}
+
+
+@app.get("/api/library/recommend")
+async def get_recommendations(limit: int = Query(12, ge=1, le=50)):
+    """推薦歌單：依點唱紀錄推薦下一首，每首都附推薦理由。"""
+    songs = library.recommendations(limit)
+    return {"songs": songs, "count": len(songs)}
 
 
 @app.get("/api/queue")

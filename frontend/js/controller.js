@@ -300,9 +300,128 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
+  // --- 分類瀏覽（語言別 / 歌手）---
+  // 商用點歌機的「分類點歌」：先選語言別或歌手，再從清單裡挑歌。
+  // 語言與歌手是伺服器從歌名、頻道名與歌詞判定後快取在 metadata 裡的。
+  let browseFilter = { language: "", artist: "", sort: "recent" };
+
+  const SORT_LABELS = [
+    ["recent", "最新加入"],
+    ["plays", "最常點唱"],
+    ["title", "歌名"],
+    ["artist", "歌手"],
+  ];
+
+  function facetChip(kind, value, label, count, active) {
+    const countHtml = (count === null || count === undefined)
+      ? "" : `<span class="facet-count">${count}</span>`;
+    return `<button class="facet-chip ${active ? "active" : ""}"
+      onclick="window.setLibFilter('${kind}', '${escapeAttr(value)}')">${escapeHtml(label)}${countHtml}</button>`;
+  }
+
+  function buildFacetBar(facets) {
+    const langs = (facets.languages || []).filter(l => l.count > 0);
+    const artists = facets.artists || [];
+    const langChips = [facetChip("language", "", "全部語言", facets.total || 0, !browseFilter.language)]
+      .concat(langs.map(l => facetChip("language", l.key, l.label, l.count,
+        browseFilter.language === l.key))).join("");
+    const artistChips = [facetChip("artist", "", "全部歌手", artists.length, !browseFilter.artist)]
+      .concat(artists.map(a => facetChip("artist", a.name, a.name, a.count,
+        browseFilter.artist === a.name))).join("");
+    const sortChips = SORT_LABELS.map(([key, label]) =>
+      facetChip("sort", key, label, null, browseFilter.sort === key)).join("");
+    return `
+      <div class="facet-bar">
+        <div class="facet-row"><span class="facet-label">🌏 語言</span><div class="facet-chips">${langChips}</div></div>
+        <div class="facet-row"><span class="facet-label">🎤 歌手</span><div class="facet-chips facet-chips-scroll">${artistChips}</div></div>
+        <div class="facet-row"><span class="facet-label">↕️ 排序</span><div class="facet-chips">${sortChips}</div></div>
+      </div>`;
+  }
+
+  window.setLibFilter = (kind, value) => {
+    if (kind === "sort") browseFilter.sort = value || "recent";
+    else if (kind === "language") browseFilter.language = value;
+    else if (kind === "artist") browseFilter.artist = value;
+    loadBrowse();
+  };
+
+  async function loadBrowse() {
+    try {
+      const [facets, res] = await Promise.all([
+        window.api.getLibraryFacets(),
+        window.api.getLibrarySongs(browseFilter),
+      ]);
+      // 歌卡顯示的是整理過的歌手名（artist_name），不是原始頻道名
+      const songs = (res.songs || []).map(s => ({ ...s, uploader: s.artist_name }));
+      libSummary.textContent = `曲庫 ${facets.total || 0} 首 ・ ${facets.artist_count || 0} 位歌手`;
+      const emptyText = (facets.total || 0) === 0
+        ? "曲庫是空的<br>搜尋並點一首歌，處理完就會自動歸類到這裡！"
+        : "這個分類目前沒有歌，換一個分類看看";
+      renderSearchResults(songs, "🎼 分類瀏覽", buildFacetBar(facets), emptyText);
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">曲庫分類讀取失敗</div>`;
+    }
+  }
+
+  // --- 新歌榜 + 推薦歌單 ---
+  // 新歌榜＝最近加入曲庫的歌；推薦歌單＝依點唱紀錄推回「接下來唱什麼」，
+  // 每首都附推薦理由，使用者才知道為什麼會出現這首。
+  async function loadNewAndRecommend() {
+    try {
+      const [newRes, recRes] = await Promise.all([
+        window.api.getNewSongs(18),
+        window.api.getRecommendations(12),
+      ]);
+      const newSongs = (newRes.songs || []).map(s => ({ ...s, uploader: s.artist_name }));
+      const recs = recRes.songs || [];
+      libSummary.textContent = `${newRes.new_days || 14} 天內新增 ${newSongs.filter(s => s.is_new).length} 首`;
+      if (newSongs.length === 0) {
+        renderSearchResults([], "🆕 新歌榜", "",
+          "曲庫還沒有歌<br>點播第一首歌，處理完就會出現在新歌榜！");
+        return;
+      }
+      renderSearchResults(newSongs, "🆕 新歌榜（最近加入曲庫）");
+      if (recs.length > 0) {
+        // 推薦歌單接在新歌榜後面，兩區共用同一個 grid，卡片尺寸才一致
+        searchResults.insertAdjacentHTML("beforeend",
+          `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin: 16px 0 8px;">💡 為你推薦</div>`
+          + recs.map(recommendCardHtml).join(""));
+      }
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">新歌與推薦讀取失敗</div>`;
+    }
+  }
+
+  function recommendCardHtml(s) {
+    const isFav = favoriteIds.has(s.song_id);
+    return `
+      <div class="song-card">
+        <div class="song-thumb-wrapper">
+          <img class="song-thumb" src="${s.thumbnail}" alt="${escapeHtml(s.title)}" loading="lazy">
+          <button class="fav-btn ${isFav ? "faved" : ""}" data-song-id="${s.song_id}"
+            onclick="window.toggleFavorite(event, '${s.song_id}', '${escapeAttr(s.title)}', '${escapeAttr(s.artist_name)}', '${s.thumbnail}')"
+            title="${isFav ? "取消收藏" : "收藏到我的最愛"}">${isFav ? "⭐" : "☆"}</button>
+          ${s.language_label ? `<div class="lang-badge">${s.language_label}</div>` : ""}
+          <div class="cached-badge">⚡ 快取秒播</div>
+          <span class="song-duration">${s.duration ? formatTime(s.duration) : ""}</span>
+        </div>
+        <div class="song-info">
+          <div class="song-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</div>
+          <div class="song-artist">${escapeHtml(s.artist_name || s.artist || "")}</div>
+          <div class="play-count reason-line">💡 ${escapeHtml(s.reason || "")}</div>
+          <div class="song-actions">
+            <button class="btn btn-primary" onclick="window.addSong('${s.song_id}', '${escapeAttr(s.title)}', '${escapeAttr(s.artist_name)}', '${s.thumbnail}', false)">🎤 點歌</button>
+            <button class="btn btn-pink" onclick="window.addSong('${s.song_id}', '${escapeAttr(s.title)}', '${escapeAttr(s.artist_name)}', '${s.thumbnail}', true)">⚡ 插播</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function switchLibrary(which) {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
     if (which === "rankings") loadRankings();
+    else if (which === "browse") loadBrowse();
+    else if (which === "new") loadNewAndRecommend();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
     else if (which === "cache") loadCacheManager();
@@ -313,24 +432,32 @@ document.addEventListener("DOMContentLoaded", () => {
     tab.addEventListener("click", () => switchLibrary(tab.dataset.lib));
   });
 
-  function renderSearchResults(songs, sectionTitle = "") {
+  // extraHtml：擺在標題與歌卡之間的整列區塊（分類瀏覽的語言/歌手篩選列用），
+  // 沒有結果時也要留著，不然按了篩選就看不到篩選列，等於卡死。
+  function renderSearchResults(songs, sectionTitle = "", extraHtml = "", emptyText = "未找到相符歌曲") {
+    let headerHtml = sectionTitle ? `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">${sectionTitle}</div>` : "";
+
     if (!songs || songs.length === 0) {
-      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">未找到相符歌曲</div>`;
+      searchResults.innerHTML = headerHtml + extraHtml +
+        `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">${emptyText}</div>`;
       return;
     }
-
-    let headerHtml = sectionTitle ? `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">${sectionTitle}</div>` : "";
 
     const cardsHtml = songs.map(s => {
       const isCachedBadge = s.is_cached ? `<div class="cached-badge">⚡ 快取秒播</div>` : "";
       const rankBadge = s.rank
         ? `<div class="rank-badge ${s.rank <= 3 ? "" : "rank-other"}">${s.rank <= 3 ? ["🥇","🥈","🥉"][s.rank - 1] : "#" + s.rank}</div>`
         : "";
-      const playCount = s.plays
-        ? `<div class="play-count">🎤 已點唱 ${s.plays} 次${s.last_played ? " ・ 最近 " + s.last_played.slice(0, 10) : ""}</div>`
-        : (s.sung_at
-          ? `<div class="play-count">🕘 唱於 ${formatSungAt(s.sung_at)}</div>`
-          : "");
+      const playCount = s.reason
+        ? `<div class="play-count reason-line">💡 ${s.reason}</div>`
+        : (s.plays
+          ? `<div class="play-count">🎤 已點唱 ${s.plays} 次${s.last_played ? " ・ 最近 " + s.last_played.slice(0, 10) : ""}</div>`
+          : (s.sung_at
+            ? `<div class="play-count">🕘 唱於 ${formatSungAt(s.sung_at)}</div>`
+            : ""));
+      // 分類瀏覽/新歌榜的歌卡上標語言別與「NEW」，一眼分辨是什麼歌
+      const langBadge = s.language_label ? `<div class="lang-badge">${s.language_label}</div>` : "";
+      const newBadge = s.is_new ? `<div class="new-badge">NEW</div>` : "";
       const isFav = favoriteIds.has(s.id);
       const favBtn = `<button class="fav-btn ${isFav ? "faved" : ""}" data-song-id="${s.id}"
         onclick="window.toggleFavorite(event, '${s.id}', '${escapeAttr(s.title)}', '${escapeAttr(s.uploader || s.artist)}', '${s.thumbnail}')"
@@ -341,6 +468,8 @@ document.addEventListener("DOMContentLoaded", () => {
             <img class="song-thumb" src="${s.thumbnail}" alt="${s.title}" loading="lazy">
             ${rankBadge}
             ${favBtn}
+            ${langBadge}
+            ${newBadge}
             ${isCachedBadge}
             <span class="song-duration">${s.duration_string || (s.duration ? formatTime(s.duration) : '')}</span>
           </div>
@@ -361,7 +490,7 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
     }).join("");
 
-    searchResults.innerHTML = headerHtml + cardsHtml;
+    searchResults.innerHTML = headerHtml + extraHtml + cardsHtml;
   }
 
   // Global Add Song Action

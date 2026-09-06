@@ -3,7 +3,7 @@
 
 唱畢結算畫面的後端：每唱完一首，舞台端把總分送進來，這裡負責
 1. 記一筆演唱成績（時間序列，同一首唱三次就有三筆）
-2. 維護「每首歌的個人最佳」
+2. 維護「每首歌的個人最佳」（含這次的最佳／待加強段落）
 3. 算出這次的成績擊敗了過往多少比例的演唱（商用機的「擊敗全國 XX%」在
    單機系統上的對應物：擊敗這台機器上 XX% 的歷史演唱）
 
@@ -77,6 +77,10 @@ class ScoreHistory:
             "accuracy": _clamp_float(result.get("accuracy"), 0.0, 1.0),
             "max_combo": _clamp_int(result.get("max_combo"), 0, 10 ** 6),
             "grade": str(result.get("grade", ""))[:8],
+            # 段落評分的結論（「副歌 2」這種標籤）。整段長條圖是結算畫面的現場資訊，
+            # 不入庫；這兩個標籤才是回頭看歷史時有用的東西：這首歌我老是哪一段唱壞。
+            "best_section": str(result.get("best_section") or "")[:24],
+            "worst_section": str(result.get("worst_section") or "")[:24],
             "sung_at": datetime.now().isoformat(timespec="seconds"),
         }
 

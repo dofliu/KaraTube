@@ -220,7 +220,56 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleCombo = document.getElementById("settleCombo");
   const settleBest = document.getElementById("settleBest");
   const settleBeat = document.getElementById("settleBeat");
+  const settleSections = document.getElementById("settleSections");
   let settlementTimer = null;
+
+  function escapeHtml(text) {
+    return String(text == null ? "" : text)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  /**
+   * 段落表現長條圖：每一段的命中率＋最佳/待加強段落點名。
+   *
+   * 只畫「可評分」的段落（導唱音符夠多的那些）；不到兩段就整塊收起來 ——
+   * 一段的長條圖沒有比較的意義，只是佔掉結算畫面的時間。
+   */
+  function renderSectionBreakdown(result) {
+    if (!settleSections) return;
+    const rows = (result.sections || []).filter(s => s.graded);
+    if (rows.length < 2) {
+      settleSections.innerHTML = "";
+      settleSections.style.display = "none";
+      return;
+    }
+
+    const best = result.best_section;
+    const worst = result.worst_section;
+    const pct = (v) => Math.round((v || 0) * 100);
+    const verdict = best && worst
+      ? `<div class="settlement-section-verdict">` +
+        `<span class="verdict-best">💯 最佳段落 <b>${escapeHtml(best.label)}</b> ${pct(best.accuracy)}%</span>` +
+        `<span class="verdict-worst">📈 待加強 <b>${escapeHtml(worst.label)}</b> ${pct(worst.accuracy)}%</span>` +
+        `</div>`
+      : `<div class="settlement-section-verdict"><span>整首表現平均，沒有明顯拖分的段落</span></div>`;
+
+    const bars = rows.map(s => {
+      const flag = best && s.index === best.index ? " is-best"
+        : (worst && s.index === worst.index ? " is-worst" : "");
+      const title = s.preview ? `${s.label}　${s.preview}` : s.label;
+      return `<div class="settlement-section-row${flag}" title="${escapeHtml(title)}">` +
+        `<span class="section-row-label">${escapeHtml(s.label)}</span>` +
+        `<span class="section-row-bar"><i style="width:${pct(s.accuracy)}%"></i></span>` +
+        `<span class="section-row-value">${pct(s.accuracy)}%</span>` +
+        `</div>`;
+    }).join("");
+
+    settleSections.style.display = "block";
+    settleSections.innerHTML =
+      `<div class="settlement-label">📊 段落表現</div>${verdict}` +
+      `<div class="settlement-section-bars">${bars}</div>`;
+  }
 
   function hideSettlement() {
     if (settlementTimer) { clearTimeout(settlementTimer); settlementTimer = null; }
@@ -250,16 +299,28 @@ document.addEventListener("DOMContentLoaded", () => {
     requestAnimationFrame(step);
   }
 
+  /** 送進 /api/scores 的成績單。段落點名只送標籤，長條圖是現場資訊不必入庫。 */
+  function scorePayload(song, result) {
+    return {
+      song_id: song.song_id,
+      title: song.title,
+      artist: song.artist,
+      thumbnail: song.thumbnail,
+      score: result.score,
+      accuracy: result.accuracy,
+      max_combo: result.max_combo,
+      grade: result.grade,
+      best_section: result.best_section ? result.best_section.label : "",
+      worst_section: result.worst_section ? result.worst_section.label : ""
+    };
+  }
+
   async function showSettlement(song, result) {
     hideIntroCard(); // 極短的歌可能唱完時片頭卡還亮著
     if (!settlementOverlay || !settlementEnabled) {
       // 設定關掉結算畫面時仍要記成績，只是不佔用畫面時間，直接進下一首
       if (settlementEnabled === false && song) {
-        window.api.submitScore({
-          song_id: song.song_id, title: song.title, artist: song.artist,
-          thumbnail: song.thumbnail, score: result.score, accuracy: result.accuracy,
-          max_combo: result.max_combo, grade: result.grade
-        }).catch(() => {});
+        window.api.submitScore(scorePayload(song, result)).catch(() => {});
       }
       window.api.send("SONG_ENDED");
       return;
@@ -271,22 +332,14 @@ document.addEventListener("DOMContentLoaded", () => {
     settleCombo.textContent = `${result.max_combo}`;
     settleBest.textContent = "";
     settleBeat.textContent = "";
+    renderSectionBreakdown(result);
     settlementOverlay.classList.add("show");
     animateScoreCount(result.score);
 
     settlementTimer = setTimeout(finishSettlement, settlementMs);
 
     try {
-      const res = await window.api.submitScore({
-        song_id: song.song_id,
-        title: song.title,
-        artist: song.artist,
-        thumbnail: song.thumbnail,
-        score: result.score,
-        accuracy: result.accuracy,
-        max_combo: result.max_combo,
-        grade: result.grade
-      });
+      const res = await window.api.submitScore(scorePayload(song, result));
       const r = (res && res.result) || {};
       if (r.is_new_best) {
         settleBest.textContent = r.previous_best != null
@@ -530,6 +583,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pauseMedia();
       karaokeRenderer.setLyrics([]);
       pitchEngine.setPitchData(null);
+      pitchEngine.setSections([]);
     }
   }
 
@@ -552,13 +606,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // 先用上一首的增益開唱，算完再平滑接上（setTargetAtTime 不會有爆音）。
     applyLoudness(song.song_id);
 
-    const [lyrics, pitch] = await Promise.all([
+    const [lyrics, pitch, structure] = await Promise.all([
       window.api.getLyrics(song.song_id),
-      window.api.getPitch(song.song_id)
+      window.api.getPitch(song.song_id),
+      // 段落評分是附加資訊，抓不到不能擋播放（歌詞還沒好的歌就是沒有曲式）
+      window.api.getSections(song.song_id).catch(() => ({ sections: [] }))
     ]);
 
     karaokeRenderer.setLyrics(lyrics);
     pitchEngine.setPitchData(pitch);
+    // 先 setPitchData（它會歸零評分）再載段落，順序反了段落統計會被清掉
+    pitchEngine.setSections((structure && structure.sections) || []);
 
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;

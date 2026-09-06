@@ -32,7 +32,7 @@ jobs:
         run: python -m pytest tests/ -v
 
   frontend:
-    name: Frontend (JS syntax)
+    name: Frontend (JS syntax + unit tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +44,12 @@ jobs:
       - name: Syntax check all frontend JS
         run: |
           set -e
-          for f in frontend/js/*.js; do
+          for f in frontend/js/*.js frontend/tests/*.js; do
             echo "checking $f"
             node --check "$f"
           done
+
+      # 純資料邏輯（段落評分等）用 node 內建的測試執行器跑，不需要 npm 依賴。
+      # 注意要傳 glob 而不是目錄：node --test 會把目錄參數當成模組去 require。
+      - name: Frontend unit tests
+        run: node --test "frontend/tests/*.test.js"

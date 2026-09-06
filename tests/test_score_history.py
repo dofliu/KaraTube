@@ -52,6 +52,33 @@ def test_accuracy_and_combo_are_clamped(tmp_path):
     assert r["max_combo"] == 0
 
 
+def test_section_verdict_is_recorded(tmp_path):
+    s = make_scores(tmp_path)
+    r = s.record({"song_id": "a", "score": 800,
+                  "best_section": "副歌 1", "worst_section": "主歌 2"})
+    assert r["best_section"] == "副歌 1"
+    assert r["worst_section"] == "主歌 2"
+    assert s.best_for("a")["worst_section"] == "主歌 2"
+
+
+def test_section_verdict_defaults_to_empty(tmp_path):
+    # 沒有歌詞的歌切不出段落，段落評分不會有結論 —— 欄位要是空字串而不是 None，
+    # 前端才能一律用 `if (r.best_section)` 判斷要不要顯示。
+    s = make_scores(tmp_path)
+    r = s.record({"song_id": "a", "score": 800})
+    assert r["best_section"] == ""
+    assert r["worst_section"] == ""
+    r2 = s.record({"song_id": "a", "score": 810, "best_section": None})
+    assert r2["best_section"] == ""
+
+
+def test_section_labels_are_truncated(tmp_path):
+    # 段落標籤是伺服器自己產的，但成績單是外部 POST 進來的，長度還是要守
+    s = make_scores(tmp_path)
+    r = s.record({"song_id": "a", "score": 100, "best_section": "副" * 100})
+    assert len(r["best_section"]) == 24
+
+
 def test_best_for_and_recent(tmp_path):
     s = make_scores(tmp_path)
     s.record({"song_id": "a", "score": 500})

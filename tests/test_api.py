@@ -455,3 +455,71 @@ def test_control_endpoint_accepts_loop_range():
         assert state["loop_enabled"] is True
     finally:
         queue_manager.clear_loop()
+
+
+# --- 曲庫分類瀏覽 / 新歌榜 / 推薦歌單 ---
+
+@pytest.fixture()
+def fake_library_song():
+    """在本機快取目錄放一首檔案齊全的假歌（會被曲庫索引到），測完清掉。"""
+    song_id = "test_library_song_01"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(
+        json.dumps({"id": song_id, "title": "曲庫測試歌", "artist": "測試歌手 - Topic",
+                    "duration": 210}, ensure_ascii=False), encoding="utf-8")
+    (song_dir / "lyrics.json").write_text(
+        json.dumps([{"start": 0, "end": 3, "text": "這是一首國語的測試歌曲歌詞"}],
+                   ensure_ascii=False), encoding="utf-8")
+    (song_dir / "instrumental.mp3").write_bytes(b"x" * 10)
+    (song_dir / "vocals.mp3").write_bytes(b"x" * 10)
+    yield song_id
+    storage.delete_song(song_id)
+
+
+def test_library_facets_shape(fake_library_song):
+    res = client.get("/api/library")
+    assert res.status_code == 200
+    data = res.json()
+    assert [lang["key"] for lang in data["language_spec"]] == \
+        [lang["key"] for lang in data["languages"]]
+    assert data["total"] >= 1
+    mandarin = next(lang for lang in data["languages"] if lang["key"] == "mandarin")
+    assert mandarin["count"] >= 1
+    assert any(a["name"] == "測試歌手" for a in data["artists"])
+
+
+def test_library_songs_filter_by_language_and_artist(fake_library_song):
+    res = client.get("/api/library/songs", params={"language": "mandarin"})
+    assert res.status_code == 200
+    assert any(s["song_id"] == fake_library_song for s in res.json()["songs"])
+
+    res = client.get("/api/library/songs", params={"artist": "測試歌手"})
+    song = next(s for s in res.json()["songs"] if s["song_id"] == fake_library_song)
+    assert song["language_label"] == "國語"
+    assert song["is_cached"] is True
+
+    # 篩到沒有歌的分類要回空清單，不是 500
+    res = client.get("/api/library/songs", params={"language": "korean",
+                                                   "artist": "不存在的歌手"})
+    assert res.status_code == 200
+    assert res.json()["songs"] == []
+
+
+def test_library_songs_rejects_bad_sort():
+    assert client.get("/api/library/songs", params={"sort": "隨便排"}).status_code == 422
+
+
+def test_library_new_and_recommend(fake_library_song):
+    res = client.get("/api/library/new", params={"limit": 5})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["new_days"] > 0
+    song = next(s for s in data["songs"] if s["song_id"] == fake_library_song)
+    assert song["is_new"] is True
+
+    res = client.get("/api/library/recommend", params={"limit": 5})
+    assert res.status_code == 200
+    recs = res.json()["songs"]
+    assert len(recs) <= 5
+    assert all(r["reason"] and r["reason_tag"] for r in recs)

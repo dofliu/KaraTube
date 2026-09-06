@@ -79,6 +79,11 @@ class PlayStats:
             item["rank"] = i + 1
         return items
 
+    def snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """整份統計的副本（song_id → 紀錄）。曲庫瀏覽要一次查很多首，不適合逐首查。"""
+        with self._lock:
+            return {k: dict(v) for k, v in self._data.items()}
+
     def total_plays(self) -> int:
         with self._lock:
             return sum(int(v.get("plays", 0)) for v in self._data.values())

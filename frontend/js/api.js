@@ -72,6 +72,30 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // --- 曲庫分類瀏覽 / 新歌榜 / 推薦歌單 ---
+  async getLibraryFacets() {
+    const res = await fetch(`${this.baseUrl}/api/library`);
+    return await res.json();
+  }
+
+  async getLibrarySongs({ language = "", artist = "", sort = "recent", limit = 120 } = {}) {
+    const params = new URLSearchParams({ sort, limit });
+    if (language) params.set("language", language);
+    if (artist) params.set("artist", artist);
+    const res = await fetch(`${this.baseUrl}/api/library/songs?${params}`);
+    return await res.json();
+  }
+
+  async getNewSongs(limit = 24) {
+    const res = await fetch(`${this.baseUrl}/api/library/new?limit=${limit}`);
+    return await res.json();
+  }
+
+  async getRecommendations(limit = 12) {
+    const res = await fetch(`${this.baseUrl}/api/library/recommend?limit=${limit}`);
+    return await res.json();
+  }
+
   async getCacheInfo() {
     const res = await fetch(`${this.baseUrl}/api/cache`);
     return await res.json();

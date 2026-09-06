@@ -1393,7 +1393,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const r = msg.data || {};
     if (!r.title && !r.score) return;
     const bestPart = r.is_new_best ? " ・ 🎉 刷新個人最佳！" : "";
-    showNotification(`🏁 ${r.title || "演唱結束"}：${r.score} 分（${r.grade || "-"}）${bestPart}`);
+    // 段落評分：表現太平均時後端兩個欄位都是空的，就不畫蛇添足
+    const sectionPart = r.best_section && r.worst_section
+      ? ` ・ 💯 ${r.best_section} / 📈 ${r.worst_section}`
+      : "";
+    showNotification(
+      `🏁 ${r.title || "演唱結束"}：${r.score} 分（${r.grade || "-"}）${sectionPart}${bestPart}`);
   });
 
   // Helpers

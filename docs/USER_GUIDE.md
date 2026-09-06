@@ -274,6 +274,27 @@ python run.py
 - 隱藏音準線（`P`）時評分照樣進行，結算不受影響。
 - 成績存在 `cache/score_history.json`；點歌台與手機端會同步收到「🏁 XXX：1234 分（S）」通知。
 
+### 段落評分（哪一段唱得最好／最差）
+
+結算畫面中間多一塊 **📊 段落表現**：
+
+- 每一段（主歌 1、副歌 1、主歌 2…）一條長條，右邊標命中率百分比。
+- 上方點名 **💯 最佳段落** 與 **📈 待加強**（最佳那條標黃、待加強那條標粉）。
+- 段落是系統從歌詞的重複結構自動切出來的（和練唱模式的段落膠囊同一份），
+  不需要事先標記。前奏、間奏、尾奏沒有導唱旋律，不列入。
+
+什麼時候不會點名段落：
+
+- **整首唱得很平均**時（最佳與最差差不到 5 個百分點）只顯示長條圖，
+  上方寫「整首表現平均，沒有明顯拖分的段落」—— 不會為了有話講而硬挑一段來嫌。
+- **唱得太短的段落**（導唱旋律不到約半秒）不參加評分，也不會被點名成最差。
+- **可評分的段落不到兩段**（這首沒歌詞、或只唱一段就切歌）整塊收起來，
+  總分與等級照常顯示。
+
+搭配練唱模式很好用：把副歌用 A-B 循環唱三輪，長條圖上的副歌命中率是三輪累計的比例，
+可以直接看出練起來了沒有。最佳／待加強的結論也會寫進成績歷史，
+所以「這首歌我老是同一段唱壞」看紀錄就知道。
+
 ---
 
 ## 9. 常見問題
@@ -307,9 +328,13 @@ python run.py
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest tests/ -v          # 後端單元 + API 測試
+python -m pytest tests/ -v          # 後端單元 + API 測試（218 條）
 ruff check .                        # Python lint（設定在 ruff.toml）
-for f in frontend/js/*.js; do node --check "$f"; done   # 前端語法檢查
+for f in frontend/js/*.js frontend/tests/*.js; do node --check "$f"; done   # 前端語法檢查
+node --test "frontend/tests/*.test.js"   # 前端純邏輯單元測試（26 條，免 npm install）
 ```
+
+前端測試用 Node 內建的測試執行器，不需要 `npm install`，
+但路徑要傳 glob 字串（傳目錄會被 `node --test` 當成模組去 require）。
 
 CI（GitHub Actions）會在每個 PR 自動跑以上檢查。

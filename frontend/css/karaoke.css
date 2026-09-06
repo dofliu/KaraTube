@@ -581,6 +581,106 @@ body.hide-pitch .pitch-visualizer-container {
   letter-spacing: 2px;
 }
 
+/* --- 段落評分：唱完顯示哪一段唱得最好／最差 --- */
+
+.settlement-sections {
+  margin: 4px 0 16px;
+  padding: 14px 18px 10px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settlement-section-verdict {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.settlement-section-verdict b {
+  color: #fff;
+}
+
+.settlement-section-verdict .verdict-best { color: var(--accent-yellow); }
+.settlement-section-verdict .verdict-worst { color: var(--accent-cyan); }
+
+/* 段落多的歌（前奏尾奏之外還有六七段）不要把卡片撐出畫面，超過就捲 */
+.settlement-section-bars {
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.settlement-section-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.section-row-label {
+  flex: 0 0 76px;
+  text-align: right;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.section-row-bar {
+  flex: 1 1 auto;
+  height: 9px;
+  min-width: 120px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.section-row-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.5), var(--accent-cyan));
+  /* 長條從 0 長出來，和分數滾動一起完成結算畫面的儀式感 */
+  animation: sectionBarGrow 0.9s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes sectionBarGrow {
+  from { transform: scaleX(0); transform-origin: left center; }
+  to   { transform: scaleX(1); transform-origin: left center; }
+}
+
+.section-row-value {
+  flex: 0 0 46px;
+  text-align: left;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-section-row.is-best .section-row-label,
+.settlement-section-row.is-best .section-row-value {
+  color: var(--accent-yellow);
+}
+
+.settlement-section-row.is-best .section-row-bar i {
+  background: linear-gradient(90deg, rgba(255, 222, 89, 0.5), var(--accent-yellow));
+}
+
+.settlement-section-row.is-worst .section-row-label,
+.settlement-section-row.is-worst .section-row-value {
+  color: var(--accent-pink);
+}
+
+.settlement-section-row.is-worst .section-row-bar i {
+  background: linear-gradient(90deg, rgba(255, 0, 127, 0.45), var(--accent-pink));
+}
+
 /* ============ 導唱片頭卡（商用 KTV 開場「演唱者：XXX」） ============ */
 .intro-card {
   position: absolute;

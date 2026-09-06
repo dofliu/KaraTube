@@ -142,6 +142,20 @@ def test_scores_flow(snapshot_history_and_scores):
     assert res.json()["best"]["score"] == 1234
 
 
+def test_scores_carry_section_verdict(snapshot_history_and_scores):
+    """段落評分的結論要跟著成績一起入庫，回頭看歷史才知道哪一段老是唱壞。"""
+    res = client.post("/api/scores", json={
+        "song_id": "test_score_sections", "title": "段落評分", "score": 999,
+        "best_section": "副歌 1", "worst_section": "主歌 2"})
+    assert res.status_code == 200
+    result = res.json()["result"]
+    assert result["best_section"] == "副歌 1"
+    assert result["worst_section"] == "主歌 2"
+
+    best = client.get("/api/scores/test_score_sections/best").json()["best"]
+    assert best["best_section"] == "副歌 1"
+
+
 def test_scores_requires_song_id():
     res = client.post("/api/scores", json={"score": 100})
     assert res.status_code == 400

@@ -91,6 +91,8 @@
             <div id="settleCombo" class="settlement-stat-value">0</div>
           </div>
         </div>
+        <!-- 段落評分：每段命中率長條圖 + 最佳/待加強段落點名（由 player.js 產生） -->
+        <div id="settleSections" class="settlement-sections" style="display: none;"></div>
         <div id="settleBest" class="settlement-best"></div>
         <div id="settleBeat" class="settlement-beat"></div>
         <div class="settlement-hint">點擊畫面進下一首</div>
@@ -135,6 +137,8 @@
   <script src="/js/api.js"></script>
   <script src="/js/audio-effects.js"></script>
   <script src="/js/karaoke-renderer.js"></script>
+  <!-- section-scorer.js 必須在 pitch-engine.js 之前：後者用它做段落評分與等級換算 -->
+  <script src="/js/section-scorer.js"></script>
   <script src="/js/pitch-engine.js"></script>
   <script src="/js/player.js"></script>
 </body>

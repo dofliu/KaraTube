@@ -1,4 +1,6 @@
 // Real-time Pitch Visualizer & Scoring Engine (JOYSOUND / DAM Style)
+//
+// 依賴 section-scorer.js（段落評分與等級門檻），player.html 的 <script> 順序要在它之後。
 class PitchEngine {
   constructor(canvasElement, scoreValueEl, comboValueEl) {
     this.canvas = canvasElement;
@@ -25,6 +27,9 @@ class PitchEngine {
     this.perfectFrames = 0;
     this.sangFrames = 0;
 
+    // 段落評分：同一份逐幀判定另外依曲式分段累計，結算才能指出哪一段要練
+    this.sectionScorer = new SectionScorer();
+
     this.resizeCanvas();
     window.addEventListener('resize', () => this.resizeCanvas());
   }
@@ -42,6 +47,16 @@ class PitchEngine {
     this.resetScoring();
   }
 
+  /**
+   * 載入這首歌的曲式段落（`/api/songs/{id}/sections` 的 sections）。
+   *
+   * 段落是額外的分析資料，抓不到（還在處理、這首沒歌詞）就傳空的，
+   * 段落評分安靜地停用，總分與音準率照常運作。
+   */
+  setSections(sections) {
+    this.sectionScorer.setSections(sections);
+  }
+
   /** 歸零整首歌的評分統計（換歌與重唱都要呼叫，成績單才不會累計到上一輪）。 */
   resetScoring() {
     this.score = 0;
@@ -53,6 +68,7 @@ class PitchEngine {
     this.hitFrames = 0;
     this.perfectFrames = 0;
     this.sangFrames = 0;
+    this.sectionScorer.reset();
     this.updateScoreDisplay();
   }
 
@@ -143,36 +159,43 @@ class PitchEngine {
       : null;
     if (activeNote) this.noteFrames++;
 
+    let outcome = { hit: false, perfect: false };
     if (userMidi > 0) {
       this.sangFrames++;
       this.userPitchHistory.push({ time: currentTime, midi: userMidi });
       if (this.userPitchHistory.length > 120) this.userPitchHistory.shift();
-      this.evaluateSingingScore(currentTime, userMidi, activeNote);
+      outcome = this.evaluateSingingScore(currentTime, userMidi, activeNote);
     }
+
+    // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練
+    this.sectionScorer.count(currentTime, {
+      hasNote: !!activeNote,
+      sang: userMidi > 0,
+      hit: outcome.hit,
+      perfect: outcome.perfect,
+    });
   }
 
   /**
    * 唱畢結算：把整首歌的統計濃縮成一張成績單。
-   * 音準率 = 命中幀 / 有導唱音符的幀；等級門檻參考商用機的手感
-   * （逐幀命中其實很嚴格，門檻不能照直覺的 90/80 分切）。
+   * 音準率 = 命中幀 / 有導唱音符的幀；等級門檻與段落評分共用（section-scorer.js），
+   * 整首總評與單段評語的手感才會一致。
    */
   getFinalResult() {
     const accuracy = this.noteFrames > 0 ? this.hitFrames / this.noteFrames : 0;
-    let grade;
-    if (accuracy >= 0.75) grade = "SSS";
-    else if (accuracy >= 0.6) grade = "SS";
-    else if (accuracy >= 0.45) grade = "S";
-    else if (accuracy >= 0.3) grade = "A";
-    else if (accuracy >= 0.15) grade = "B";
-    else grade = "C";
+    const bySection = this.sectionScorer.summary();
     return {
       score: this.score,
       accuracy: Math.round(accuracy * 1000) / 1000,
       max_combo: this.maxCombo,
       perfect_frames: this.perfectFrames,
-      grade,
+      grade: gradeForAccuracy(accuracy),
       // 唱不到一秒（約 60 幀偵測到聲音）視同沒唱，不出結算畫面
-      sang: this.sangFrames >= 60 && this.noteFrames > 0
+      sang: this.sangFrames >= 60 && this.noteFrames > 0,
+      // 段落評分：整首的每段命中率，以及值得點名的最佳／待加強段落（可能是 null）
+      sections: bySection.sections,
+      best_section: bySection.best,
+      worst_section: bySection.worst
     };
   }
 
@@ -278,22 +301,25 @@ class PitchEngine {
     }
   }
 
+  /** 回傳這一幀的判定 `{ hit, perfect }`，讓段落評分沿用同一個結果。 */
   evaluateSingingScore(currentTime, userMidi, activeNote) {
     if (activeNote) {
       const diff = Math.abs(userMidi - activeNote.midi);
       if (diff <= 1.5) {
         // Hit!
+        const perfect = diff < 0.6;
         this.score += 15;
         this.combo += 1;
         this.maxCombo = Math.max(this.maxCombo, this.combo);
         this.hitFrames++;
-        if (diff < 0.6) this.perfectFrames++;
+        if (perfect) this.perfectFrames++;
         this.updateScoreDisplay();
 
         if (currentTime - this.lastHitTime > 1.2 && this.combo > 5) {
           this.lastHitTime = currentTime;
-          this.spawnToastFX(diff < 0.6 ? "PERFECT! 🔥" : "GREAT! ✨");
+          this.spawnToastFX(perfect ? "PERFECT! 🔥" : "GREAT! ✨");
         }
+        return { hit: true, perfect };
       }
     } else {
       // Missed active melody
@@ -302,6 +328,7 @@ class PitchEngine {
         this.updateScoreDisplay();
       }
     }
+    return { hit: false, perfect: false };
   }
 
   updateScoreDisplay() {

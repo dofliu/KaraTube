@@ -1,10 +1,10 @@
 name: KaraTube
 name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
-progress: 96
+progress: 97
 status: active
 last_updated: "2026-09-06"
-next_milestone: "Docker 一鍵部署與 release 打包、段落評分（見 docs/ROADMAP.md）"
+next_milestone: "Docker 一鍵部署與 release 打包、導唱音量自動 ducking（見 docs/ROADMAP.md）"
 technologies:
   - Python
   - FastAPI
@@ -16,6 +16,6 @@ technologies:
   - Web Audio API
 outputs:
   - tool
-description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment, EBU R128 loudness normalization, real-time pitch scoring and an auto-classified browsable song library"
-description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、EBU R128 自動音量平衡、即時音準導唱與評分，曲庫自動依語言別與歌手分類瀏覽"
-key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；自動音量平衡：自實作 ITU-R BS.1770-4 K 加權與雙重閘門，48kHz 係數與規格書一致到小數第 9 位、-20 dBFS 1kHz 正弦量得 -19.99 LUFS；練唱模式：歌詞重複結構分析自動找副歌（含長度守門與單行鉤子退路）＋ A-B 區段循環與段落跳轉；曲庫分類：歌名/頻道名/歌詞三來源判語言（假名與諺文看比例、粵台語需 ≥2 種方言用字），結果快取進 metadata 只算一次；ruff lint 納入 CI、213 條測試全綠"
+description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment, EBU R128 loudness normalization, real-time pitch scoring with per-section breakdown and an auto-classified browsable song library"
+description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、EBU R128 自動音量平衡、即時音準導唱與評分（含唱畢段落評分），曲庫自動依語言別與歌手分類瀏覽"
+key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；自動音量平衡：自實作 ITU-R BS.1770-4 K 加權與雙重閘門，48kHz 係數與規格書一致到小數第 9 位、-20 dBFS 1kHz 正弦量得 -19.99 LUFS；練唱模式：歌詞重複結構分析自動找副歌（含長度守門與單行鉤子退路）＋ A-B 區段循環與段落跳轉；段落評分：沿用曲式分段與逐幀判定，二分搜尋歸段累計，含「音符不足 0.5 秒不評分」與「全距 < 5 個百分點不點名」兩道守門；曲庫分類：歌名/頻道名/歌詞三來源判語言（假名與諺文看比例、粵台語需 ≥2 種方言用字），結果快取進 metadata 只算一次；ruff lint 納入 CI、後端 218 條 + 前端 26 條測試全綠"

@@ -5,6 +5,81 @@
 
 ---
 
+## 2026-09-07（第二輪）— Docker 一鍵部署 + 正式發布（v1.0.0）
+
+**目標**：ROADMAP 只剩「系統」那兩項，做完就是可以發布的系統。
+這一輪不新增演唱功能，全部在處理「別人怎麼把這台機器架起來、
+以及三個月後怎麼知道他跑的是哪一版」。
+
+### 版本號：唯一真相來源
+- 新增 `backend/version.py`（`__version__` + codename + `KARATUBE_BUILD`）。
+  FastAPI 的 `version=`、`/api/version`、設定頁頁尾、release 打包全讀這一個常數。
+- 新增 `GET /api/version` 與 `GET /api/health`。
+  健康檢查刻意不碰模型也不碰磁碟 —— 拿它當容器 HEALTHCHECK 才不會在
+  處理歌曲吃滿 CPU 時被誤判成掛掉。
+- 新增 `CHANGELOG.md`。`tests/test_version.py` 守住
+  「CHANGELOG 最上面那一筆 == version.py」與版本順序遞減；
+  release workflow 再比對 git 標籤。發出去的東西版本號對不上是最難追的問題，
+  三道檢查都很便宜。
+
+### 部署設定環境變數化
+- `config.py`：`KARATUBE_HOST` / `KARATUBE_PORT` / `KARATUBE_PUBLIC_HOST` /
+  `KARATUBE_PUBLIC_PORT` / `KARATUBE_CACHE_DIR`，值壞掉一律退回預設 ——
+  機器可以印錯網址，但不能因為一個環境變數打錯就開不起來。
+- **`public_base_url()`**：QR code 與「手機點歌」網址原本是
+  「自動偵測本機 IP + 監聽 port」。容器裡偵測到的是 bridge 網段（172.17.x.x），
+  手機掃了根本連不進去；反向代理後面對外的 port 也不是容器監聽的那個。
+  現在設了 `PUBLIC_HOST/PORT` 就以它們為準，80/443 不寫進網址。
+- `run.py`：容器裡不開瀏覽器（偵測 `/.dockerenv` 或 `KARATUBE_IN_CONTAINER`），
+  否則開機日誌會被 xdg-open 的錯誤洗版、看起來像壞了。banner 印出版本號。
+
+### Docker
+- `Dockerfile`：依賴分兩層（改程式碼不用重裝 PyTorch，那層要幾分鐘）、
+  內建 ffmpeg、非 root（uid 10001）、`/data` 為 volume、`/api/health` HEALTHCHECK。
+  GPU 版只要換 `BASE_IMAGE` build arg 成 CUDA 映像。
+- **踩到的坑**：`~/.cache` 必須先在映像裡建好並 chown。
+  Docker 掛 named volume 時會沿用映像裡那個目錄的擁有者，
+  沒先建的話 volume 是 root 的，非 root 行程下載不了 Whisper / Demucs 權重，
+  而且錯誤訊息完全看不出是權限問題。
+- `docker-compose.yml`：曲庫與模型權重分開兩個 volume（前者是使用者資料要備份，
+  後者只是下載快取）、GPU 區塊註解好放著、`.env` 帶 `KARATUBE_PUBLIC_HOST`。
+- `.dockerignore`：`cache/` 是最重要的一條 —— 用過的機器那裡有好幾 GB，
+  沒排除的話光是送 build context 就要等很久。
+
+### 發布流程
+- `.github/workflows/release.yml`：推 `v*` 標籤 → 跑完整 CI ＋ 比對
+  「標籤 == version.py」→ 打包 `.tar.gz` / `.zip` ＋ SHA256 校驗檔 →
+  從 CHANGELOG 抽出該版段落當 release notes → 建 GitHub Release。
+  發布前重跑一次 CI 是刻意的：PR 過了不代表當下的 main 是好的。
+
+### CI
+- 新增 `deploy-files` job：`docker compose config -q` ＋ `docker build --check`。
+  不在 CI 裡真的建映像（PyTorch 那層要幾 GB），但「一鍵部署壞在一個 YAML 縮排上」
+  是最不該發生的事。`--check` 對風格建議也會回非零，所以只有真正的錯誤才擋 PR。
+
+### 文件
+- 新增 `docs/DEPLOYMENT.md`：硬體需求、Docker / 直接安裝 / GPU、環境變數表、
+  Nginx 反向代理（WebSocket upgrade 標頭是必要的）、
+  麥克風需要安全來源（`getUserMedia` 只在 https 或 localhost 給）、
+  systemd 開機自啟、備份哪幾個檔、升級與發布、部署常見問題。
+- README（徽章、Docker 快速啟動、版本與發布章節、目錄結構）、
+  USER_GUIDE（安裝改為兩種方式 + 「我在跑哪一版」）、
+  ROADMAP（對照清單全數打勾，改列後續想做的）、CHANGELOG（1.0.0）、STATUS.yaml。
+
+### 測試（後端 231 條 + 前端 43 條，全綠）
+- 新增 `tests/test_version.py`（5 條）：語意化版本格式、`version_info()` 形狀、
+  `KARATUBE_BUILD`、CHANGELOG 一致性與順序。
+- 新增 `tests/test_config.py`（4 條）：環境變數轉整數（含空白、空字串、`auto`、
+  `80.5`、中文數字都要退回預設）、`PUBLIC_PORT` 預設等於監聽 port。
+- `tests/test_api.py` +3：`/api/version`、`/api/health`、
+  `public_base_url()` 的三種情境（80 / 443 / 自訂 port）。
+
+### 下一步
+ROADMAP 的商用對照清單已全數完成，v1.0.0 可以打標籤發布。
+之後想到再補的項目（麥克風自動增益、對唱模式、多包廂等）已列在 ROADMAP 下半。
+
+---
+
 ## 2026-09-07 — 導唱音量自動 ducking（唱穩了導唱自己退場）
 
 **目標**：ROADMAP「音訊」剩下的最後一項。商用機（DAM 的 *ガイドボーカル自動フェード*、

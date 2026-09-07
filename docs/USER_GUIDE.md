@@ -1,6 +1,9 @@
 # KaraTube 使用說明書
 
-本文件說明 KaraTube 的安裝、啟動與所有功能的操作方式。
+本文件說明 KaraTube 的啟動與所有功能的操作方式。
+
+> 要把機器架起來給人唱（Docker、GPU、開機自啟、反向代理、備份、升級）
+> 請看 [安裝與部署說明](DEPLOYMENT.md)；本文只講「架好之後怎麼用」。
 
 ---
 
@@ -17,24 +20,43 @@
 
 ### 安裝
 
+**Docker（建議常駐使用）**
+
 ```bash
-pip install -r requirements.txt
+docker compose up -d
 ```
 
-> 開發者只想跑測試的話，安裝 `requirements-dev.txt` 即可（不含 torch / demucs 等大型依賴）。
-
-### 啟動
+**直接安裝**
 
 ```bash
+pip install -r requirements.txt
 python run.py
 ```
 
-啟動後自動開啟：
+> 開發者只想跑測試的話，安裝 `requirements-dev.txt` 即可（不含 torch / demucs 等大型依賴）。
+> 完整的部署選項見 [安裝與部署說明](DEPLOYMENT.md)。
+
+### 啟動
+
+啟動後（直接安裝時會自動開瀏覽器）：
 
 - **點歌控制台**：`http://localhost:8080`
 - **舞台大螢幕**：`http://localhost:8080/player.html`
 
 建議雙螢幕配置：筆電螢幕開點歌台，外接電視/投影機全螢幕開舞台頁。
+
+> 🎙️ 舞台端要用麥克風評分的話，請跑在 `http://localhost` 或 HTTPS 之下 ——
+> 瀏覽器只在安全來源給麥克風權限。
+
+### 我在跑哪一版？
+
+點歌台 **⚙️ 系統設定** 頁尾會顯示版本號，或直接問伺服器：
+
+```bash
+curl -s http://localhost:8080/api/version
+```
+
+回報問題時請一併附上。變更內容見 [更新日誌](../CHANGELOG.md)。
 
 ---
 
@@ -359,7 +381,7 @@ python run.py
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest tests/ -v          # 後端單元 + API 測試（219 條）
+python -m pytest tests/ -v          # 後端單元 + API 測試（231 條）
 ruff check .                        # Python lint（設定在 ruff.toml）
 for f in frontend/js/*.js frontend/tests/*.js; do node --check "$f"; done   # 前端語法檢查
 node --test "frontend/tests/*.test.js"   # 前端純邏輯單元測試（43 條，免 npm install）

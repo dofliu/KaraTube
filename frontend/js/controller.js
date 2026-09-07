@@ -1334,8 +1334,11 @@ document.addEventListener("DOMContentLoaded", () => {
       settingsValues = res.settings || {};
       renderSettings();
       const rt = res.runtime || {};
+      // 版本號要看得到：回報問題時「你跑的是哪一版」是第一個要問的事，
+      // 而包廂那台機器可能是三個月前 clone 的。
+      const version = rt.version ? `　｜　KaraTube v${rt.version}` : "";
       settingsRuntimeHint.textContent =
-        `目前運行中：Whisper ${rt.active_whisper_model} ・ Demucs ${rt.active_demucs_model} ・ 運算裝置 ${rt.device}`;
+        `目前運行中：Whisper ${rt.active_whisper_model} ・ Demucs ${rt.active_demucs_model} ・ 運算裝置 ${rt.device}${version}`;
     } catch (e) {
       settingsBody.innerHTML = `<div style="text-align: center; padding: 30px; color: #ff007f;">設定讀取失敗</div>`;
     }

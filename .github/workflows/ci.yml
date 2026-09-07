@@ -53,3 +53,26 @@ jobs:
       # 注意要傳 glob 而不是目錄：node --test 會把目錄參數當成模組去 require。
       - name: Frontend unit tests
         run: node --test "frontend/tests/*.test.js"
+
+  deploy-files:
+    name: Deploy files (compose + Dockerfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不在 CI 裡真的建映像（PyTorch 那層要幾 GB、好幾分鐘），
+      # 但至少要確認 compose 檔跟 Dockerfile 語法是對的 ——
+      # 「一鍵部署」壞在一個 YAML 縮排上，是最不該發生的事。
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config -q
+
+      - name: Validate Dockerfile syntax
+        run: |
+          # --check 只做靜態檢查，不會真的建。它對「風格建議」也會回非零，
+          # 所以這裡讓它把輸出寫進檔案（管線的結束狀態是 tee 的），
+          # 只有真正的錯誤（語法壞掉、指令不存在）才擋 PR。
+          docker build --check . 2>&1 | tee check.log
+          if grep -qiE "^(ERROR|error:)|dockerfile parse error|unknown instruction" check.log; then
+            echo "::error::Dockerfile 檢查失敗，詳見上方輸出"
+            exit 1
+          fi

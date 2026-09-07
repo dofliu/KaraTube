@@ -11,7 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 import qrcode
 
-from backend.config import FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PORT, DEVICE
+from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PUBLIC_HOST,
+                            PUBLIC_PORT, DEVICE)
 from backend.pipeline.chorus_detector import analyze_song_structure
 from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
 from backend.pipeline.song_processor import SongProcessor
@@ -24,12 +25,13 @@ from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
 from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
+from backend.version import __version__, version_info
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("KaraTube.Server")
 
-app = FastAPI(title="KaraTube KTV Server", version="1.0.0")
+app = FastAPI(title="KaraTube KTV Server", version=__version__)
 
 # Enable CORS for local network and mobile devices
 app.add_middleware(
@@ -101,24 +103,54 @@ def get_local_ip() -> str:
     except Exception:
         return "127.0.0.1"
 
+
+def public_base_url() -> str:
+    """
+    手機要連進來用的網址。
+
+    容器裡自動偵測到的是 bridge 網段的位址（172.17.x.x），手機連不進去；
+    反向代理後面對外的 port 也不是容器監聽的那個。
+    所以 `KARATUBE_PUBLIC_HOST` / `KARATUBE_PUBLIC_PORT` 一旦設了就以它們為準，
+    沒設才退回「自動偵測本機 IP + 監聽 port」的原行為。
+    """
+    host = PUBLIC_HOST or get_local_ip()
+    # 80 / 443 不寫進網址，QR code 掃出來才是乾淨的 http://karatube.local
+    if PUBLIC_PORT in (80, 443):
+        scheme = "https" if PUBLIC_PORT == 443 else "http"
+        return f"{scheme}://{host}"
+    return f"http://{host}:{PUBLIC_PORT}"
+
 # --- REST Endpoints ---
+
+@app.get("/api/version")
+async def get_version():
+    """執行中的版本。包廂那台機器跑的是哪一版，看這裡而不是猜。"""
+    return version_info()
+
+
+@app.get("/api/health")
+async def health_check():
+    """容器健康檢查用。只回報「服務起得來」，不碰模型也不碰磁碟。"""
+    return {"status": "ok", "version": __version__}
+
 
 @app.get("/api/info")
 async def get_server_info():
-    ip = get_local_ip()
+    ip = PUBLIC_HOST or get_local_ip()
+    base = public_base_url()
     return {
         "status": "online",
         "ip": ip,
-        "port": PORT,
+        "port": PUBLIC_PORT,
         "device": DEVICE,
-        "web_url": f"http://{ip}:{PORT}",
-        "player_url": f"http://{ip}:{PORT}/player.html"
+        "version": __version__,
+        "web_url": base,
+        "player_url": f"{base}/player.html"
     }
 
 @app.get("/api/qrcode")
 async def get_qrcode_image():
-    ip = get_local_ip()
-    target_url = f"http://{ip}:{PORT}"
+    target_url = public_base_url()
     qr = qrcode.QRCode(
         version=1,
         box_size=10,
@@ -374,6 +406,7 @@ async def get_settings():
             "active_whisper_model": song_processor.whisper_model,
             "active_demucs_model": song_processor.demucs_model,
             "device": DEVICE,
+            "version": __version__,
         },
     }
 

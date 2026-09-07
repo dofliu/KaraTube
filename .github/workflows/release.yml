@@ -1,0 +1,113 @@
+name: Release
+
+# 打一個 v* 標籤就出一份 release：
+#   git tag -a v1.0.0 -m "KaraTube 1.0.0" && git push origin v1.0.0
+#
+# 發布前會先把 CI 的檢查再跑一次 —— 標籤是別人會下載的東西，
+# 不能因為「PR 過了但之後 main 被推壞了」而發出一包壞的。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要打包的標籤（例如 v1.0.0）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint & tests
+        run: |
+          python -m compileall -q backend run.py rebuild_lyrics.py tests
+          ruff check .
+          python -m pytest tests/ -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Frontend checks
+        run: |
+          set -e
+          for f in frontend/js/*.js frontend/tests/*.js; do node --check "$f"; done
+          node --test "frontend/tests/*.test.js"
+
+      - name: 標籤要與 backend/version.py 一致
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VERSION=$(python -c "from backend.version import __version__; print(__version__)")
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "標籤 $TAG 與 backend/version.py 的 $VERSION 不一致"
+            exit 1
+          fi
+
+  package:
+    name: Package & publish
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打包安裝用壓縮檔
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          NAME="karatube-${TAG}"
+          mkdir -p "dist/${NAME}"
+          # 只放跑起來需要的東西：程式碼、前端、文件、部署檔。
+          # cache/ 與 .git/ 不進包（前者是使用者資料，後者沒必要）。
+          cp -r backend frontend docs "dist/${NAME}/"
+          cp run.py rebuild_lyrics.py requirements.txt requirements-dev.txt \
+             README.md CHANGELOG.md LICENSE ruff.toml \
+             Dockerfile docker-compose.yml .dockerignore "dist/${NAME}/"
+          find "dist/${NAME}" -name '__pycache__' -type d -prune -exec rm -rf {} +
+          cd dist
+          tar -czf "${NAME}.tar.gz" "${NAME}"
+          zip -qr "${NAME}.zip" "${NAME}"
+          sha256sum "${NAME}.tar.gz" "${NAME}.zip" > "${NAME}-SHA256SUMS.txt"
+
+      - name: 從 CHANGELOG 取出這一版的說明
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          VERSION="${TAG#v}"
+          # 取 "## [1.0.0]" 到下一個 "## [" 之間的內容
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md 裡找不到 $VERSION 的段落" >&2
+            exit 1
+          fi
+
+      - name: 建立 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          name: KaraTube ${{ github.ref_name || inputs.tag }}
+          body_path: release-notes.md
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*-SHA256SUMS.txt

@@ -1,0 +1,45 @@
+# KaraTube 一鍵部署
+#
+#   docker compose up -d          啟動（第一次會建映像，torch 那層要幾分鐘）
+#   docker compose logs -f        看處理進度
+#   docker compose down           停止（曲庫留在 karatube-cache volume 裡）
+#
+# 啟動後：點歌台 http://<這台機器的IP>:8080　舞台 http://<IP>:8080/player.html
+
+services:
+  karatube:
+    build:
+      context: .
+      args:
+        # GPU 版改成 nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 並加上 PYTHON_APT: "1"
+        BASE_IMAGE: python:3.11-slim
+    image: karatube:latest
+    container_name: karatube
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 手機掃 QR code 連進來用的位址。容器自動偵測到的是 bridge 網段（172.17.x.x），
+      # 手機連不進去 —— 所以請填這台主機在包廂區網裡的 IP 或網域。
+      KARATUBE_PUBLIC_HOST: "${KARATUBE_PUBLIC_HOST:-}"
+      KARATUBE_PUBLIC_PORT: "${KARATUBE_PUBLIC_PORT:-8080}"
+      # AI 模型（也可以之後在設定頁改，改完重啟這個容器即可）
+      WHISPER_MODEL: "${WHISPER_MODEL:-small}"
+      DEMUCS_MODEL: "${DEMUCS_MODEL:-htdemucs}"
+    volumes:
+      # 曲庫、設定、統計、評分紀錄全都在這裡。刪掉這個 volume = 清空整台機器。
+      - karatube-cache:/data
+      # 模型權重（Whisper / Demucs）第一次會下載幾百 MB，快取起來免得每次重建都重抓
+      - karatube-models:/home/karatube/.cache
+    # --- GPU（有 NVIDIA 顯卡才打開，並用 CUDA 底層映像重建）---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  karatube-cache:
+  karatube-models:

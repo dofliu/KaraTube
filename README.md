@@ -1,10 +1,12 @@
 # KaraTube 🎤 - YouTube 隨選即唱 KTV 伴唱系統
 
 [![CI](https://github.com/dofliu/KaraTube/actions/workflows/ci.yml/badge.svg)](https://github.com/dofliu/KaraTube/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/dofliu/KaraTube?label=release)](https://github.com/dofliu/KaraTube/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **KaraTube** 是一個隨時指定任何 YouTube 或 YouTube Music 歌曲，即可全自動轉換為專業 KTV 伴唱畫面的現代化卡拉OK系統。
 
-📖 文件：[使用說明書](docs/USER_GUIDE.md)｜[功能路線圖](docs/ROADMAP.md)｜[開發進度日誌](docs/PROGRESS_LOG.md)
+📖 文件：[使用說明書](docs/USER_GUIDE.md)｜[安裝與部署](docs/DEPLOYMENT.md)｜[更新日誌](CHANGELOG.md)｜[功能路線圖](docs/ROADMAP.md)｜[開發進度日誌](docs/PROGRESS_LOG.md)
 
 ---
 
@@ -169,26 +171,44 @@
 
 ## 🚀 快速啟動
 
-### 1. 安裝環境需求
-確保已安裝：
-- **Python 3.10+**
-- **FFmpeg**（系統需能直接呼叫 `ffmpeg`）
-- **NVIDIA GPU**（推薦，可大幅加速 AI 分離與 Whisper 識別）
+兩種裝法都可以，完整的部署說明（GPU、反向代理、開機自啟、備份）見
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
-### 2. 安裝依賴
+### 🐳 方式 A：Docker 一鍵部署（建議常駐使用）
+
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/dofliu/KaraTube.git
+cd KaraTube
+
+# 手機要掃 QR code 連進來的話，先告訴它這台機器在區網裡的 IP
+echo "KARATUBE_PUBLIC_HOST=192.168.1.50" > .env
+
+docker compose up -d
+docker compose logs -f
 ```
 
-### 3. 一鍵啟動
+映像已內建 FFmpeg，跑非 root，曲庫與模型權重各自掛在 volume 上（重建映像不會被洗掉）。
+有 NVIDIA 顯卡的話換一行底層映像就是 GPU 版，見
+[部署說明的 GPU 版](docs/DEPLOYMENT.md#gpu-版)。
+
+### 💻 方式 B：直接裝在主機上
+
+環境需求：**Python 3.10+**、**FFmpeg**（`ffmpeg -version` 要叫得出來）、
+**NVIDIA GPU**（選配，可大幅加速 AI 分離與 Whisper 識別）。
+
 ```bash
+pip install -r requirements.txt
 python run.py
 ```
 
-啟動後瀏覽器會自動開啟：
+### 啟動之後
+
 - 點歌控制台：`http://localhost:8080`
 - 舞台演唱螢幕：`http://localhost:8080/player.html`
 - 局域網手機點歌：在點歌台點擊「📱 手機點歌 QR」直接掃碼連線。
+
+> 🎙️ 舞台端要用麥克風評分的話，請跑在 `http://localhost` 或 HTTPS 之下 ——
+> 瀏覽器只在安全來源給 `getUserMedia`。
 
 ---
 
@@ -198,7 +218,8 @@ python run.py
 KaraTube/
 ├── backend/
 │   ├── main.py                  # FastAPI 主服務器 & WebSocket Hub
-│   ├── config.py                # 系統設定 (路徑、模型、GPU配置)
+│   ├── config.py                # 系統設定 (路徑、埠號、模型、GPU配置，可用環境變數覆寫)
+│   ├── version.py               # 版本號（唯一真相來源，/api/version 讀這裡）
 │   ├── pipeline/
 │   │   ├── downloader.py        # yt-dlp 影音下載器
 │   │   ├── separator.py         # AI 人聲伴奏分離模組 (Demucs)
@@ -239,8 +260,12 @@ KaraTube/
 │       └── guide-ducker.test.js    # 導唱自動 ducking 單元測試（node --test）
 │
 ├── tests/                       # 後端單元與 API 測試（pytest）
-├── docs/                        # 使用說明書、路線圖、進度日誌
-├── .github/workflows/ci.yml    # CI：後端測試 + 前端語法檢查與單元測試
+├── docs/                        # 使用說明書、部署說明、路線圖、進度日誌
+├── Dockerfile                   # 一鍵部署映像（CPU 預設，換底層映像即 GPU 版）
+├── docker-compose.yml           # docker compose up -d 就能跑起來
+├── CHANGELOG.md                 # 版本更新日誌
+├── .github/workflows/ci.yml    # CI：後端測試 + 前端檢查 + 部署檔驗證
+├── .github/workflows/release.yml # 打 v* 標籤自動驗證並打包 release
 ├── cache/                       # 自動生成的歌曲快取目錄
 ├── requirements.txt             # 完整執行依賴（含 AI 模型）
 ├── requirements-dev.txt         # 測試 / CI 用最小依賴
@@ -254,7 +279,7 @@ KaraTube/
 ## 🧪 測試與 CI
 
 ```bash
-# 後端（219 條）
+# 後端（231 條）
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ruff check .
@@ -266,12 +291,44 @@ node --test "frontend/tests/*.test.js"
 重的 AI 模型（Demucs / Whisper / librosa）都是延遲載入，
 所以整個 FastAPI app 可以在不裝 torch 的環境直接 import 起來測。
 GitHub Actions 會在每個 PR 自動跑：後端 `compileall` + `ruff` lint + `pytest`、
-前端 `node --check` 全 JS 語法檢查 + `node --test` 單元測試。lint 規則見 `ruff.toml`。
+前端 `node --check` 全 JS 語法檢查 + `node --test` 單元測試、
+以及部署檔驗證（`docker compose config` + `docker build --check`）。
+不在 CI 裡真的建映像 —— PyTorch 那層要幾 GB，但「一鍵部署壞在一個 YAML 縮排上」
+是最不該發生的事，所以語法一定檢查。lint 規則見 `ruff.toml`。
 
 前端測試只涵蓋能脫離瀏覽器執行的純資料邏輯（目前是段落評分與導唱自動 ducking）。
 這類判斷在真實包廂裡看不出對錯 —— 沒人知道機器說「副歌唱得最差」是不是算對的 ——
 所以寫成不碰 DOM、不碰 Web Audio 的模組，用測試守住。
 `node --test` 的路徑要傳 glob（`"frontend/tests/*.test.js"`），傳目錄會被當成模組 require。
+
+---
+
+## 🏷️ 版本與發布
+
+執行中的版本可以直接問系統，不用猜（回報問題時請附上）：
+
+```bash
+curl -s http://localhost:8080/api/version
+# {"name":"KaraTube","version":"1.0.0","codename":"First Light"}
+```
+
+點歌台的 **⚙️ 系統設定** 頁尾也會顯示版本。
+
+版本號的**唯一真相來源**是 `backend/version.py` —— FastAPI 的 `version=`、
+`/api/version`、發布打包全都讀那一個常數。發布時三個地方必須一致：
+git 標籤、`backend/version.py`、`CHANGELOG.md` 最上面那一筆。
+`tests/test_version.py` 守住後兩者，`release.yml` 進一步比對標籤 ——
+發出去的東西版本號對不上，是最難追的一種問題。
+
+```bash
+# 維護者發布流程
+# 1. 改 backend/version.py 的 __version__
+# 2. CHANGELOG.md 最上面加一筆 ## [x.y.z] - YYYY-MM-DD
+git tag -a v1.0.1 -m "KaraTube 1.0.1" && git push origin v1.0.1
+```
+
+標籤推上去後 `release.yml` 會先跑完整 CI 與版本一致性檢查，
+通過才打包 `.tar.gz` / `.zip` 與 SHA256 校驗檔並建立 GitHub Release。
 
 ---
 

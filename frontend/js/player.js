@@ -81,6 +81,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const inputDeviceSelect = document.getElementById("inputDeviceSelect");
   const outputDeviceSelect = document.getElementById("outputDeviceSelect");
   const outputHint = document.getElementById("outputHint");
+  const micMeterFill = document.getElementById("micMeterFill");
+  const micMeterText = document.getElementById("micMeterText");
+  const micAgcBadge = document.getElementById("micAgcBadge");
+  const micAgcBadgeText = document.getElementById("micAgcBadgeText");
 
   // Initializing Engines
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
@@ -89,6 +93,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // 導唱音量自動 ducking：唱穩了導唱自己退到背景，唱不下去它馬上回來。
   // 參數由設定頁決定，這裡先放預設值，收到 SETTINGS_UPDATE 再覆寫。
   const guideDucker = new GuideDucker({ enabled: true, depth: 0.6 });
+  // 麥克風自動增益：把不同人、不同距離的音量拉到差不多，換人唱不用重調滑桿。
+  // 參數同樣由設定頁決定；加成上限還會再依演唱模式收緊（多人模式離回授更近）。
+  const micAgc = new MicAutoGain({ enabled: true, targetDb: -18 });
 
   const OFFSET_STORAGE_KEY = "karatube_lyric_offset_ms";
   const PITCH_STORAGE_KEY = "karatube_show_pitch";
@@ -130,6 +137,13 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastGuideFrameMs = 0;
   let lastGuideBadgeMs = 0;
 
+  // 麥克風自動增益的計時與 UI 更新節流。
+  // 這一條迴圈在「還沒開始唱」的時候也要跑（設定面板的試音音量表），
+  // 所以時間戳跟評分心跳分開記。
+  let lastMicFrameMs = 0;
+  let lastMicUiMs = 0;
+  let micMeterTimer = null;
+
   let outputLatency = 0.05;
   let syncToastTimer = null;
   let lastVocResync = 0;
@@ -151,6 +165,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const micOk = await window.audioEngine.startMicrophone();
     if (micOk && window.audioEngine.micAnalyser) {
       pitchEngine.setAnalyser(window.audioEngine.micAnalyser);
+      // 麥克風剛開起來才有電平可量，這裡歸零 dt 的起點，避免第一幀算出好幾秒
+      resetMicAgc();
     }
     isAudioUnlocked = true;
     outputLatency = window.audioEngine.getOutputLatency();
@@ -204,6 +220,12 @@ document.addEventListener("DOMContentLoaded", () => {
       guideDucker.configure({ enabled: s.guide_duck_enabled, depth: s.guide_duck_depth });
       applyGuideDuck();
     }
+    if (s.mic_agc_enabled !== undefined || s.mic_agc_target_db !== undefined) {
+      micAgc.configure({ enabled: s.mic_agc_enabled, targetDb: s.mic_agc_target_db });
+      // 關掉的當下就要放掉增益，不能等到下一幀（下一幀可能是暫停中，永遠不會來）
+      window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
+      renderMicMeter();
+    }
     // 響度目標或開關改了，正在唱的這首要立刻跟上，不用等下一首
     if (currentSongId) applyLoudness(currentSongId);
   });
@@ -253,6 +275,85 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // --- 麥克風自動增益 ---
+  /**
+   * 餵一幀麥克風電平給 AGC，把算出來的倍率送進音訊圖，順便更新音量表。
+   *
+   * 兩個地方會呼叫：演唱中的渲染迴圈（用評分心跳量到的 rms，不重複抓波形），
+   * 以及設定面板開著但沒在唱的時候的試音迴圈。dt 由呼叫時間算，
+   * 所以兩邊交替呼叫也不會讓時間常數失真。
+   *
+   * @param {number} rms   麥克風原始訊號的 RMS（0~1）
+   * @param {number} nowMs performance.now()
+   */
+  function updateMicAgc(rms, nowMs) {
+    const dt = lastMicFrameMs ? (nowMs - lastMicFrameMs) / 1000 : 0;
+    lastMicFrameMs = nowMs;
+    if (dt > 0) {
+      micAgc.update(dt, { rms });
+      window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
+    }
+    // 60fps 直接寫 textContent 會讓瀏覽器每幀重排一次版面，10fps 已經夠即時
+    if (nowMs - lastMicUiMs > 100) {
+      lastMicUiMs = nowMs;
+      renderMicMeter();
+    }
+  }
+
+  /** 音量表與自動增益讀數（設定面板）＋舞台角落的自動增益徽章。 */
+  function renderMicMeter() {
+    const gainDb = micAgc.gainDb;
+    const signed = `${gainDb >= 0 ? "+" : ""}${gainDb.toFixed(1)} dB`;
+
+    if (micMeterFill) {
+      micMeterFill.style.width = `${Math.round(micAgc.meterLevel() * 100)}%`;
+      // 太小聲（表頭不到兩成）與快削峰（超過九成）都要一眼看得出來，
+      // 因為這兩種情況軟體都幫不了 —— 前者要拿近一點，後者要拿遠一點。
+      micMeterFill.dataset.zone = micAgc.meterLevel() < 0.2
+        ? "low" : (micAgc.meterLevel() > 0.9 ? "hot" : "ok");
+    }
+    if (micMeterText) {
+      micMeterText.textContent = micAgc.enabled
+        ? `自動增益 ${signed}`
+        : "自動增益：關閉";
+    }
+
+    if (micAgcBadge) {
+      const show = micAgc.isActive();
+      micAgcBadge.style.display = show ? "flex" : "none";
+      if (show) micAgcBadgeText.textContent = `麥克風自動增益 ${signed}`;
+    }
+  }
+
+  /**
+   * 設定面板開著、但沒有在唱的時候的試音迴圈。
+   *
+   * 為什麼需要：渲染迴圈在暫停時就 return 了，音量表會凍住。
+   * 但「先對著麥克風講一句話看表頭有沒有動」正是這個面板最有用的時候
+   * —— 麥克風沒插好、選錯裝置、靜音鍵沒開，在這裡三秒就看出來。
+   */
+  function startMicMeterLoop() {
+    if (micMeterTimer) return;
+    micMeterTimer = setInterval(() => {
+      if (!audioInst.paused) return;   // 演唱中由渲染迴圈負責，不要兩邊都餵
+      updateMicAgc(pitchEngine.measureRms(), performance.now());
+    }, 66);
+  }
+
+  function stopMicMeterLoop() {
+    if (!micMeterTimer) return;
+    clearInterval(micMeterTimer);
+    micMeterTimer = null;
+  }
+
+  /** 換麥克風：學到的增益是「上一支麥克風的靈敏度」，不能沿用。 */
+  function resetMicAgc() {
+    micAgc.reset();
+    lastMicFrameMs = 0;
+    window.audioEngine.setMicAutoGain(1.0);
+    renderMicMeter();
+  }
+
   /** 換歌／重唱：ducking 的信心度與暖機時間都不能跨曲沿用。 */
   function resetGuideDuck() {
     guideDucker.reset();
@@ -290,6 +391,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleBeat = document.getElementById("settleBeat");
   const settleSections = document.getElementById("settleSections");
   const settleGuide = document.getElementById("settleGuide");
+  const settleMic = document.getElementById("settleMic");
   let settlementTimer = null;
 
   function escapeHtml(text) {
@@ -359,6 +461,32 @@ document.addEventListener("DOMContentLoaded", () => {
     settleGuide.textContent = `🎚️ 導唱獨立度 ${Math.round(s.independence * 100)}%（導唱自動淡出的時間比例）`;
   }
 
+  /**
+   * 結算畫面的麥克風建議。
+   *
+   * 只在「機器持續大幅補償」時才出現，而且說的是唱歌的人能做的動作：
+   * 一直要加很多 dB＝離麥克風太遠（軟體能加的量有上限，加到底就只是放大底噪）；
+   * 一直要減很多 dB 或已經削峰＝貼太近，音色會悶而且爆音救不回來。
+   * 差不到 3 dB 就不要講話 —— 每首歌都跳一行建議會變成沒人看的雜訊。
+   */
+  function renderMicAdvice() {
+    if (!settleMic) return;
+    const s = micAgc.summary();
+    const avg = s.average_gain_db;
+    let text = "";
+    if (micAgc.enabled && avg !== null) {
+      if (s.clip_guarded) {
+        text = `🎤 麥克風輸入過大（自動降了 ${Math.abs(avg).toFixed(1)} dB 並啟動削峰保護），建議拿遠一點`;
+      } else if (avg >= 3) {
+        text = `🎤 自動增益平均 +${avg.toFixed(1)} dB —— 麥克風可以拿近一點，音色會更紮實`;
+      } else if (avg <= -3) {
+        text = `🎤 自動增益平均 ${avg.toFixed(1)} dB —— 麥克風稍微拿遠一點，會少一點噴麥`;
+      }
+    }
+    settleMic.style.display = text ? "block" : "none";
+    settleMic.textContent = text;
+  }
+
   function hideSettlement() {
     if (settlementTimer) { clearTimeout(settlementTimer); settlementTimer = null; }
     if (settlementOverlay) settlementOverlay.classList.remove("show");
@@ -422,6 +550,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settleBeat.textContent = "";
     renderSectionBreakdown(result);
     renderGuideIndependence();
+    renderMicAdvice();
     settlementOverlay.classList.add("show");
     animateScoreCount(result.score);
 
@@ -520,6 +649,10 @@ document.addEventListener("DOMContentLoaded", () => {
   function applySingMode(mode) {
     singMode = window.audioEngine.setSingMode(mode);
     const isParty = singMode === "party";
+    // 多人模式人聲會從喇叭出來，每多加 1 dB 就離回授近 1 dB，
+    // 所以自動增益的加成上限跟著收緊（configure 會立刻把現有增益夾回新範圍）。
+    micAgc.configure({ maxBoostDb: isParty ? 6 : 9 });
+    window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
     modeSoloBtn.classList.toggle("active", !isParty);
     modePartyBtn.classList.toggle("active", isParty);
     modeHint.innerHTML = isParty
@@ -570,6 +703,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const id = e.target.value;
     const ok = await window.audioEngine.setInputDevice(id);
     try { localStorage.setItem(INPUT_DEV_KEY, id); } catch (err) { }
+    // 新裝置的靈敏度跟舊的無關（動圈換成電容差得很遠），學到的增益要丟掉重學
+    if (ok) resetMicAgc();
     showToast(ok ? "🎙️ 已切換麥克風" : "⚠️ 麥克風切換失敗，沿用原裝置");
   });
 
@@ -583,7 +718,13 @@ document.addEventListener("DOMContentLoaded", () => {
   function toggleAudioSetup(show) {
     const open = show !== undefined ? show : audioSetupPanel.style.display === "none";
     audioSetupPanel.style.display = open ? "block" : "none";
-    if (open) refreshAudioDevices();
+    if (open) {
+      refreshAudioDevices();
+      renderMicMeter();
+      startMicMeterLoop();   // 面板關著就沒必要每 66ms 抓一次波形
+    } else {
+      stopMicMeterLoop();
+    }
   }
 
   audioSetupBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleAudioSetup(); });
@@ -709,6 +850,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // 先 setPitchData（它會歸零評分）再載段落，順序反了段落統計會被清掉
     pitchEngine.setSections((structure && structure.sections) || []);
     resetGuideDuck();
+    // 只清這一首的自動增益統計，學到的增益保留（見 mic-agc.js resetStats 的說明）
+    micAgc.resetStats();
 
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;
@@ -746,6 +889,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
     resetGuideDuck();
+    micAgc.resetStats();
     showIntroCard(currentSongMeta);
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;
@@ -859,6 +1003,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const frame = pitchEngine.tick(displayTime);
     // 同一份判定直接餵給自動 ducking，不重新偵測一次音高
     updateGuideDuck(frame, nowMs);
+    // 自動增益吃的是同一幀量到的麥克風原始電平（frame.rms），也不重複抓波形
+    updateMicAgc(frame.rms, nowMs);
     if (showPitch) pitchEngine.updateAndRender(displayTime);
 
     if (nowMs - lastTimeBroadcast > 400) {

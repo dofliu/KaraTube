@@ -51,6 +51,13 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "guide_duck_enabled": {"type": "bool", "default": True},
     "guide_duck_depth": {"type": "float", "default": 0.6, "min": 0.0, "max": 0.95},
 
+    # --- 麥克風自動增益 (AGC) ---
+    # 換人唱不用重調麥克風音量：機器把每個人的收音電平拉到同一個目標。
+    # -18 dBFS 是「大聲但離削峰還有餘裕」的工作點（唱歌的動態比說話大得多）。
+    # 目標值調高（往 -6 靠）會更大聲也更容易在多人模式回授，往 -30 靠則偏保守。
+    "mic_agc_enabled": {"type": "bool", "default": True},
+    "mic_agc_target_db": {"type": "float", "default": -18.0, "min": -30.0, "max": -6.0},
+
     # --- 快取 ---
     # 0 = 不限制。超過上限時從最舊、且不在佇列裡的歌開始刪。
     "cache_limit_gb": {"type": "float", "default": 0.0, "min": 0.0, "max": 2000.0},

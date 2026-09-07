@@ -15,6 +15,9 @@ class PitchEngine {
 
     this.analyser = null;
     this.audioBuffer = new Float32Array(2048);
+    // 最近一幀麥克風原始訊號的 RMS（0~1）。麥克風自動增益與音量表都吃這個值，
+    // 不各自再抓一次波形 —— getFloatTimeDomainData 每幀多抓一次是白花的成本。
+    this.lastRms = 0;
 
     this.userPitchHistory = []; // [ { time, midi } ]
     this.lastHitTime = 0;
@@ -88,17 +91,32 @@ class PitchEngine {
   }
 
   // Real-time Autocorrelation Pitch Detector
+  /**
+   * 只量麥克風原始訊號的 RMS，不做音高偵測。
+   *
+   * 自動增益與音量表在「還沒開始唱」的時候也要能動（設定面板要讓人先試音），
+   * 但那時候跑完整的自相關音高偵測是白花的 —— 它是整條迴圈裡最貴的一步。
+   */
+  measureRms() {
+    if (!this.analyser) {
+      this.lastRms = 0;
+      return 0;
+    }
+    this.analyser.getFloatTimeDomainData(this.audioBuffer);
+    let sum = 0;
+    for (let i = 0; i < this.audioBuffer.length; i++) {
+      sum += this.audioBuffer[i] * this.audioBuffer[i];
+    }
+    // 記在門檻判斷之前：自動增益要看的是「原始電平有多小」，
+    // 只有它才知道 0.010 與 0.001 是「唱得太小聲」還是「根本沒人」。
+    this.lastRms = Math.sqrt(sum / this.audioBuffer.length);
+    return this.lastRms;
+  }
+
   detectUserPitch(currentTime) {
     if (!this.analyser) return 0;
 
-    this.analyser.getFloatTimeDomainData(this.audioBuffer);
-
-    // Compute RMS amplitude to ensure user is actually singing, not background silence
-    let rms = 0;
-    for (let i = 0; i < this.audioBuffer.length; i++) {
-      rms += this.audioBuffer[i] * this.audioBuffer[i];
-    }
-    rms = Math.sqrt(rms / this.audioBuffer.length);
+    const rms = this.measureRms();
     if (rms < 0.015) return 0; // Below noise floor
 
     // Autocorrelation algorithm
@@ -176,6 +194,8 @@ class PitchEngine {
       sang: userMidi > 0,
       hit: outcome.hit,
       perfect: outcome.perfect,
+      // 麥克風原始電平：自動增益用它決定要加多少（前饋，量的是增益節點之前的訊號）
+      rms: this.lastRms,
     };
 
     // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練

@@ -20,6 +20,10 @@ class AudioEngine {
     this.delayNode = null;
     this.delayGain = null;
     this.micAnalyser = null;
+    // 自動增益的節點與目前倍率。麥克風還沒開之前 setMicAutoGain 也可能被呼叫
+    // （舞台端的迴圈不等麥克風權限），所以這裡先給合法初值。
+    this.micAgcGain = null;
+    this.micAgcLevel = 1.0;
 
     this.isMicActive = false;
   }
@@ -247,7 +251,8 @@ class AudioEngine {
       this._buildMicChain();
       this.micSource.connect(this.micHighpass);
       this.micHighpass.connect(this.micDeEss);
-      this.micDeEss.connect(this.micLimiter);
+      this.micDeEss.connect(this.micAgcGain);
+      this.micAgcGain.connect(this.micLimiter);
       this.micLimiter.connect(this.micGain);
 
       this.micGain.connect(this.monitorGain);
@@ -270,10 +275,15 @@ class AudioEngine {
    *
    * 這裡能做的事有物理上限：軟體只能把回授門檻往上推幾個 dB，
    * 真正決定成敗的是幾何（近距離收音、喇叭朝向、離開筆電機殼）。
-   * 但這三段各自處理一種實際會發生的問題：
+   * 但這四段各自處理一種實際會發生的問題：
    *   highpass —— 砍掉近接效應與桌面震動傳來的低頻
    *   deEss    —— 壓 5.5kHz 以上，回授自激與齒音都集中在這帶
+   *   agcGain  —— 自動增益：把不同人、不同距離的音量拉到差不多（mic-agc.js 算，這裡只套）
    *   limiter  —— 迴路增益短暫超過 1 時把它壓住，不讓它一路長大成嘯叫
+   *
+   * 順序很重要：自動增益一定要在 limiter **之前**。
+   * 反過來的話，AGC 加上去的增益就沒有任何東西擋著，
+   * 判斷失誤（突然的咳嗽、拍打麥克風）會直接變成削峰的爆音。
    */
   _buildMicChain() {
     if (this.micHighpass) return;
@@ -287,6 +297,13 @@ class AudioEngine {
     this.micDeEss.type = "highshelf";
     this.micDeEss.frequency.value = 5500;
     this.micDeEss.gain.value = -5;
+
+    // 麥克風自動增益的倍率。刻意跟 micGain（使用者的麥克風音量滑桿）分開兩個節點：
+    // 使用者拉的音量與機器的自動調整是兩件事，混在同一個 gain 上，
+    // 自動調整動過之後滑桿的刻度就跟實際音量對不起來了。
+    this.micAgcGain = this.ctx.createGain();
+    this.micAgcGain.gain.value = 1.0;
+    this.micAgcLevel = 1.0;
 
     this.micLimiter = this.ctx.createDynamicsCompressor();
     this.micLimiter.threshold.value = -14;
@@ -326,6 +343,25 @@ class AudioEngine {
     if (this.micGain && this.ctx) {
       this.micGain.gain.setTargetAtTime(volume, this.ctx.currentTime, 0.05);
     }
+  }
+
+  /**
+   * 麥克風自動增益：套上這一幀的倍率。
+   *
+   * 由 mic-agc.js 算出來（它量的是 micAnalyser 上的原始訊號，在這個節點之前），
+   * 這裡只負責送進音訊圖。時間常數 15ms：夠平滑不會有 zipper noise，
+   * 又不會在削峰保護真的要降的時候再多壓一層延遲上去。
+   */
+  setMicAutoGain(level) {
+    const clamped = Math.max(0.1, Math.min(8, Number(level)));
+    if (!Number.isFinite(clamped)) return this.micAgcLevel;
+    // 每一幀都被呼叫，值沒變就不要再排一次（容忍區內幾乎每幀都沒變）
+    if (clamped === this.micAgcLevel) return clamped;
+    this.micAgcLevel = clamped;
+    if (this.micAgcGain && this.ctx) {
+      this.micAgcGain.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.015);
+    }
+    return clamped;
   }
 
   // --- 音訊裝置選擇 ---

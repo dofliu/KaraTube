@@ -815,3 +815,69 @@ body.hide-pitch .pitch-visualizer-container {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* 麥克風自動增益徽章。
+   疊在導唱淡出徽章之上（同一欄第三層），三個同時亮著也不會互相蓋掉。
+   顏色刻意用黃色而不是青色：導唱淡出是「機器在放手」，
+   自動增益是「機器在補償你的收音」，兩件事同時發生時要分得出來是哪一個在動。 */
+.mic-agc-badge {
+  position: absolute;
+  bottom: 112px;
+  right: 40px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+  border-left: 3px solid var(--accent-yellow);
+  animation: guideDuckFadeIn 0.4s ease-out;
+}
+
+.mic-agc-icon {
+  font-size: 14px;
+}
+
+/* 音訊面板裡的麥克風音量表。
+   三段顏色不是裝飾：軟體幫不了「太遠」與「太近」，只有人能動，
+   所以這兩種狀態要用顏色講出來，而不是只給一個看不出好壞的數字。 */
+.mic-meter-row {
+  gap: 8px;
+}
+
+.mic-meter {
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.mic-meter i {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  /* 60ms：跟得上說話的音節，又不會像瞬時表一樣抖到看不清 */
+  transition: width 0.06s linear, background 0.2s ease;
+  background: var(--accent-cyan);
+}
+
+.mic-meter i[data-zone="low"] { background: rgba(255, 255, 255, 0.35); }
+.mic-meter i[data-zone="ok"]  { background: var(--accent-cyan); }
+.mic-meter i[data-zone="hot"] { background: var(--accent-pink); }
+
+.mic-meter-text {
+  flex: 0 0 96px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+  font-variant-numeric: tabular-nums;
+}

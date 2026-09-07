@@ -1173,6 +1173,8 @@ document.addEventListener("DOMContentLoaded", () => {
     loudness_target_lufs: { label: "目標響度", unit: " LUFS", step: 0.5 },
     guide_duck_enabled: { label: "導唱自動淡出", hint: "唱穩了自動變小聲" },
     guide_duck_depth: { label: "淡出深度", hint: "最多壓多少", percent: true },
+    mic_agc_enabled: { label: "麥克風自動增益", hint: "換人唱免調音量" },
+    mic_agc_target_db: { label: "目標收音電平", unit: " dBFS", step: 1 },
     cache_limit_gb: { label: "快取上限", unit: " GB", hint: "0 = 不限制", step: 1 },
     cache_auto_cleanup: { label: "自動清理最舊的歌", hint: "超過上限時" },
     whisper_model: { label: "歌詞辨識模型", hint: "Whisper" },
@@ -1203,6 +1205,12 @@ document.addEventListener("DOMContentLoaded", () => {
       hint: "唱得穩的時候導唱人聲自動退到背景，走音或忘詞時立刻回來扶一把（慢慢退、立刻回）。" +
             "導唱音量本來就轉到 0（純伴奏）時這一段不作用。",
       keys: ["guide_duck_enabled", "guide_duck_depth"],
+    },
+    {
+      title: "🎤 麥克風自動增益",
+      hint: "換人唱不用重調麥克風音量：機器把每個人的收音電平拉到同一個目標（要降立刻降、要升慢慢升）。" +
+            "安靜的時候絕不加大 —— 否則底噪會被一起放大。舞台端按 S 可以看即時電平表。",
+      keys: ["mic_agc_enabled", "mic_agc_target_db"],
     },
     {
       title: "🗂️ 快取",

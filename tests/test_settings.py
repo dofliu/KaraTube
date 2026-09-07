@@ -120,6 +120,17 @@ def test_guide_duck_defaults_on_with_a_safety_net(settings):
     assert settings.update({"guide_duck_depth": -1})["guide_duck_depth"] == 0.0
 
 
+def test_mic_agc_defaults_leave_headroom(settings):
+    """麥克風自動增益預設開啟，目標電平必須留削峰餘裕。"""
+    assert settings.get("mic_agc_enabled") is True
+    target = settings.get("mic_agc_target_db")
+    # 唱歌的動態比說話大，目標值太靠近 0 dBFS 副歌那一下就會削峰
+    assert -30.0 <= target <= -6.0
+    # 越界夾回範圍而不是報錯：這個滑桿在手機上很容易滑到底
+    assert settings.update({"mic_agc_target_db": 0.0})["mic_agc_target_db"] == -6.0
+    assert settings.update({"mic_agc_target_db": -99})["mic_agc_target_db"] == -30.0
+
+
 def test_stage_options_are_milliseconds(settings):
     settings.update({"intro_card_seconds": 5.5, "settlement_enabled": False})
     options = settings.stage_options()

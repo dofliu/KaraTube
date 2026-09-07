@@ -559,6 +559,15 @@ body.hide-pitch .pitch-visualizer-container {
   font-variant-numeric: tabular-nums;
 }
 
+/* 導唱獨立度：位置在段落長條圖與個人最佳之間，是補充資訊不搶主分數的視覺 */
+.settlement-guide {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  margin: 10px 0 4px;
+  opacity: 0.9;
+}
+
 .settlement-best {
   font-size: 17px;
   font-weight: 700;
@@ -774,4 +783,35 @@ body.hide-pitch .pitch-visualizer-container {
 @keyframes practiceSpin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
+}
+
+/* 導唱自動淡出徽章。
+   放在練唱徽章正上方（同一欄），兩個同時亮著時不會疊在一起。
+   刻意做得比練唱徽章低調（無邊框、半透明）—— 這是狀態提示不是警告。 */
+.guide-duck-badge {
+  position: absolute;
+  bottom: 68px;
+  right: 40px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  border-left: 3px solid var(--accent-cyan);
+  animation: guideDuckFadeIn 0.4s ease-out;
+}
+
+.guide-duck-icon {
+  font-size: 14px;
+}
+
+@keyframes guideDuckFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }

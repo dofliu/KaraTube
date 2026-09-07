@@ -45,6 +45,12 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # -14 LUFS 是串流平台的通用目標，也是 KTV 包廂裡不刺耳又夠有力的音量
     "loudness_target_lufs": {"type": "float", "default": -14.0, "min": -30.0, "max": -5.0},
 
+    # --- 導唱音量自動 ducking ---
+    # 唱穩了導唱人聲自動退到背景，唱不下去它自己回來。深度 = 最多壓多少：
+    # 0.6 表示最低降到原本的 40%，留一點在背景當安全網比整個消音好用。
+    "guide_duck_enabled": {"type": "bool", "default": True},
+    "guide_duck_depth": {"type": "float", "default": 0.6, "min": 0.0, "max": 0.95},
+
     # --- 快取 ---
     # 0 = 不限制。超過上限時從最舊、且不在佇列裡的歌開始刪。
     "cache_limit_gb": {"type": "float", "default": 0.0, "min": 0.0, "max": 2000.0},

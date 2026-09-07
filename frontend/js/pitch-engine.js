@@ -148,6 +148,10 @@ class PitchEngine {
   /**
    * 每一幀都要呼叫的評分心跳：偵測歌聲音高、對照導唱音符計分。
    * 與畫面渲染分離 —— 音準線隱藏時評分照常進行，唱畢結算才公平。
+   *
+   * 回傳這一幀的判定 `{ hasNote, sang, hit, perfect }`：
+   * 段落評分與導唱自動 ducking 都吃這份判定，不各自再偵測一次音高
+   * （偵測是整條迴圈裡最貴的一步，而且兩邊算出不同結果的話會非常難查）。
    */
   tick(currentTime) {
     const userMidi = this.detectUserPitch(currentTime);
@@ -167,13 +171,17 @@ class PitchEngine {
       outcome = this.evaluateSingingScore(currentTime, userMidi, activeNote);
     }
 
-    // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練
-    this.sectionScorer.count(currentTime, {
+    const frame = {
       hasNote: !!activeNote,
       sang: userMidi > 0,
       hit: outcome.hit,
       perfect: outcome.perfect,
-    });
+    };
+
+    // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練
+    this.sectionScorer.count(currentTime, frame);
+
+    return frame;
   }
 
   /**

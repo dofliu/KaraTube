@@ -69,6 +69,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const pitchCanvas = document.getElementById("pitchCanvas");
   const practiceBadge = document.getElementById("practiceBadge");
   const practiceBadgeText = document.getElementById("practiceBadgeText");
+  const guideDuckBadge = document.getElementById("guideDuckBadge");
+  const guideDuckBadgeText = document.getElementById("guideDuckBadgeText");
   const audioPromptOverlay = document.getElementById("audioPromptOverlay");
   const audioSetupBtn = document.getElementById("audioSetupBtn");
   const audioSetupPanel = document.getElementById("audioSetupPanel");
@@ -84,6 +86,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
   const pitchEngine = new PitchEngine(pitchCanvas, scoreValueEl, comboValueEl);
   const clock = new MediaClock(audioInst);
+  // 導唱音量自動 ducking：唱穩了導唱自己退到背景，唱不下去它馬上回來。
+  // 參數由設定頁決定，這裡先放預設值，收到 SETTINGS_UPDATE 再覆寫。
+  const guideDucker = new GuideDucker({ enabled: true, depth: 0.6 });
 
   const OFFSET_STORAGE_KEY = "karatube_lyric_offset_ms";
   const PITCH_STORAGE_KEY = "karatube_show_pitch";
@@ -118,6 +123,12 @@ document.addEventListener("DOMContentLoaded", () => {
   let introCardEnabled = true;
   let settlementMs = 9000;
   let settlementEnabled = true;
+
+  // 使用者設定的導唱音量（0 = 純伴奏）。自動 ducking 只在導唱真的有開的時候才有意義，
+  // 所以要記住這個基準值來決定要不要跑那一段。
+  let guideBaseVolume = 0;
+  let lastGuideFrameMs = 0;
+  let lastGuideBadgeMs = 0;
 
   let outputLatency = 0.05;
   let syncToastTimer = null;
@@ -189,9 +200,66 @@ document.addEventListener("DOMContentLoaded", () => {
     if (s.intro_card_seconds !== undefined) introCardMs = Math.round(s.intro_card_seconds * 1000);
     if (s.settlement_enabled !== undefined) settlementEnabled = !!s.settlement_enabled;
     if (s.settlement_seconds !== undefined) settlementMs = Math.round(s.settlement_seconds * 1000);
+    if (s.guide_duck_enabled !== undefined || s.guide_duck_depth !== undefined) {
+      guideDucker.configure({ enabled: s.guide_duck_enabled, depth: s.guide_duck_depth });
+      applyGuideDuck();
+    }
     // 響度目標或開關改了，正在唱的這首要立刻跟上，不用等下一首
     if (currentSongId) applyLoudness(currentSongId);
   });
+
+  // --- 導唱音量自動 ducking ---
+  // 每一幀把評分心跳的判定餵給 GuideDucker，拿回導唱該用的倍率送進音訊圖。
+  function updateGuideDuck(frame, nowMs) {
+    // 導唱本來就關著（純伴奏）就不用算：這時候 ducking 沒有任何可退的東西，
+    // 而且徽章亮起來只會讓人以為機器把導唱吃掉了。
+    if (guideBaseVolume <= 0.01) {
+      if (guideDucker.level !== 1.0) guideDucker.reset();
+      // 下次導唱被打開時要從新的一幀開始算 dt，不能沿用純伴奏那段的時間戳
+      lastGuideFrameMs = 0;
+      applyGuideDuck();
+      updateGuideDuckBadge(nowMs, false);
+      return;
+    }
+    const dt = lastGuideFrameMs ? (nowMs - lastGuideFrameMs) / 1000 : 0;
+    lastGuideFrameMs = nowMs;
+    guideDucker.update(dt, frame);
+    applyGuideDuck();
+    updateGuideDuckBadge(nowMs, true);
+  }
+
+  function applyGuideDuck() {
+    window.audioEngine.setGuideDuck(guideDucker.enabled ? guideDucker.level : 1.0);
+  }
+
+  /**
+   * 舞台徽章：導唱退場時亮出來，並顯示現在剩多少。
+   *
+   * 沒有這個提示的話，導唱變小聲會被當成「機器出問題了」——
+   * 商用機同樣會在畫面角落標示導唱狀態。文字每 250ms 才更新一次，
+   * 60fps 直接寫 textContent 會讓瀏覽器每幀重排一次版面。
+   */
+  function updateGuideDuckBadge(nowMs, active) {
+    if (!guideDuckBadge) return;
+    const show = active && guideDucker.isDucking();
+    if (!show) {
+      if (guideDuckBadge.style.display !== "none") guideDuckBadge.style.display = "none";
+      return;
+    }
+    guideDuckBadge.style.display = "flex";
+    if (nowMs - lastGuideBadgeMs > 250) {
+      lastGuideBadgeMs = nowMs;
+      guideDuckBadgeText.textContent = `導唱自動淡出 ${Math.round(guideDucker.level * 100)}%`;
+    }
+  }
+
+  /** 換歌／重唱：ducking 的信心度與暖機時間都不能跨曲沿用。 */
+  function resetGuideDuck() {
+    guideDucker.reset();
+    lastGuideFrameMs = 0;
+    applyGuideDuck();
+    updateGuideDuckBadge(performance.now(), false);
+  }
 
   // --- 自動音量平衡 (EBU R128) ---
   // 伺服器已依這首歌的整合響度與設定的目標值算好增益，這裡只負責套上去。
@@ -221,6 +289,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleBest = document.getElementById("settleBest");
   const settleBeat = document.getElementById("settleBeat");
   const settleSections = document.getElementById("settleSections");
+  const settleGuide = document.getElementById("settleGuide");
   let settlementTimer = null;
 
   function escapeHtml(text) {
@@ -269,6 +338,25 @@ document.addEventListener("DOMContentLoaded", () => {
     settleSections.innerHTML =
       `<div class="settlement-label">📊 段落表現</div>${verdict}` +
       `<div class="settlement-section-bars">${bars}</div>`;
+  }
+
+  /**
+   * 結算畫面的「導唱獨立度」：這首歌有多少比例的時間你不需要導唱帶。
+   *
+   * 比總分更能說明進步 —— 分數會被歌難不難影響，
+   * 但「上週副歌整段靠導唱，這週導唱退場了七成」是很直接的回饋。
+   * 導唱沒開、或唱的時間太短不足以判斷時就整塊不顯示，不要硬給一個數字。
+   */
+  function renderGuideIndependence() {
+    if (!settleGuide) return;
+    const s = guideDucker.summary();
+    if (!guideDucker.enabled || guideBaseVolume <= 0.01 || s.independence === null) {
+      settleGuide.style.display = "none";
+      settleGuide.textContent = "";
+      return;
+    }
+    settleGuide.style.display = "block";
+    settleGuide.textContent = `🎚️ 導唱獨立度 ${Math.round(s.independence * 100)}%（導唱自動淡出的時間比例）`;
   }
 
   function hideSettlement() {
@@ -333,6 +421,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settleBest.textContent = "";
     settleBeat.textContent = "";
     renderSectionBreakdown(result);
+    renderGuideIndependence();
     settlementOverlay.classList.add("show");
     animateScoreCount(result.score);
 
@@ -539,7 +628,8 @@ document.addEventListener("DOMContentLoaded", () => {
       nextSongToast.style.display = "none";
     }
 
-    window.audioEngine.setVocalVolume(state.vocal_volume !== undefined ? state.vocal_volume : 0.0);
+    guideBaseVolume = state.vocal_volume !== undefined ? Number(state.vocal_volume) || 0 : 0.0;
+    window.audioEngine.setVocalVolume(guideBaseVolume);
     window.audioEngine.setMusicVolume(state.music_volume !== undefined ? state.music_volume : 1.0);
     window.audioEngine.setMicVolume(state.mic_volume !== undefined ? state.mic_volume : 1.0);
     window.audioEngine.setMicReverb(state.mic_reverb !== undefined ? state.mic_reverb : 0.25);
@@ -584,6 +674,7 @@ document.addEventListener("DOMContentLoaded", () => {
       karaokeRenderer.setLyrics([]);
       pitchEngine.setPitchData(null);
       pitchEngine.setSections([]);
+      resetGuideDuck();
     }
   }
 
@@ -617,6 +708,7 @@ document.addEventListener("DOMContentLoaded", () => {
     pitchEngine.setPitchData(pitch);
     // 先 setPitchData（它會歸零評分）再載段落，順序反了段落統計會被清掉
     pitchEngine.setSections((structure && structure.sections) || []);
+    resetGuideDuck();
 
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;
@@ -653,6 +745,7 @@ document.addEventListener("DOMContentLoaded", () => {
     hideSettlement();
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
+    resetGuideDuck();
     showIntroCard(currentSongMeta);
     videoBg.currentTime = 0;
     audioInst.currentTime = 0;
@@ -763,7 +856,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     karaokeRenderer.update(displayTime);
     // 評分心跳與畫面分離：音準線隱藏時照樣計分，唱畢結算才公平
-    pitchEngine.tick(displayTime);
+    const frame = pitchEngine.tick(displayTime);
+    // 同一份判定直接餵給自動 ducking，不重新偵測一次音高
+    updateGuideDuck(frame, nowMs);
     if (showPitch) pitchEngine.updateAndRender(displayTime);
 
     if (nowMs - lastTimeBroadcast > 400) {

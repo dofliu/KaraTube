@@ -51,6 +51,15 @@ class AudioEngine {
       this.gainVoc.gain.value = 0.0; // Default to accompaniment only
       this.gainVoc.connect(this.normGain);
 
+      // 導唱自動 ducking 的倍率，串在人聲軌與它的音量之前。
+      // 刻意用兩個節點而不是把倍率乘進 gainVoc：
+      // 使用者拉的導唱音量與機器的自動退場是兩件事，混在同一個 gain 上，
+      // 唱到一半自動退場後再去動滑桿，滑桿的刻度就會跟實際音量對不起來。
+      this.guideDuckGain = this.ctx.createGain();
+      this.guideDuckGain.gain.value = 1.0;
+      this.guideDuckGain.connect(this.gainVoc);
+      this.guideDuckLevel = 1.0;
+
       this._initReverb();
     }
 
@@ -84,8 +93,27 @@ class AudioEngine {
 
     if (!this.sourceVoc) {
       this.sourceVoc = this.ctx.createMediaElementSource(this.audioVoc);
-      this.sourceVoc.connect(this.gainVoc);
+      this.sourceVoc.connect(this.guideDuckGain);
     }
+  }
+
+  /**
+   * 導唱自動 ducking：套上這一幀的倍率（0~1）。
+   *
+   * 由 guide-ducker.js 算出來，這裡只負責送進音訊圖。
+   * 每幀呼叫，所以用很短的時間常數（20ms）—— 夠平滑不會有 zipper noise，
+   * 又不會在真的需要救援時再多壓一層延遲上去。
+   */
+  setGuideDuck(level) {
+    const clamped = Math.max(0, Math.min(1, Number(level)));
+    if (!Number.isFinite(clamped)) return this.guideDuckLevel;
+    // 每一幀都被呼叫，值沒變就不要再排一次 —— 導唱關著時等於整條路徑不做事
+    if (clamped === this.guideDuckLevel) return clamped;
+    this.guideDuckLevel = clamped;
+    if (this.guideDuckGain && this.ctx) {
+      this.guideDuckGain.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.02);
+    }
+    return clamped;
   }
 
   setVocalVolume(volume) {

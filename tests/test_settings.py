@@ -110,6 +110,16 @@ def test_cache_limit_bytes(settings):
     assert settings.cache_limit_bytes() == 2 * 1024 ** 3
 
 
+def test_guide_duck_defaults_on_with_a_safety_net(settings):
+    """導唱自動淡出預設開啟，但不會把導唱整個消音（永遠留一點在背景）。"""
+    assert settings.get("guide_duck_enabled") is True
+    depth = settings.get("guide_duck_depth")
+    assert 0.0 < depth < 1.0
+    # 深度上限刻意不到 1.0：忘詞時導唱完全消失就不是安全網了
+    assert settings.update({"guide_duck_depth": 1.5})["guide_duck_depth"] == 0.95
+    assert settings.update({"guide_duck_depth": -1})["guide_duck_depth"] == 0.0
+
+
 def test_stage_options_are_milliseconds(settings):
     settings.update({"intro_card_seconds": 5.5, "settlement_enabled": False})
     options = settings.stage_options()

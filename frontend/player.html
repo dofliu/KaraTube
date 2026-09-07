@@ -61,6 +61,12 @@
       <span id="practiceBadgeText">練唱循環</span>
     </div>
 
+    <!-- 導唱自動淡出徽章：導唱被自動壓小時亮，免得被當成機器把導唱吃掉了 -->
+    <div id="guideDuckBadge" class="guide-duck-badge" style="display: none;">
+      <span class="guide-duck-icon">🎚️</span>
+      <span id="guideDuckBadgeText">導唱自動淡出</span>
+    </div>
+
     <!-- 導唱片頭卡：商用 KTV 的「演唱者：XXX」開場卡，前奏時亮 8 秒 -->
     <div id="introCard" class="intro-card">
       <div class="intro-kicker">♪ 接下來演唱</div>
@@ -93,6 +99,8 @@
         </div>
         <!-- 段落評分：每段命中率長條圖 + 最佳/待加強段落點名（由 player.js 產生） -->
         <div id="settleSections" class="settlement-sections" style="display: none;"></div>
+        <!-- 導唱獨立度：導唱自動淡出的時間比例（導唱沒開或唱太短就不顯示） -->
+        <div id="settleGuide" class="settlement-guide" style="display: none;"></div>
         <div id="settleBest" class="settlement-best"></div>
         <div id="settleBeat" class="settlement-beat"></div>
         <div class="settlement-hint">點擊畫面進下一首</div>
@@ -140,6 +148,8 @@
   <!-- section-scorer.js 必須在 pitch-engine.js 之前：後者用它做段落評分與等級換算 -->
   <script src="/js/section-scorer.js"></script>
   <script src="/js/pitch-engine.js"></script>
+  <!-- 導唱自動 ducking 的純邏輯，player.js 會 new GuideDucker() -->
+  <script src="/js/guide-ducker.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

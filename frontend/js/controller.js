@@ -1171,6 +1171,8 @@ document.addEventListener("DOMContentLoaded", () => {
     default_show_pitch: { label: "顯示音準導唱線" },
     loudness_normalize: { label: "啟用自動音量平衡", hint: "各首歌一樣大聲" },
     loudness_target_lufs: { label: "目標響度", unit: " LUFS", step: 0.5 },
+    guide_duck_enabled: { label: "導唱自動淡出", hint: "唱穩了自動變小聲" },
+    guide_duck_depth: { label: "淡出深度", hint: "最多壓多少", percent: true },
     cache_limit_gb: { label: "快取上限", unit: " GB", hint: "0 = 不限制", step: 1 },
     cache_auto_cleanup: { label: "自動清理最舊的歌", hint: "超過上限時" },
     whisper_model: { label: "歌詞辨識模型", hint: "Whisper" },
@@ -1195,6 +1197,12 @@ document.addEventListener("DOMContentLoaded", () => {
       hint: "每首歌在處理時量一次整合響度，播放時自動補到同一個目標，" +
             "不用再為了下一首手動轉音量。-14 LUFS 是串流平台通用值。",
       keys: ["loudness_normalize", "loudness_target_lufs"],
+    },
+    {
+      title: "🎚️ 導唱自動淡出",
+      hint: "唱得穩的時候導唱人聲自動退到背景，走音或忘詞時立刻回來扶一把（慢慢退、立刻回）。" +
+            "導唱音量本來就轉到 0（純伴奏）時這一段不作用。",
+      keys: ["guide_duck_enabled", "guide_duck_depth"],
     },
     {
       title: "🗂️ 快取",

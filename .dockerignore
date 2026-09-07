@@ -1,0 +1,23 @@
+# 建映像時不要把這些送進 build context。
+# cache/ 是最重要的一條：一台用過的機器那裡有好幾 GB 的 MV 與音訊，
+# 沒排除的話光是「傳送 context 給 docker daemon」就要等很久。
+cache/
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.env
+tests/
+docs/
+*.md
+!README.md
+.dockerignore
+Dockerfile
+docker-compose.yml

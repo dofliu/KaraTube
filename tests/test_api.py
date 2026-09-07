@@ -8,7 +8,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from backend import main
 from backend.config import SONGS_DIR
+from backend.version import __version__
 from backend.main import (
     app,
     favorites,
@@ -54,6 +56,38 @@ def test_server_info():
     data = res.json()
     assert data["status"] == "online"
     assert "web_url" in data and "player_url" in data
+    assert data["version"] == __version__
+
+
+def test_version_endpoint():
+    res = client.get("/api/version")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["name"] == "KaraTube"
+    assert data["version"] == __version__
+
+
+def test_health_endpoint():
+    """容器健康檢查打的就是這支，形狀不能變。"""
+    res = client.get("/api/health")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+
+def test_public_base_url_prefers_configured_host(monkeypatch):
+    """
+    容器與反向代理情境：自動偵測到的 bridge IP 手機連不進去，
+    所以設了 KARATUBE_PUBLIC_HOST/PORT 就要以它們為準；80/443 不寫進網址。
+    """
+    monkeypatch.setattr(main, "PUBLIC_HOST", "karatube.local")
+    monkeypatch.setattr(main, "PUBLIC_PORT", 80)
+    assert main.public_base_url() == "http://karatube.local"
+
+    monkeypatch.setattr(main, "PUBLIC_PORT", 443)
+    assert main.public_base_url() == "https://karatube.local"
+
+    monkeypatch.setattr(main, "PUBLIC_PORT", 9000)
+    assert main.public_base_url() == "http://karatube.local:9000"
 
 
 def test_qrcode_returns_png():

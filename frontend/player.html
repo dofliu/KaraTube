@@ -67,6 +67,12 @@
       <span id="guideDuckBadgeText">導唱自動淡出</span>
     </div>
 
+    <!-- 麥克風自動增益徽章：機器真的在補償（±1 dB 以上）時亮，讓人知道音量是誰在動 -->
+    <div id="micAgcBadge" class="mic-agc-badge" style="display: none;">
+      <span class="mic-agc-icon">🎤</span>
+      <span id="micAgcBadgeText">麥克風自動增益</span>
+    </div>
+
     <!-- 導唱片頭卡：商用 KTV 的「演唱者：XXX」開場卡，前奏時亮 8 秒 -->
     <div id="introCard" class="intro-card">
       <div class="intro-kicker">♪ 接下來演唱</div>
@@ -101,6 +107,8 @@
         <div id="settleSections" class="settlement-sections" style="display: none;"></div>
         <!-- 導唱獨立度：導唱自動淡出的時間比例（導唱沒開或唱太短就不顯示） -->
         <div id="settleGuide" class="settlement-guide" style="display: none;"></div>
+        <!-- 麥克風建議：自動增益一直大幅補償時，提示拿近／拿遠一點 -->
+        <div id="settleMic" class="settlement-guide" style="display: none;"></div>
         <div id="settleBest" class="settlement-best"></div>
         <div id="settleBeat" class="settlement-beat"></div>
         <div class="settlement-hint">點擊畫面進下一首</div>
@@ -134,6 +142,17 @@
         <select id="inputDeviceSelect"></select>
       </div>
 
+      <!-- 麥克風音量表與自動增益讀數：對著麥克風講一句話就知道有沒有收到聲音 -->
+      <div class="stage-panel-row mic-meter-row">
+        <label>📶 收音電平</label>
+        <div class="mic-meter"><i id="micMeterFill" data-zone="low" style="width: 0%"></i></div>
+        <span id="micMeterText" class="mic-meter-text">自動增益 +0.0 dB</span>
+      </div>
+      <p class="stage-panel-hint">
+        表頭一直貼在左邊＝沒收到聲音或唱太遠；一直頂到右邊＝太近，會削峰。
+        自動增益只在有人唱的時候調整（安靜時絕不加大，否則底噪會被一起放大）。
+      </p>
+
       <div class="stage-panel-row">
         <label>🔈 喇叭輸出</label>
         <select id="outputDeviceSelect"></select>
@@ -150,6 +169,8 @@
   <script src="/js/pitch-engine.js"></script>
   <!-- 導唱自動 ducking 的純邏輯，player.js 會 new GuideDucker() -->
   <script src="/js/guide-ducker.js"></script>
+  <!-- 麥克風自動增益的純邏輯，player.js 會 new MicAutoGain() -->
+  <script src="/js/mic-agc.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

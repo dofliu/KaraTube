@@ -6,6 +6,8 @@ from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
 from backend.services.song_history import SongHistory
+# 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
+from backend.services.settings import HARMONY_STYLE_CHOICES
 
 logger = logging.getLogger("KaraTube.QueueManager")
 
@@ -56,6 +58,11 @@ class QueueManager:
         self.mic_echo_time_ms: int = 280
         # 高頻柔化量。齒音與回授自激都集中在 5.5kHz 以上。
         self.mic_tone: float = 0.4
+        # 和聲（雙聲部）。風格是「音階上的度數」而不是固定半音數，
+        # 實際移調量由舞台端依這首歌的調性決定（frontend/js/harmony-planner.js）。
+        self.harmony_enabled: bool = False
+        self.harmony_style: str = "third"
+        self.harmony_level: float = 0.5
         # 演唱模式：solo = 人聲不進喇叭（筆電內建麥克風唯一安全的用法）
         #           party = 人聲外放，需要外接喇叭
         self.sing_mode: str = "solo"
@@ -97,6 +104,9 @@ class QueueManager:
             "mic_echo_repeat": self.mic_echo_repeat,
             "mic_echo_time_ms": self.mic_echo_time_ms,
             "mic_tone": self.mic_tone,
+            "harmony_enabled": self.harmony_enabled,
+            "harmony_style": self.harmony_style,
+            "harmony_level": self.harmony_level,
             "sing_mode": self.sing_mode,
             "lyric_offset_ms": self.lyric_offset_ms,
             "show_pitch": self.show_pitch,
@@ -358,6 +368,15 @@ class QueueManager:
             self.mic_echo_time_ms = int(max(50, min(800, int(params["mic_echo_time_ms"]))))
         if "mic_tone" in params:
             self.mic_tone = max(0.0, min(1.0, float(params["mic_tone"])))
+        if "harmony_enabled" in params:
+            self.harmony_enabled = bool(params["harmony_enabled"])
+        if "harmony_style" in params:
+            # 認不得的風格保留原值：舊版舞台端送過來的字串不該讓和聲變成隨機風格
+            style = str(params["harmony_style"])
+            if style in HARMONY_STYLE_CHOICES:
+                self.harmony_style = style
+        if "harmony_level" in params:
+            self.harmony_level = max(0.0, min(1.0, float(params["harmony_level"])))
         if "sing_mode" in params:
             self.sing_mode = "party" if params["sing_mode"] == "party" else "solo"
         if "lyric_offset_ms" in params:

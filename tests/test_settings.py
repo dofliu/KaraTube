@@ -136,3 +136,18 @@ def test_stage_options_are_milliseconds(settings):
     options = settings.stage_options()
     assert options["intro_card_ms"] == 5500
     assert options["settlement_enabled"] is False
+
+
+def test_harmony_defaults_off_and_never_louder_than_lead(settings):
+    """和聲預設關著；打開後的音量也不該蓋過主唱。"""
+    assert settings.get("default_harmony_enabled") is False
+    assert settings.get("default_harmony_style") == "third"
+    assert 0.0 < settings.get("default_harmony_level") < 1.0
+    # 認不得的聲部不套用（choice 欄位回 None，呼叫端保留原值）
+    assert settings.update({"default_harmony_style": "亂送的"})["default_harmony_style"] == "third"
+    assert settings.update({"default_harmony_style": "duet"})["default_harmony_style"] == "duet"
+    # 和聲的三個欄位都要能推進 QueueManager 的控制參數
+    defaults = settings.control_defaults()
+    assert defaults["harmony_style"] == "duet"
+    assert "harmony_enabled" in defaults
+    assert "harmony_level" in defaults

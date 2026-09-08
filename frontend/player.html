@@ -73,6 +73,12 @@
       <span id="micAgcBadgeText">麥克風自動增益</span>
     </div>
 
+    <!-- 和聲徽章：和聲開著時常駐，並顯示判到的調性（和聲不對時這是唯一有用的線索） -->
+    <div id="harmonyBadge" class="harmony-badge" style="display: none;">
+      <span class="harmony-icon">🎶</span>
+      <span id="harmonyBadgeText">和聲</span>
+    </div>
+
     <!-- 導唱片頭卡：商用 KTV 的「演唱者：XXX」開場卡，前奏時亮 8 秒 -->
     <div id="introCard" class="intro-card">
       <div class="intro-kicker">♪ 接下來演唱</div>
@@ -171,6 +177,10 @@
   <script src="/js/guide-ducker.js"></script>
   <!-- 麥克風自動增益的純邏輯，player.js 會 new MicAutoGain() -->
   <script src="/js/mic-agc.js"></script>
+  <!-- 和聲規劃的純邏輯（調性判定與音階度數），player.js 會 new HarmonyPlanner()。
+       實際移調的 harmony-worklet.js 不從這裡載入 —— 它是 AudioWorklet 模組，
+       由 audio-effects.js 用 audioWorklet.addModule() 載進音訊執行緒。 -->
+  <script src="/js/harmony-planner.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

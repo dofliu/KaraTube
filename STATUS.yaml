@@ -4,7 +4,7 @@ category: personal_tools
 progress: 100
 status: active
 last_updated: "2026-09-08"
-next_milestone: "v1.2.0 打標籤發布；後續選配功能（和聲效果、對唱模式、情境背景、多包廂）見 docs/ROADMAP.md"
+next_milestone: "v1.3.0 打標籤發布；後續選配功能（對唱模式、情境背景、多包廂）見 docs/ROADMAP.md"
 technologies:
   - Python
   - Docker
@@ -15,8 +15,9 @@ technologies:
   - Whisper
   - librosa
   - Web Audio API
+  - AudioWorklet
 outputs:
   - tool
-description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment, EBU R128 loudness normalization, real-time pitch scoring with per-section breakdown, confidence-driven guide-vocal auto-ducking, feed-forward microphone auto gain control, an auto-classified browsable song library and off-peak batch pre-processing that yields the machine the moment someone sings"
-description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、EBU R128 自動音量平衡、即時音準導唱與評分（含唱畢段落評分），導唱人聲隨演唱穩定度自動淡出，麥克風自動增益讓換人唱不必重調音量，曲庫自動依語言別與歌手分類瀏覽，整張播放清單可排程在半夜先跑好（有人唱歌立刻讓開）"
-key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；自動音量平衡：自實作 ITU-R BS.1770-4 K 加權與雙重閘門，48kHz 係數與規格書一致到小數第 9 位、-20 dBFS 1kHz 正弦量得 -19.99 LUFS；練唱模式：歌詞重複結構分析自動找副歌（含長度守門與單行鉤子退路）＋ A-B 區段循環與段落跳轉；段落評分：沿用曲式分段與逐幀判定，二分搜尋歸段累計，含「音符不足 0.5 秒不評分」與「全距 < 5 個百分點不點名」兩道守門；曲庫分類：歌名/頻道名/歌詞三來源判語言（假名與諺文看比例、粵台語需 ≥2 種方言用字），結果快取進 metadata 只算一次；導唱自動 ducking：沿用評分心跳的逐幀判定，慢退（1.6s）快回（0.22s）＋ Schmitt 遲滯 0.55/0.35 ＋ 暖機 3 秒 ＋ 深度上限 0.95（永遠留安全網），時間常數式 EMA 使 30fps 與 120fps 行為一致；麥克風自動增益：前饋量測（analyser 在增益節點之前，不做回授免得與房間殘響耦合成呼吸迴路），噪音閘門 -45 dBFS 保證安靜時絕不加大，降 0.25s／升 3s 的不對稱曲線，削峰保護以 0.06s 追「輸入＋增益」的推估值且不當成降幅地板，遲滯（1 dB 起動 / 0.15 dB 收手）而非死區以免系統性差一格，加成上限 +9 dB、多人模式收到 +6 dB；ruff lint 與部署檔驗證納入 CI、後端 264 條 + 前端 75 條測試全綠；排程預處理：一次只處理一首（處理完就重新確認現場，讓路上限＝一首歌的時間），時段判斷含跨午夜與全天候，「為什麼還沒開始」常駐畫面，一首失敗不拖垮整批且可只重試失敗項，已完整快取的自動略過（看四個必要檔案而非只看 metadata），任務與「立即開始」意圖都持久化、重開機續跑；v1.0.0 可發布：Docker 一鍵部署（非 root、健康檢查、GPU 換底層映像）＋ 標籤觸發的 release 打包，版本號在 version.py / CHANGELOG / git 標籤三處交叉檢查"
+description: "On-demand YouTube-to-karaoke system with AI stem separation, LRC-driven lyric alignment, EBU R128 loudness normalization, real-time pitch scoring with per-section breakdown, confidence-driven guide-vocal auto-ducking, feed-forward microphone auto gain control, an auto-classified browsable song library and off-peak batch pre-processing that yields the machine the moment someone sings, and key-aware two-part auto harmony that follows the melody diatonically"
+description_zh: "把任意 YouTube 歌曲全自動轉成 KTV 伴唱畫面：AI 人聲伴奏分離、LRC 主導的歌詞時間軸對齊、EBU R128 自動音量平衡、即時音準導唱與評分（含唱畢段落評分），導唱人聲隨演唱穩定度自動淡出，麥克風自動增益讓換人唱不必重調音量，曲庫自動依語言別與歌手分類瀏覽，整張播放清單可排程在半夜先跑好（有人唱歌立刻讓開），和聲依歌曲調性照音階疊出第二聲部（三度／五度／低八度，判不出調性就退成八度）"
+key_metrics: "歌詞對齊：LRC 仿射校正 (scale+offset) + 起唱點吸附，行首落點誤差 < 0.1s；自動音量平衡：自實作 ITU-R BS.1770-4 K 加權與雙重閘門，48kHz 係數與規格書一致到小數第 9 位、-20 dBFS 1kHz 正弦量得 -19.99 LUFS；練唱模式：歌詞重複結構分析自動找副歌（含長度守門與單行鉤子退路）＋ A-B 區段循環與段落跳轉；段落評分：沿用曲式分段與逐幀判定，二分搜尋歸段累計，含「音符不足 0.5 秒不評分」與「全距 < 5 個百分點不點名」兩道守門；曲庫分類：歌名/頻道名/歌詞三來源判語言（假名與諺文看比例、粵台語需 ≥2 種方言用字），結果快取進 metadata 只算一次；導唱自動 ducking：沿用評分心跳的逐幀判定，慢退（1.6s）快回（0.22s）＋ Schmitt 遲滯 0.55/0.35 ＋ 暖機 3 秒 ＋ 深度上限 0.95（永遠留安全網），時間常數式 EMA 使 30fps 與 120fps 行為一致；麥克風自動增益：前饋量測（analyser 在增益節點之前，不做回授免得與房間殘響耦合成呼吸迴路），噪音閘門 -45 dBFS 保證安靜時絕不加大，降 0.25s／升 3s 的不對稱曲線，削峰保護以 0.06s 追「輸入＋增益」的推估值且不當成降幅地板，遲滯（1 dB 起動 / 0.15 dB 收手）而非死區以免系統性差一格，加成上限 +9 dB、多人模式收到 +6 dB；ruff lint 與部署檔驗證納入 CI、後端 264 條 + 前端 75 條測試全綠；排程預處理：一次只處理一首（處理完就重新確認現場，讓路上限＝一首歌的時間），時段判斷含跨午夜與全天候，「為什麼還沒開始」常駐畫面，一首失敗不拖垮整批且可只重試失敗項，已完整快取的自動略過（看四個必要檔案而非只看 metadata），任務與「立即開始」意圖都持久化、重開機續跑；v1.0.0 可發布：Docker 一鍵部署（非 root、健康檢查、GPU 換底層映像）＋ 標籤觸發的 release 打包，版本號在 version.py / CHANGELOG / git 標籤三處交叉檢查；和聲：Krumhansl-Kessler 輪廓相關法估調性（權重看時間長度、單一長音上限 2 秒、有效音符 < 8 秒或相關 < 0.45 就拒絕作答並退成低八度），移調量照音階度數算（C 大調的 Do 上三度 +4、Re 上三度 +3），移調 DSP 自寫可變延遲移調（視窗 45ms、兩條讀取頭、交叉淡接只佔一輪 30% 把梳型抵消從 27% 壓到 8% 以內），沒人唱與無導唱音符時不出聲、同一音符不重算、換音符隔 80ms 防抖，音量上限 0.85 永不蓋過主唱；後端 268 條 + 前端 114 條測試全綠"

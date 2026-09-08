@@ -3,6 +3,7 @@ import io
 import json
 import socket
 import logging
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException
@@ -16,6 +17,7 @@ from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PUBLIC_HOST,
 from backend.pipeline.chorus_detector import analyze_song_structure
 from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
 from backend.pipeline.song_processor import SongProcessor
+from backend.services.batch_scheduler import BatchScheduler, split_source_lines
 from backend.services.storage import SongStorage
 from backend.services.search_service import YouTubeSearchService
 from backend.services.queue_manager import QueueManager
@@ -31,7 +33,22 @@ from backend.version import __version__, version_info
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("KaraTube.Server")
 
-app = FastAPI(title="KaraTube KTV Server", version=__version__)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """
+    背景工作的生老病死。
+
+    排程預處理的迴圈要有 event loop 才能建立，所以不能在模組層級 start()；
+    關機時要記得 cancel，否則 uvicorn --reload 每存一次檔就多一個迴圈在跑。
+    """
+    batch_scheduler.start()
+    try:
+        yield
+    finally:
+        await batch_scheduler.stop()
+
+
+app = FastAPI(title="KaraTube KTV Server", version=__version__, lifespan=lifespan)
 
 # Enable CORS for local network and mobile devices
 app.add_middleware(
@@ -91,6 +108,25 @@ queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.br
                              settings=settings)
 # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
 queue_manager.apply_control_defaults()
+
+
+def stage_is_busy() -> bool:
+    """
+    舞台正在忙嗎？排程預處理靠這個決定要不要讓開。
+
+    「有人在唱歌」只是其中一種忙：佇列裡還有歌在跑流水線時也算 ——
+    現場點的那首當然比半夜的批次任務優先，讓它獨佔 GPU 才會早點唱到。
+    """
+    if queue_manager.current_song is not None:
+        return True
+    return any(item.get("status") in ("PENDING", "PROCESSING")
+               for item in queue_manager.queue)
+
+
+batch_scheduler = BatchScheduler(
+    song_processor, storage, CACHE_DIR / "batch_jobs.json",
+    settings=settings, broadcast_cb=ws_manager.broadcast, busy_cb=stage_is_busy,
+)
 
 # Helper: Get Local Network IP
 def get_local_ip() -> str:
@@ -208,6 +244,91 @@ async def reprocess_cached_song(song_id: str):
         thumbnail=meta.get("thumbnail", ""),
     )
     return {"status": "success", "item": item}
+
+
+# --- 排程預處理 ---
+
+
+@app.get("/api/batch")
+async def get_batch_state():
+    """排程預處理總覽：時段、現在能不能跑（附理由）、每筆任務的進度。"""
+    return batch_scheduler.state()
+
+
+@app.post("/api/batch")
+async def create_batch_job(payload: Dict[str, Any] = Body(...)):
+    """
+    建立一批排程預處理任務。
+
+    `sources` 收使用者原封不動貼進來的文字：播放清單網址、單曲網址、關鍵字
+    混在一起都可以，一行一個（逗號分隔也吃）。展開要連 YouTube，
+    所以丟到 executor 去做，不擋住 event loop 上其他人的點歌。
+    """
+    text = payload.get("sources") or payload.get("text") or ""
+    lines = split_source_lines(text)
+    if not lines:
+        raise HTTPException(status_code=400, detail="請貼上播放清單網址、歌曲網址或關鍵字")
+
+    loop = asyncio.get_event_loop()
+    expanded = await loop.run_in_executor(None, search_service.expand_sources, lines)
+    songs = expanded.get("songs", [])
+    if not songs:
+        raise HTTPException(status_code=404, detail="這些來源都找不到歌曲，請確認網址或關鍵字")
+
+    job = batch_scheduler.create_job(
+        songs,
+        name=payload.get("name", ""),
+        start_now=bool(payload.get("start_now")),
+        requested_by=payload.get("requested_by", ""),
+    )
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success", "job": job, "failed": expanded.get("failed", []),
+            "state": batch_scheduler.state()}
+
+
+@app.post("/api/batch/force")
+async def set_batch_force(payload: Dict[str, Any] = Body(...)):
+    """立即開始 / 回到照表操課。「現在就跑」是最常按的按鈕，值得一支獨立端點。"""
+    force = batch_scheduler.set_force_run(bool(payload.get("force", True)))
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success", "force_run": force, "state": batch_scheduler.state()}
+
+
+@app.post("/api/batch/{job_id}/retry")
+async def retry_batch_job(job_id: str):
+    """把這批裡失敗的歌重新排隊。"""
+    job = batch_scheduler.retry_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="找不到這筆排程任務")
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success", "job": job}
+
+
+@app.post("/api/batch/{job_id}/cancel")
+async def cancel_batch_job(job_id: str):
+    """取消還沒跑的部分。正在處理的那一首讓它跑完，中途砍掉只會留下半成品。"""
+    job = batch_scheduler.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="找不到這筆排程任務")
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success", "job": job}
+
+
+@app.delete("/api/batch/{job_id}")
+async def delete_batch_job(job_id: str):
+    """刪掉任務紀錄。已經處理好的歌留在曲庫裡，不受影響。"""
+    if not batch_scheduler.delete_job(job_id):
+        raise HTTPException(status_code=404, detail="找不到這筆排程任務")
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success"}
+
+
+@app.delete("/api/batch")
+async def clear_finished_batch_jobs():
+    """清掉跑完／取消的紀錄，還有待處理項目的任務不動。"""
+    removed = batch_scheduler.clear_finished()
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success", "removed": removed}
 
 
 @app.get("/api/library")

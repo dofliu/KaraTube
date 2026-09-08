@@ -13,6 +13,7 @@ from backend.config import SONGS_DIR
 from backend.version import __version__
 from backend.main import (
     app,
+    batch_scheduler,
     favorites,
     queue_manager,
     score_history,
@@ -556,6 +557,94 @@ def test_library_songs_filter_by_language_and_artist(fake_library_song):
 
 def test_library_songs_rejects_bad_sort():
     assert client.get("/api/library/songs", params={"sort": "隨便排"}).status_code == 422
+
+
+# --- 排程預處理 ---
+
+@pytest.fixture()
+def clean_batch_jobs():
+    """排程任務是全域狀態且會寫進 cache，測完要還原。"""
+    saved_jobs = [dict(j) for j in batch_scheduler.jobs]
+    saved_force = batch_scheduler.force_run
+    batch_scheduler.jobs = []
+    batch_scheduler.force_run = False
+    yield
+    batch_scheduler.jobs = saved_jobs
+    batch_scheduler.force_run = saved_force
+    batch_scheduler._save()
+
+
+@pytest.fixture()
+def fake_expand(monkeypatch):
+    """展開來源要連 YouTube，測試裡換成固定回覆。"""
+    def _expand(lines, limit=200):
+        return {
+            "songs": [{"song_id": f"test_batch_{i}", "title": f"排程測試歌 {i}",
+                       "artist": "測試", "thumbnail": "",
+                       "url": f"https://www.youtube.com/watch?v=test_batch_{i}"}
+                      for i, _ in enumerate(lines)],
+            "failed": [],
+        }
+    monkeypatch.setattr(main.search_service, "expand_sources", _expand)
+
+
+def test_batch_state_shape(clean_batch_jobs):
+    res = client.get("/api/batch")
+    assert res.status_code == 200
+    data = res.json()
+    for key in ("enabled", "window", "force_run", "can_run", "reason", "jobs", "pending_total"):
+        assert key in data
+    assert "start_hour" in data["window"] and "minutes_until" in data["window"]
+
+
+def test_batch_create_and_lifecycle(clean_batch_jobs, fake_expand):
+    res = client.post("/api/batch", json={"sources": "第一首\n第二首", "name": "週末歌單",
+                                          "start_now": True})
+    assert res.status_code == 200
+    job = res.json()["job"]
+    assert job["name"] == "週末歌單"
+    assert len(job["items"]) == 2
+    assert res.json()["state"]["force_run"] is True
+    assert res.json()["state"]["pending_total"] == 2
+
+    # 取消之後就不再有待處理的歌
+    res = client.post(f"/api/batch/{job['job_id']}/cancel")
+    assert res.status_code == 200
+    assert client.get("/api/batch").json()["pending_total"] == 0
+
+    res = client.delete(f"/api/batch/{job['job_id']}")
+    assert res.status_code == 200
+    assert client.get("/api/batch").json()["jobs"] == []
+
+
+def test_batch_create_requires_sources(clean_batch_jobs):
+    assert client.post("/api/batch", json={"sources": "   "}).status_code == 400
+
+
+def test_batch_create_reports_when_nothing_found(clean_batch_jobs, monkeypatch):
+    monkeypatch.setattr(main.search_service, "expand_sources",
+                        lambda lines, limit=200: {"songs": [], "failed": list(lines)})
+    res = client.post("/api/batch", json={"sources": "根本不存在的歌"})
+    assert res.status_code == 404
+
+
+def test_batch_force_toggle_and_unknown_job_404(clean_batch_jobs, fake_expand):
+    client.post("/api/batch", json={"sources": "第一首"})
+    assert client.post("/api/batch/force", json={"force": True}).json()["force_run"] is True
+    assert client.post("/api/batch/force", json={"force": False}).json()["force_run"] is False
+
+    assert client.post("/api/batch/no-such-job/retry").status_code == 404
+    assert client.post("/api/batch/no-such-job/cancel").status_code == 404
+    assert client.delete("/api/batch/no-such-job").status_code == 404
+
+
+def test_batch_settings_drive_the_window(clean_batch_jobs, restore_settings):
+    client.post("/api/settings", json={"batch_start_hour": 23, "batch_end_hour": 5,
+                                       "batch_enabled": False})
+    window = client.get("/api/batch").json()
+    assert window["window"]["start_hour"] == 23
+    assert window["window"]["end_hour"] == 5
+    assert window["enabled"] is False
 
 
 def test_library_new_and_recommend(fake_library_song):

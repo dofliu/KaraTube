@@ -199,6 +199,30 @@
    - 純資料邏輯在 `frontend/js/mic-agc.js`，由 `node --test` 覆蓋（24 條）；
      開關與目標電平在點歌台的系統設定頁，改完舞台端立刻生效。
 
+21. **🌙 排程預處理 (Scheduled Batch Pre-processing)**
+   - 隨選處理的代價是「第一次點一首新歌要等好幾分鐘」。這一頁把等待挪到沒人唱歌的時候：
+     晚上把整張 **YouTube 播放清單**（或一堆網址、關鍵字混著貼，一行一個）丟進
+     點歌台的「🌙 排程預處理」分頁，機器在設定的時段裡自己跑完整條流水線，
+     隔天所有歌都是「⚡ 快取秒播」。
+   - **有人在唱歌就讓開**：流水線吃滿 GPU 與 CPU，跟現場演唱搶資源會讓舞台掉幀。
+     所以每處理完「**一首**」就重新確認一次現場狀況 —— 不是每批確認一次，
+     客人推門進包廂點第一首歌時，機器最多再忙一首歌的時間就會把資源讓出來。
+   - **時段是預設，不是牢籠**：預設 02:00–06:00，**跨午夜**（23 → 6）照樣成立，
+     起訖設成同一小時 = 全天候。臨時要跑就按「⚡ 立即開始」跳過時段限制
+     （但「有人唱歌就讓開」仍然有效），跑完自動收回，下一批照樣照表操課。
+   - **一首失敗不拖垮整批**：影片被下架、網路斷線只標記那一首並繼續下一首，
+     事後按「🔁 重試失敗」只重跑壞掉的那幾首，不用整批重來。
+   - **已在曲庫的自動略過**（看四個必要檔案是否齊全，而不是只看 metadata ——
+     只看 metadata 會把處理到一半的殘留資料夾誤判成完成，那首歌就永遠不會被補跑）。
+     貼一張 30 首的清單通常會直接顯示「其實只有 3 首要跑」。
+   - **重開機續跑**：任務存在 `cache/batch_jobs.json`，上次中斷在半路的那首退回等待重跑，
+     使用者按過的「立即開始」也會被記住 —— 半夜按下去然後機器重開，意圖不該被吃掉。
+   - 進度以 WebSocket `BATCH_UPDATE` 廣播，所有裝置即時看到「現在跑到哪一首、
+     為什麼還沒開始」；狀態列永遠寫著原因（等時段／有人在唱／功能被關掉）。
+   - 顯示邏輯（上百首時畫面挑哪幾首、時段字串、狀態燈）在
+     `frontend/js/batch-view.js`，由 `node --test` 覆蓋；
+     排程判斷與任務生命週期在 `backend/services/batch_scheduler.py`，pytest 27 條。
+
 ---
 
 ## 🚀 快速啟動
@@ -268,8 +292,9 @@ KaraTube/
 │       ├── song_history.py      # 已唱歷史（演唱時間序列）
 │       ├── score_history.py     # 評分歷史與個人最佳（唱畢結算）
 │       ├── library.py           # 曲庫分類（語言/歌手判定）、新歌榜、推薦歌單
-│       ├── settings.py          # 系統設定（預設調音、導唱淡出、快取上限、模型選擇）
-│       ├── search_service.py    # YouTube 即時搜尋
+│       ├── settings.py          # 系統設定（預設調音、導唱淡出、快取上限、排程時段、模型選擇）
+│       ├── batch_scheduler.py    # 排程預處理（半夜整批跑歌，有人唱歌就讓開）
+│       ├── search_service.py    # YouTube 即時搜尋、播放清單展開
 │       └── queue_manager.py     # 點歌佇列與狀態廣播
 │
 ├── frontend/
@@ -287,11 +312,13 @@ KaraTube/
 │       ├── section-scorer.js    # 段落評分（哪一段唱得最好／最差）＋ 等級門檻
 │       ├── guide-ducker.js      # 導唱音量自動 ducking（唱穩了導唱自己退場）
 │       ├── mic-agc.js           # 麥克風自動增益（換人唱不用重調音量）
+│       ├── batch-view.js        # 排程預處理分頁的純顯示邏輯（挑項目、時段字串）
 │       └── audio-effects.js     # Web Audio 混音、升降 Key、殘響 DSP
 │   └── tests/
 │       ├── section-scorer.test.js  # 段落評分單元測試（node --test）
 │       ├── guide-ducker.test.js    # 導唱自動 ducking 單元測試（node --test）
-│       └── mic-agc.test.js         # 麥克風自動增益單元測試（node --test）
+│       ├── mic-agc.test.js         # 麥克風自動增益單元測試（node --test）
+│       └── batch-view.test.js      # 排程預處理顯示邏輯單元測試（node --test）
 │
 ├── tests/                       # 後端單元與 API 測試（pytest）
 ├── docs/                        # 使用說明書、部署說明、路線圖、進度日誌
@@ -313,12 +340,12 @@ KaraTube/
 ## 🧪 測試與 CI
 
 ```bash
-# 後端（232 條）
+# 後端（264 條）
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ruff check .
 
-# 前端純邏輯（67 條，用 Node 內建測試執行器，不需要 npm install）
+# 前端純邏輯（75 條，用 Node 內建測試執行器，不需要 npm install）
 node --test "frontend/tests/*.test.js"
 ```
 
@@ -331,7 +358,7 @@ GitHub Actions 會在每個 PR 自動跑：後端 `compileall` + `ruff` lint + `
 是最不該發生的事，所以語法一定檢查。lint 規則見 `ruff.toml`。
 
 前端測試只涵蓋能脫離瀏覽器執行的純資料邏輯
-（目前是段落評分、導唱自動 ducking、麥克風自動增益）。
+（目前是段落評分、導唱自動 ducking、麥克風自動增益、排程分頁的顯示邏輯）。
 這類判斷在真實包廂裡看不出對錯 —— 沒人知道機器說「副歌唱得最差」是不是算對的 ——
 所以寫成不碰 DOM、不碰 Web Audio 的模組，用測試守住。
 `node --test` 的路徑要傳 glob（`"frontend/tests/*.test.js"`），傳目錄會被當成模組 require。
@@ -344,7 +371,7 @@ GitHub Actions 會在每個 PR 自動跑：後端 `compileall` + `ruff` lint + `
 
 ```bash
 curl -s http://localhost:8080/api/version
-# {"name":"KaraTube","version":"1.1.0","codename":"Level Up"}
+# {"name":"KaraTube","version":"1.2.0","codename":"Night Shift"}
 ```
 
 點歌台的 **⚙️ 系統設定** 頁尾也會顯示版本。

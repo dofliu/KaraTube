@@ -300,6 +300,218 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
+  // --- 排程預處理（半夜整批把歌處理好）---
+  // 隨選處理的代價是第一次點一首新歌要等好幾分鐘。這一頁把等待挪到沒人唱的時候：
+  // 晚上把整張播放清單貼進來，機器在設定的時段裡一首一首跑完，
+  // 隔天所有歌都是「⚡ 快取秒播」。有人在唱歌時它會自己讓開。
+  // 純顯示邏輯（挑要顯示哪幾首、時段字串、狀態燈）住在 batch-view.js，那邊有單元測試
+  const BatchView = window.BatchView;
+  let batchState = null;
+
+  async function loadBatch() {
+    try {
+      batchState = await window.api.getBatchState();
+      renderBatch();
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">排程狀態讀取失敗</div>`;
+    }
+  }
+
+  function batchStatusLine(state) {
+    const windowText = BatchView.formatWindow(state.window);
+    const dotClass = BatchView.statusDotClass(state);
+    return `
+      <div class="batch-status">
+        <span class="batch-dot ${dotClass}"></span>
+        <div>
+          <div class="batch-status-main">${state.can_run ? "可以開工" : "待命中"}
+            <span class="batch-status-reason">${escapeHtml(state.reason || "")}</span>
+          </div>
+          <div class="batch-status-sub">排程時段 ${windowText}
+            ・ 待處理 ${state.pending_total || 0} 首
+            ${state.stage_busy ? "・ 🎤 舞台使用中" : ""}
+            ${state.enabled ? "" : "・ ⚠️ 功能已在系統設定中關閉"}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // 表單是即時重畫的（每處理完一首歌就會收到 BATCH_UPDATE），
+  // 所以重畫前要把使用者打到一半的字接住，不然貼了 30 行清單會憑空消失。
+  function readBatchForm() {
+    const sources = document.getElementById("batchSources");
+    const name = document.getElementById("batchName");
+    const startNow = document.getElementById("batchStartNow");
+    if (!sources) return null;
+    return {
+      sources: sources.value,
+      name: name ? name.value : "",
+      startNow: startNow ? startNow.checked : false,
+      focusId: document.activeElement ? document.activeElement.id : "",
+      selStart: sources.selectionStart,
+      selEnd: sources.selectionEnd,
+    };
+  }
+
+  function restoreBatchForm(saved) {
+    if (!saved) return;
+    const sources = document.getElementById("batchSources");
+    const name = document.getElementById("batchName");
+    const startNow = document.getElementById("batchStartNow");
+    if (sources) sources.value = saved.sources;
+    if (name) name.value = saved.name;
+    if (startNow) startNow.checked = saved.startNow;
+    if (saved.focusId === "batchSources" && sources) {
+      sources.focus();
+      try { sources.setSelectionRange(saved.selStart, saved.selEnd); } catch (e) { }
+    } else if (saved.focusId && document.getElementById(saved.focusId)) {
+      document.getElementById(saved.focusId).focus();
+    }
+  }
+
+  function batchFormHtml(state) {
+    const forceBtn = state.force_run
+      ? `<button class="btn btn-secondary" onclick="window.setBatchForce(false)" title="回到只在排程時段處理">🕒 照表操課</button>`
+      : `<button class="btn btn-secondary" onclick="window.setBatchForce(true)" title="不等時段，現在就開始處理（有人唱歌時仍會讓開）">⚡ 立即開始</button>`;
+    return `
+      <div class="batch-form">
+        <textarea id="batchSources" class="batch-textarea" rows="3"
+          placeholder="貼上 YouTube 播放清單網址、單曲網址或歌名關鍵字，一行一個（例：https://www.youtube.com/playlist?list=... 或「周杰倫 稻香」）"></textarea>
+        <div class="batch-form-row">
+          <input type="text" id="batchName" class="batch-name-input" maxlength="40" placeholder="這批的名稱（選填，例：週末歌單）">
+          <label class="batch-check"><input type="checkbox" id="batchStartNow"> 立即開始</label>
+          <button class="btn btn-primary" onclick="window.submitBatchJob()">🌙 加入排程</button>
+          ${forceBtn}
+          <button class="btn btn-secondary" onclick="window.clearFinishedBatch()" title="清掉已完成／已取消的紀錄">🧹 清紀錄</button>
+        </div>
+      </div>`;
+  }
+
+  function batchItemHtml(item) {
+    const meta = BatchView.itemStatusMeta(item.status);
+    const title = escapeHtml(item.title || item.song_id);
+    return `
+      <div class="batch-item">
+        <span class="batch-item-badge ${meta.cls}">${meta.label}</span>
+        <span class="batch-item-title" title="${title}">${title}</span>
+        <span class="batch-item-detail">${escapeHtml(BatchView.itemDetailText(item))}</span>
+      </div>`;
+  }
+
+  function batchJobHtml(job) {
+    const p = job.progress || {};
+    const shown = BatchView.pickBatchItems(job.items || []);
+    const rest = (job.items || []).length - shown.length;
+    const counts = BatchView.summarizeCounts(p);
+    const canCancel = (p.pending || 0) > 0;
+    const canRetry = (p.error || 0) > 0;
+    return `
+      <div class="batch-job">
+        <div class="batch-job-head">
+          <div class="batch-job-title">${escapeHtml(job.name || "排程任務")}
+            <span class="batch-job-status">${BatchView.jobStatusLabel(job.status)}</span>
+          </div>
+          <div class="batch-job-actions">
+            ${canRetry ? `<button class="btn btn-secondary" onclick="window.batchJobAction('${job.job_id}', 'retry')" title="只重跑失敗的那幾首">🔁 重試失敗</button>` : ""}
+            ${canCancel ? `<button class="btn btn-secondary" onclick="window.batchJobAction('${job.job_id}', 'cancel')" title="取消還沒處理的歌">✖ 取消</button>` : ""}
+            <button class="btn btn-secondary cache-del-btn" onclick="window.batchJobAction('${job.job_id}', 'delete')" title="刪除這筆紀錄（已處理好的歌留在曲庫）">🗑️</button>
+          </div>
+        </div>
+        <div class="batch-progress"><div class="batch-progress-bar" style="width: ${p.percent || 0}%"></div></div>
+        <div class="batch-job-meta">${p.settled || 0} / ${p.total || 0} 首 ・ ${counts || "尚未開始"}
+          ${job.requested_by ? ` ・ 👤 ${escapeHtml(job.requested_by)}` : ""}
+          ${job.created_at ? ` ・ 建立於 ${formatSungAt(job.created_at)}` : ""}</div>
+        <div class="batch-items">${shown.map(batchItemHtml).join("")}
+          ${rest > 0 ? `<div class="batch-item batch-item-more">…還有 ${rest} 首</div>` : ""}</div>
+      </div>`;
+  }
+
+  function renderBatch() {
+    if (!batchState) return;
+    const saved = readBatchForm();
+    const jobs = batchState.jobs || [];
+    libSummary.textContent = jobs.length
+      ? `${jobs.length} 筆排程 ・ 待處理 ${batchState.pending_total || 0} 首`
+      : "尚未建立排程";
+    const jobsHtml = jobs.length
+      ? jobs.map(batchJobHtml).join("")
+      : `<div style="grid-column: 1/-1; text-align: center; padding: 30px; color: var(--text-muted);">還沒有排程任務<br>把整張播放清單貼上去，半夜自己跑完，隔天全部秒播！</div>`;
+    searchResults.innerHTML =
+      `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">🌙 排程預處理</div>`
+      + batchStatusLine(batchState) + batchFormHtml(batchState) + jobsHtml;
+    restoreBatchForm(saved);
+  }
+
+  window.submitBatchJob = async () => {
+    const form = readBatchForm();
+    if (!form || !form.sources.trim()) {
+      alert("請先貼上播放清單網址、歌曲網址或關鍵字（一行一個）");
+      return;
+    }
+    showNotification("🌙 正在展開清單…");
+    try {
+      const res = await window.api.createBatchJob({
+        sources: form.sources, name: form.name,
+        startNow: form.startNow, requestedBy: nickname,
+      });
+      batchState = res.state || batchState;
+      const failed = res.failed || [];
+      const count = (res.job && res.job.items ? res.job.items.length : 0);
+      showNotification(failed.length
+        ? `🌙 已排入 ${count} 首（${failed.length} 行找不到歌）`
+        : `🌙 已排入 ${count} 首`);
+      const sources = document.getElementById("batchSources");
+      if (sources) sources.value = failed.join("\n");   // 失敗的留在框裡讓使用者修
+      loadBatch();
+    } catch (e) {
+      alert("排程建立失敗: " + e.message);
+    }
+  };
+
+  window.setBatchForce = async (force) => {
+    try {
+      const res = await window.api.setBatchForce(force);
+      batchState = res.state || batchState;
+      showNotification(res.force_run ? "⚡ 立即開始處理" : "🕒 回到排程時段處理");
+      renderBatch();
+    } catch (e) {
+      alert("切換失敗: " + e.message);
+    }
+  };
+
+  window.batchJobAction = async (jobId, action) => {
+    const prompts = {
+      cancel: "取消這批還沒處理的歌嗎？\n正在處理的那一首會跑完（中途砍掉只會留下半成品）。",
+      delete: "刪除這筆排程紀錄嗎？\n已經處理好的歌會留在曲庫裡，不受影響。",
+    };
+    if (prompts[action] && !confirm(prompts[action])) return;
+    try {
+      await window.api.batchJobAction(jobId, action);
+      const done = { retry: "🔁 失敗的歌已重新排隊", cancel: "✖ 已取消", delete: "🗑️ 已刪除紀錄" };
+      showNotification(done[action] || "已更新");
+      loadBatch();
+    } catch (e) {
+      alert("操作失敗: " + e.message);
+    }
+  };
+
+  window.clearFinishedBatch = async () => {
+    try {
+      const res = await window.api.clearFinishedBatchJobs();
+      showNotification(res.removed ? `🧹 已清除 ${res.removed} 筆紀錄` : "沒有可清除的紀錄");
+      loadBatch();
+    } catch (e) {
+      alert("清除失敗: " + e.message);
+    }
+  };
+
+  // 伺服器每處理完一首歌就廣播一次，開著這一頁的裝置會即時看到進度
+  window.api.on("BATCH_UPDATE", (msg) => {
+    batchState = msg.data;
+    const activeTab = document.querySelector(".lib-tab.active");
+    if (activeTab && activeTab.dataset.lib === "batch") renderBatch();
+  });
+
   // --- 分類瀏覽（語言別 / 歌手）---
   // 商用點歌機的「分類點歌」：先選語言別或歌手，再從清單裡挑歌。
   // 語言與歌手是伺服器從歌名、頻道名與歌詞判定後快取在 metadata 裡的。
@@ -425,6 +637,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
     else if (which === "cache") loadCacheManager();
+    else if (which === "batch") loadBatch();
     else loadCachedRecommendations();
   }
 
@@ -1177,6 +1390,10 @@ document.addEventListener("DOMContentLoaded", () => {
     mic_agc_target_db: { label: "目標收音電平", unit: " dBFS", step: 1 },
     cache_limit_gb: { label: "快取上限", unit: " GB", hint: "0 = 不限制", step: 1 },
     cache_auto_cleanup: { label: "自動清理最舊的歌", hint: "超過上限時" },
+    batch_enabled: { label: "啟用排程預處理" },
+    batch_start_hour: { label: "開工時間", unit: " 時", step: 1 },
+    batch_end_hour: { label: "收工時間", unit: " 時", step: 1, hint: "與開工同一時間 = 全天候" },
+    batch_pause_while_singing: { label: "有人唱歌時暫停", hint: "建議開著" },
     whisper_model: { label: "歌詞辨識模型", hint: "Whisper" },
     demucs_model: { label: "人聲分離模型", hint: "Demucs" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
@@ -1216,6 +1433,14 @@ document.addEventListener("DOMContentLoaded", () => {
       title: "🗂️ 快取",
       hint: "超過上限時從最舊的歌開始刪，演唱中與佇列裡的歌絕對不刪。",
       keys: ["cache_limit_gb", "cache_auto_cleanup"],
+    },
+    {
+      title: "🌙 排程預處理",
+      hint: "半夜把整張播放清單先跑成伴奏＋字幕，隔天點下去就是秒播。" +
+            "跨午夜的時段（例如 23 → 6）也可以設；有人在唱歌時它會自己讓開，" +
+            "每處理完一首就重新確認一次現場狀況。清單在「🌙 排程預處理」分頁貼上。",
+      keys: ["batch_enabled", "batch_start_hour", "batch_end_hour",
+             "batch_pause_while_singing"],
     },
     {
       title: "🤖 AI 模型",

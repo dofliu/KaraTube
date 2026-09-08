@@ -5,6 +5,23 @@ from backend.config import SONGS_DIR
 
 logger = logging.getLogger("KaraTube.SearchService")
 
+# 播放清單一次最多展開幾首。整晚也跑不完更多，而且 extract_flat 抓 500 筆要等很久。
+MAX_PLAYLIST_ITEMS = 200
+
+
+def is_playlist_url(text: str) -> bool:
+    """判斷這行是不是播放清單網址。
+
+    `watch?v=xxx&list=yyy` 這種「清單裡的某一首」刻意**不**算播放清單：
+    使用者從清單中複製某首歌的網址時，想點的是那一首，不是整張清單。
+    要整張清單的話網址長 `playlist?list=`（YouTube 的「分享整個播放清單」給的就是這個）。
+    """
+    line = (text or "").strip().lower()
+    if "youtube.com" not in line and "youtu.be" not in line:
+        return False
+    return "playlist?list=" in line or "/playlist" in line
+
+
 class YouTubeSearchService:
     def __init__(self):
         pass
@@ -72,3 +89,58 @@ class YouTubeSearchService:
             logger.error(f"Search failed for query '{query}': {e}")
 
         return results
+
+    def expand_sources(self, lines: List[str], limit: int = MAX_PLAYLIST_ITEMS) -> Dict[str, Any]:
+        """
+        把使用者貼進來的每一行展開成歌曲清單（排程預處理用）。
+
+        一行可以是三種東西，混在一起貼也吃得下：
+          * 播放清單網址 → 展開成整張清單
+          * 單曲網址或 11 碼影片 ID → 就那一首
+          * 關鍵字 → 搜尋結果的第一首（跟使用者在搜尋框按 Enter 後點第一張卡片一樣）
+
+        展開不到的行不會讓整批失敗，而是收進 `failed` 回報給使用者 ——
+        貼了 40 行結果第 7 行打錯字，該做的是跑剩下的 39 首並告訴他哪一行有問題。
+        """
+        from backend.services.batch_scheduler import extract_video_id
+
+        songs: List[Dict[str, Any]] = []
+        failed: List[str] = []
+        seen = set()
+
+        def take(entries: List[Dict[str, Any]], source_line: str):
+            if not entries:
+                failed.append(source_line)
+                return
+            for entry in entries:
+                if len(songs) >= limit:
+                    return
+                song_id = entry.get("id")
+                if not song_id or song_id in seen:
+                    continue
+                seen.add(song_id)
+                songs.append({
+                    "song_id": song_id,
+                    "title": entry.get("title", ""),
+                    "artist": entry.get("uploader", ""),
+                    "thumbnail": entry.get("thumbnail", ""),
+                    "url": entry.get("url") or f"https://www.youtube.com/watch?v={song_id}",
+                })
+
+        for line in lines:
+            if len(songs) >= limit:
+                break
+            try:
+                if is_playlist_url(line):
+                    take(self.search(line), line)
+                    continue
+                video_id = extract_video_id(line)
+                if video_id:
+                    take(self.search(f"https://www.youtube.com/watch?v={video_id}"), line)
+                    continue
+                take(self.search(line, max_results=1)[:1], line)
+            except Exception as e:
+                logger.warning(f"展開來源失敗「{line}」: {e}")
+                failed.append(line)
+
+        return {"songs": songs, "failed": failed}

@@ -62,6 +62,17 @@ class SongStorage:
             return True
         return False
 
+    def is_song_complete(self, song_id: str) -> bool:
+        """四個必要檔案都在才算「這首歌已經備好、可以直接上台」。
+
+        排程預處理用這支決定要不要跳過：只看 metadata 會把處理到一半就中斷的
+        殘留資料夾誤判成已完成，那首歌就永遠不會被補跑。
+        """
+        song_folder = self.storage_dir / song_id
+        if not song_folder.is_dir():
+            return False
+        return all((song_folder / f).exists() for f in REQUIRED_FILES)
+
     def get_song_size(self, song_id: str) -> int:
         """一首快取歌曲佔用的磁碟空間（bytes）。不存在回傳 0。"""
         song_folder = self.storage_dir / song_id

@@ -211,6 +211,7 @@ server {
 | `play_stats.json` | 點唱排行 | 小，建議備份 |
 | `song_history.json` | 已唱歷史 | 小 |
 | `score_history.json` | 評分紀錄與個人最佳 | 小，建議備份 |
+| `batch_jobs.json` | 排程預處理的任務與進度 | 小（重開機會照它續跑） |
 | `temp/` | 處理中的暫存 | 可隨時刪 |
 
 只備份那幾個 JSON 就能保住「這台機器的個性」（設定、收藏、紀錄）；

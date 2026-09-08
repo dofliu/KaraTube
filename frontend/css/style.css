@@ -1120,3 +1120,232 @@ input[type="range"] {
   font-weight: 400;
   margin-left: 4px;
 }
+
+/* --- 排程預處理：狀態列、貼清單的表單、任務卡 --- */
+
+.batch-status {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(157, 78, 221, 0.1);
+  border: 1px solid rgba(157, 78, 221, 0.3);
+}
+
+/* 一顆會呼吸的燈：綠＝可以開工、黃＝待命、青＝正在處理 */
+.batch-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+
+.batch-dot.ready { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.7); }
+.batch-dot.waiting { background: var(--accent-yellow); }
+.batch-dot.working {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.8);
+  animation: batchPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes batchPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.batch-status-main {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.batch-status-reason {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--accent-cyan);
+  margin-left: 8px;
+}
+
+.batch-status-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.batch-form {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.batch-textarea,
+.batch-name-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-main);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.batch-textarea:focus,
+.batch-name-input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.batch-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-name-input {
+  flex: 1;
+  min-width: 160px;
+  width: auto;
+}
+
+.batch-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.batch-job {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.batch-job-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-job-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.batch-job-status {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+
+.batch-job-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.batch-job-actions .btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.batch-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin: 8px 0 6px;
+}
+
+.batch-progress-bar {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent-purple), var(--accent-cyan));
+  transition: width 0.4s ease;
+}
+
+.batch-job-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.batch-items {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.batch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.batch-item-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-item-detail {
+  color: var(--accent-cyan);
+  flex-shrink: 0;
+  max-width: 45%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-item-more {
+  color: var(--text-muted);
+  padding-left: 4px;
+}
+
+.batch-item-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  min-width: 48px;
+  text-align: center;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.batch-item-badge.running {
+  color: var(--accent-cyan);
+  background: rgba(0, 240, 255, 0.12);
+}
+
+.batch-item-badge.done {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.batch-item-badge.error {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.batch-item-badge.skip {
+  color: var(--accent-yellow);
+  background: rgba(255, 222, 89, 0.1);
+}

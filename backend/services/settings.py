@@ -63,6 +63,16 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "cache_limit_gb": {"type": "float", "default": 0.0, "min": 0.0, "max": 2000.0},
     "cache_auto_cleanup": {"type": "bool", "default": False},
 
+    # --- 排程預處理 ---
+    # 半夜把整張播放清單先跑成伴奏＋字幕，隔天客人點下去就是秒播。
+    # 起訖時間相同代表「全天候」；跨午夜（23 → 6）也成立。
+    "batch_enabled": {"type": "bool", "default": True},
+    "batch_start_hour": {"type": "int", "default": 2, "min": 0, "max": 23},
+    "batch_end_hour": {"type": "int", "default": 6, "min": 0, "max": 23},
+    # 有人在唱歌時暫停批次處理。流水線吃滿 GPU，跟現場演唱搶資源會讓舞台掉幀，
+    # 所以預設開著；伺服器夠力（或根本沒接舞台）才建議關掉。
+    "batch_pause_while_singing": {"type": "bool", "default": True},
+
     # --- AI 模型（改完要重開伺服器才會生效）---
     "whisper_model": {"type": "choice", "default": "small", "choices": WHISPER_MODEL_CHOICES},
     "demucs_model": {"type": "choice", "default": "htdemucs", "choices": DEMUCS_MODEL_CHOICES},

@@ -122,6 +122,48 @@ class KaraTubeAPI {
     return data;
   }
 
+  // --- 排程預處理（半夜把整批歌先跑成伴奏＋字幕）---
+  async getBatchState() {
+    const res = await fetch(`${this.baseUrl}/api/batch`);
+    return await res.json();
+  }
+
+  async createBatchJob({ sources, name = "", startNow = false, requestedBy = "" }) {
+    const res = await fetch(`${this.baseUrl}/api/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sources, name, start_now: startNow, requested_by: requestedBy })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async setBatchForce(force) {
+    const res = await fetch(`${this.baseUrl}/api/batch/force`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force })
+    });
+    return await res.json();
+  }
+
+  async batchJobAction(jobId, action) {
+    const isDelete = action === "delete";
+    const url = isDelete
+      ? `${this.baseUrl}/api/batch/${jobId}`
+      : `${this.baseUrl}/api/batch/${jobId}/${action}`;
+    const res = await fetch(url, { method: isDelete ? 'DELETE' : 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async clearFinishedBatchJobs() {
+    const res = await fetch(`${this.baseUrl}/api/batch`, { method: 'DELETE' });
+    return await res.json();
+  }
+
   // --- 系統設定 ---
   async getSettings() {
     const res = await fetch(`${this.baseUrl}/api/settings`);

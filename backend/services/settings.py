@@ -23,6 +23,9 @@ logger = logging.getLogger("KaraTube.Settings")
 WHISPER_MODEL_CHOICES = ("tiny", "base", "small", "medium", "large-v2", "large-v3")
 DEMUCS_MODEL_CHOICES = ("htdemucs", "htdemucs_ft", "htdemucs_6s", "mdx_extra", "mdx_extra_q")
 SING_MODE_CHOICES = ("solo", "party")
+# 和聲風格。都是「音階上的度數」而不是固定半音數（octave 例外，八度就是 12 個半音）。
+# 實際移調量由舞台端依這首歌的調性算（frontend/js/harmony-planner.js）。
+HARMONY_STYLE_CHOICES = ("third", "low_third", "fifth", "octave", "duet")
 
 # 每個設定欄位：型別、預設值、範圍或選項。
 # UI 也是照這張表長出來的，加一個欄位不用同時改三個地方。
@@ -39,6 +42,15 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "default_mic_tone": {"type": "float", "default": 0.40, "min": 0.0, "max": 1.0},
     "default_sing_mode": {"type": "choice", "default": "solo", "choices": SING_MODE_CHOICES},
     "default_show_pitch": {"type": "bool", "default": True},
+
+    # --- 和聲（雙聲部）---
+    # 預設關著：和聲是「加了才有」的效果，而且它跟主唱一樣要外放才聽得到，
+    # 開機就打開的話單人模式的使用者只會覺得「這顆按鈕沒反應」。
+    # 音量 0.5 是和聲聽得清楚但仍明顯低於主唱的位置（上限 0.85，永遠不該蓋過主唱）。
+    "default_harmony_enabled": {"type": "bool", "default": False},
+    "default_harmony_style": {"type": "choice", "default": "third",
+                              "choices": HARMONY_STYLE_CHOICES},
+    "default_harmony_level": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0},
 
     # --- 自動音量平衡 (EBU R128) ---
     "loudness_normalize": {"type": "bool", "default": True},
@@ -95,6 +107,9 @@ CONTROL_DEFAULT_KEYS = {
     "default_mic_echo_repeat": "mic_echo_repeat",
     "default_mic_echo_time_ms": "mic_echo_time_ms",
     "default_mic_tone": "mic_tone",
+    "default_harmony_enabled": "harmony_enabled",
+    "default_harmony_style": "harmony_style",
+    "default_harmony_level": "harmony_level",
     "default_sing_mode": "sing_mode",
     "default_show_pitch": "show_pitch",
 }

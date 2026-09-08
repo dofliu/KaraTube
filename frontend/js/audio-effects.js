@@ -25,6 +25,13 @@ class AudioEngine {
     this.micAgcGain = null;
     this.micAgcLevel = 1.0;
 
+    // 和聲（雙聲部）。移調在 AudioWorklet 裡做，所以要非同步載入模組，
+    // 而且有可能根本不支援（AudioWorklet 需要 Chrome 66+／Safari 14.1+）。
+    this.harmonyVoices = [];
+    this.harmonyReady = false;
+    this.harmonySupported = null;   // null = 還沒試過
+    this._harmonyLoading = null;
+
     this.isMicActive = false;
   }
 
@@ -262,6 +269,10 @@ class AudioEngine {
 
       this.isMicActive = true;
       this.setSingMode(this.singMode || "solo");
+      // 和聲的移調節點要接在麥克風鏈之後，所以只能等到這裡才建。
+      // 不 await：載入 worklet 模組要一次網路往返，不該擋住麥克風開起來
+      // （和聲還沒好之前 setHarmonyVoices 就當成沒這個功能，安靜地不作用）。
+      this.initHarmony().catch(() => {});
       console.log("Microphone & KTV DSP started successfully.");
       return true;
     } catch (e) {
@@ -362,6 +373,115 @@ class AudioEngine {
       this.micAgcGain.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.015);
     }
     return clamped;
+  }
+
+  // --- 和聲（雙聲部）---
+  //
+  // 麥克風訊號複製兩份、各自移調（harmony-worklet.js），再疊回人聲那條路徑上。
+  // 移多少由 harmony-planner.js 依調性與音階度數決定，這裡只負責送進音訊圖。
+  //
+  // 接點刻意選在 micGain 之後、monitorGain 之前：
+  //   * micGain 之後 → 使用者的麥克風音量滑桿會一起帶動和聲（音量比例才不會跑掉）
+  //   * monitorGain 之前 → 和聲跟主唱吃同一個「人聲外放」總開關，
+  //     也一起吃殘響與回音送出。單人模式（人聲不進喇叭）時和聲自然也不會出現，
+  //     這是刻意的：和聲從喇叭出來會被麥克風收回去再移調一次，
+  //     那條路徑會一路往上疊成嘯叫，比單純的回授更難止。
+
+  /**
+   * 載入移調用的 AudioWorklet 並建立和聲聲部。
+   *
+   * 呼叫時機是麥克風開起來之後（需要 micGain 當來源）。重複呼叫安全。
+   * @returns {Promise<boolean>} 這台機器支不支援和聲
+   */
+  async initHarmony(voiceCount = 2) {
+    if (this.harmonyReady) return true;
+    if (this.harmonySupported === false) return false;
+    if (this._harmonyLoading) return this._harmonyLoading;
+
+    this._harmonyLoading = (async () => {
+      if (!this.ctx || !this.micGain) {
+        // 音訊環境還沒建、麥克風還沒開，都只是「還沒輪到」，不是不支援。
+        // （麥克風開起來時會再呼叫一次；判成不支援的話那次就不會再試了。）
+        return false;
+      }
+      if (!this.ctx.audioWorklet) {
+        this.harmonySupported = false;
+        return false;
+      }
+      try {
+        await this.ctx.audioWorklet.addModule("/js/harmony-worklet.js");
+      } catch (e) {
+        console.warn("和聲模組載入失敗，此瀏覽器不支援和聲:", e);
+        this.harmonySupported = false;
+        return false;
+      }
+      for (let i = 0; i < voiceCount; i++) {
+        const node = new AudioWorkletNode(this.ctx, "harmony-shifter", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        const gain = this.ctx.createGain();
+        gain.gain.value = 0;             // 預設不出聲，由 setHarmonyVoices 決定
+        this.micGain.connect(node);
+        node.connect(gain);
+        gain.connect(this.monitorGain);
+        this.harmonyVoices.push({ node, gain, level: 0, shift: 0 });
+      }
+      this.harmonySupported = true;
+      this.harmonyReady = true;
+      return true;
+    })();
+
+    const ok = await this._harmonyLoading;
+    this._harmonyLoading = null;
+    return ok;
+  }
+
+  /**
+   * 套用這一幀的和聲聲部。
+   *
+   * @param {Array<{shift:number, gain:number}>} voices
+   *   harmony-planner.js 算出來的聲部；空陣列 = 這一幀不要和聲。
+   *   多出來的聲部（超過建立的節點數）忽略，少的那些淡出到 0。
+   */
+  setHarmonyVoices(voices) {
+    if (!this.harmonyReady || !this.ctx) return false;
+    const list = Array.isArray(voices) ? voices : [];
+    const now = this.ctx.currentTime;
+
+    this.harmonyVoices.forEach((voice, i) => {
+      const plan = list[i];
+      const target = plan ? Math.max(0, Math.min(0.85, Number(plan.gain) || 0)) : 0;
+
+      if (plan) {
+        const shift = Math.max(-24, Math.min(24, Number(plan.shift) || 0));
+        // 移調量變了不用怕爆音：worklet 裡的延遲量是連續的，
+        // 改變的只是它前進的速度。所以直接設值，不排斜坡。
+        if (shift !== voice.shift) {
+          voice.shift = shift;
+          const param = voice.node.parameters.get("shift");
+          if (param) param.value = shift;
+        }
+      }
+
+      // 每一幀都被呼叫，值沒變就不要再排一次（沒和聲時等於整條路徑不做事）
+      if (target === voice.level) return;
+      voice.level = target;
+      // 淡入 60ms、淡出 120ms：進得快一點才跟得上句子的開頭，
+      // 出得慢一點才不會在字與字之間的氣口一直斷斷續續。
+      voice.gain.gain.setTargetAtTime(target, now, target > 0 ? 0.06 : 0.12);
+    });
+    return true;
+  }
+
+  /** 換歌／重唱：清掉移調器裡的殘留樣本，免得上一首的尾音被疊進這一首。 */
+  resetHarmony() {
+    this.harmonyVoices.forEach((voice) => {
+      voice.level = 0;
+      if (this.ctx) voice.gain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
+      try { voice.node.port.postMessage({ type: "reset" }); } catch (e) { /* 節點已收掉 */ }
+    });
   }
 
   // --- 音訊裝置選擇 ---

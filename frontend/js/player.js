@@ -85,6 +85,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const micMeterText = document.getElementById("micMeterText");
   const micAgcBadge = document.getElementById("micAgcBadge");
   const micAgcBadgeText = document.getElementById("micAgcBadgeText");
+  const harmonyBadge = document.getElementById("harmonyBadge");
+  const harmonyBadgeText = document.getElementById("harmonyBadgeText");
 
   // Initializing Engines
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
@@ -96,6 +98,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // 麥克風自動增益：把不同人、不同距離的音量拉到差不多，換人唱不用重調滑桿。
   // 參數同樣由設定頁決定；加成上限還會再依演唱模式收緊（多人模式離回授更近）。
   const micAgc = new MicAutoGain({ enabled: true, targetDb: -18 });
+  // 和聲（雙聲部）：跟著旋律在音階上疊三度／五度／低八度。
+  // 開關與風格是共享控制參數（點歌台可改），這裡先照預設值建。
+  const harmony = new HarmonyPlanner({ enabled: false, style: "third", level: 0.5 });
 
   const OFFSET_STORAGE_KEY = "karatube_lyric_offset_ms";
   const PITCH_STORAGE_KEY = "karatube_show_pitch";
@@ -143,6 +148,12 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastMicFrameMs = 0;
   let lastMicUiMs = 0;
   let micMeterTimer = null;
+
+  // 和聲的計時。和聲只在演唱中有意義，所以跟評分心跳同一條迴圈。
+  // 徽章文字記著上一次寫進去的內容，值沒變就不碰 DOM
+  //（60fps 直接寫 textContent 會讓瀏覽器每幀重排一次版面）。
+  let lastHarmonyFrameMs = 0;
+  let lastHarmonyBadgeText = "";
 
   let outputLatency = 0.05;
   let syncToastTimer = null;
@@ -352,6 +363,72 @@ document.addEventListener("DOMContentLoaded", () => {
     lastMicFrameMs = 0;
     window.audioEngine.setMicAutoGain(1.0);
     renderMicMeter();
+  }
+
+  // --- 和聲（雙聲部）---
+  /**
+   * 餵一幀給和聲規劃，把各聲部的移調量與音量送進音訊圖。
+   *
+   * 吃的是同一份評分心跳判定（frame.noteMidi / frame.sang），
+   * 不重新偵測一次音高 —— 兩邊算出不同結果的話會非常難查。
+   */
+  function updateHarmony(frame, nowMs) {
+    if (!harmony.enabled) {
+      // 關掉的當下要立刻收掉聲音，不能等下一幀（下一幀可能是暫停中，永遠不會來）
+      if (lastHarmonyFrameMs !== 0) {
+        lastHarmonyFrameMs = 0;
+        harmony.reset();
+        window.audioEngine.setHarmonyVoices([]);
+      }
+      updateHarmonyBadge();
+      return;
+    }
+    const dt = lastHarmonyFrameMs ? (nowMs - lastHarmonyFrameMs) / 1000 : 0;
+    lastHarmonyFrameMs = nowMs;
+    const plan = harmony.update(dt, frame);
+    window.audioEngine.setHarmonyVoices(plan.voices);
+    updateHarmonyBadge();
+  }
+
+  /**
+   * 舞台徽章：和聲開著時常駐，顯示風格與判到的調性。
+   *
+   * 調性寫在畫面上是刻意的：和聲聽起來不對的時候，
+   * 「機器把這首歌判成 A 小調」是唯一有用的線索（判錯就是和聲錯的原因）。
+   */
+  function updateHarmonyBadge() {
+    if (!harmonyBadge) return;
+    const label = harmony.enabled ? harmony.describe() : null;
+    if (!label) {
+      if (harmonyBadge.style.display !== "none") harmonyBadge.style.display = "none";
+      lastHarmonyBadgeText = "";
+      return;
+    }
+    harmonyBadge.style.display = "flex";
+    // 沒在出聲時講清楚原因：和聲要有人唱才會疊上去，
+    // 不講的話「按了和聲卻沒聲音」會被當成故障（其實只是還沒開口）。
+    const text = harmony.active ? label : `${label} · 等你開口`;
+    if (text !== lastHarmonyBadgeText) {
+      lastHarmonyBadgeText = text;
+      harmonyBadgeText.textContent = text;
+    }
+  }
+
+  /** 換歌／重唱：調性要重估，移調器裡上一首的殘留樣本也要清掉。 */
+  function resetHarmony(notes) {
+    if (notes !== undefined) {
+      const key = harmony.setNotes(notes);
+      if (harmony.enabled) {
+        console.log(key
+          ? `[KaraTube] 和聲調性：${key.name}（相關 ${key.confidence}，取樣 ${key.seconds}s）`
+          : "[KaraTube] 和聲：判不出調性，退成低八度疊唱");
+      }
+    } else {
+      harmony.reset();
+    }
+    lastHarmonyFrameMs = 0;
+    window.audioEngine.resetHarmony();
+    updateHarmonyBadge();
   }
 
   /** 換歌／重唱：ducking 的信心度與暖機時間都不能跨曲沿用。 */
@@ -778,6 +855,29 @@ document.addEventListener("DOMContentLoaded", () => {
     window.audioEngine.setMicEchoRepeat(state.mic_echo_repeat !== undefined ? state.mic_echo_repeat : 0.4);
     window.audioEngine.setMicEchoTime(state.mic_echo_time_ms !== undefined ? state.mic_echo_time_ms : 280);
     window.audioEngine.setMicTone(state.mic_tone !== undefined ? state.mic_tone : 0.4);
+    if (state.harmony_enabled !== undefined || state.harmony_style !== undefined ||
+        state.harmony_level !== undefined) {
+      const wasEnabled = harmony.enabled;
+      harmony.configure({
+        enabled: state.harmony_enabled,
+        style: state.harmony_style,
+        level: state.harmony_level,
+      });
+      // 剛被打開：這首歌的調性可能還沒估過（開機時和聲是關著的）
+      if (harmony.enabled && !wasEnabled) {
+        window.audioEngine.initHarmony().then((ok) => {
+          // 只有真的確定不支援才警告。麥克風還沒開起來時也會拿到 false，
+          // 那只是「還沒輪到」（開麥克風時會自己再試一次），不是壞了。
+          if (!ok && window.audioEngine.harmonySupported === false) {
+            showToast("⚠️ 此瀏覽器不支援和聲（需 AudioWorklet）");
+          }
+        });
+        resetHarmony(pitchEngine.pitchData ? pitchEngine.pitchData.notes : []);
+      } else if (!harmony.enabled && wasEnabled) {
+        resetHarmony();
+      }
+      updateHarmonyBadge();
+    }
     if (state.sing_mode !== undefined) applySingMode(state.sing_mode);
 
     // 點歌台（含手機）調整字幕同步時同步套用，但不要再廣播回去造成迴圈
@@ -815,6 +915,7 @@ document.addEventListener("DOMContentLoaded", () => {
       karaokeRenderer.setLyrics([]);
       pitchEngine.setPitchData(null);
       pitchEngine.setSections([]);
+      resetHarmony([]);
       resetGuideDuck();
     }
   }
@@ -849,6 +950,8 @@ document.addEventListener("DOMContentLoaded", () => {
     pitchEngine.setPitchData(pitch);
     // 先 setPitchData（它會歸零評分）再載段落，順序反了段落統計會被清掉
     pitchEngine.setSections((structure && structure.sections) || []);
+    // 和聲的調性是從這首歌的導唱音符估出來的，換歌一定要重估（不能沿用上一首的調）
+    resetHarmony((pitch && pitch.notes) || []);
     resetGuideDuck();
     // 只清這一首的自動增益統計，學到的增益保留（見 mic-agc.js resetStats 的說明）
     micAgc.resetStats();
@@ -889,6 +992,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
     resetGuideDuck();
+    // 調性不用重估（還是同一首歌），但移調器裡的殘留樣本要清掉
+    resetHarmony();
     micAgc.resetStats();
     showIntroCard(currentSongMeta);
     videoBg.currentTime = 0;
@@ -1005,6 +1110,8 @@ document.addEventListener("DOMContentLoaded", () => {
     updateGuideDuck(frame, nowMs);
     // 自動增益吃的是同一幀量到的麥克風原始電平（frame.rms），也不重複抓波形
     updateMicAgc(frame.rms, nowMs);
+    // 和聲吃的是同一幀的導唱音符（frame.noteMidi）與「有沒有人在唱」（frame.sang）
+    updateHarmony(frame, nowMs);
     if (showPitch) pitchEngine.updateAndRender(displayTime);
 
     if (nowMs - lastTimeBroadcast > 400) {

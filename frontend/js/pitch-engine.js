@@ -196,6 +196,12 @@ class PitchEngine {
       perfect: outcome.perfect,
       // 麥克風原始電平：自動增益用它決定要加多少（前饋，量的是增益節點之前的訊號）
       rms: this.lastRms,
+      // 現在這個導唱音符是什麼音、從哪裡開始（和聲用它算音階上的度數；
+      // noteStart 同時是「換音符了沒」的識別碼 —— 同一個音符不重算移調量）
+      noteMidi: activeNote ? activeNote.midi : 0,
+      noteStart: activeNote ? activeNote.start : null,
+      // 使用者這一幀唱到的音高（0 = 沒偵測到）
+      userMidi,
     };
 
     // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練

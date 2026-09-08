@@ -229,8 +229,55 @@ def test_full_state_contains_control_fields(tmp_path):
     state = manager.get_full_state()
     for key in ("current_song", "queue", "is_playing", "vocal_volume",
                 "pitch_shift", "music_volume", "mic_volume", "lyric_offset_ms",
-                "show_pitch", "sing_mode"):
+                "show_pitch", "sing_mode", "harmony_enabled", "harmony_style",
+                "harmony_level"):
         assert key in state
+
+
+# --- 和聲（雙聲部）---
+
+def test_harmony_controls_are_shared_state(tmp_path):
+    """和聲的開關／聲部／音量是共享狀態：點歌台按下去，舞台端與其他手機都看得到。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        # 預設關著：和聲是加了才有的效果，不該開機就自己出聲
+        assert manager.harmony_enabled is False
+        assert manager.harmony_style == "third"
+
+        await manager.update_controls({
+            "harmony_enabled": True,
+            "harmony_style": "duet",
+            "harmony_level": 0.7,
+        })
+        state = manager.get_full_state()
+        assert state["harmony_enabled"] is True
+        assert state["harmony_style"] == "duet"
+        assert state["harmony_level"] == 0.7
+
+    asyncio.run(scenario())
+
+
+def test_unknown_harmony_style_keeps_previous(tmp_path):
+    """認不得的聲部名稱保留原值 —— 舊版舞台端不該讓和聲變成隨機聲部。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"harmony_style": "octave"})
+        assert manager.harmony_style == "octave"
+        await manager.update_controls({"harmony_style": "第七度加減七"})
+        assert manager.harmony_style == "octave"
+
+    asyncio.run(scenario())
+
+
+def test_harmony_level_clamped(tmp_path):
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"harmony_level": 9.0})
+        assert manager.harmony_level == 1.0
+        await manager.update_controls({"harmony_level": -3})
+        assert manager.harmony_level == 0.0
+
+    asyncio.run(scenario())
 
 
 # --- 練唱模式：A-B 區段循環 ---

@@ -961,6 +961,15 @@ document.addEventListener("DOMContentLoaded", () => {
     syncSlider(micEchoSlider, micEchoText, state.mic_echo, true);
     syncSlider(micEchoRepeatSlider, micEchoRepeatText, state.mic_echo_repeat, true);
     syncSlider(micToneSlider, micToneText, state.mic_tone, true);
+
+    // 和聲：任何一台裝置（含手機）改過都要同步回來
+    syncSlider(harmonyLevelSlider, harmonyLevelText, state.harmony_level, true);
+    if (state.harmony_enabled !== undefined || state.harmony_style !== undefined) {
+      if (state.harmony_enabled !== undefined) harmonyEnabled = !!state.harmony_enabled;
+      if (state.harmony_style !== undefined) harmonyStyle = state.harmony_style;
+      renderHarmonyUI();
+    }
+
     if (state.sing_mode !== undefined && state.sing_mode !== singMode) {
       updateSingModeUI(state.sing_mode);
     }
@@ -1077,6 +1086,49 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPercentSlider(micEchoRepeatSlider, micEchoRepeatText, "mic_echo_repeat");
   bindPercentSlider(micToneSlider, micToneText, "mic_tone");
 
+  // --- 和聲（雙聲部）---
+  // 開關、聲部與音量都是共享控制參數：點歌台按下去，舞台端立刻套用，
+  // 其他手機看到的也是同一組狀態（同一個包廂只有一套和聲設定才合理）。
+  const harmonyToggleBtn = document.getElementById("harmonyToggleBtn");
+  const harmonyLevelSlider = document.getElementById("harmonyLevelSlider");
+  const harmonyLevelText = document.getElementById("harmonyLevelText");
+  const harmonyStyleBtns = document.querySelectorAll(".harmony-style-btn");
+
+  let harmonyEnabled = false;
+  let harmonyStyle = "third";
+
+  function renderHarmonyUI() {
+    harmonyToggleBtn.textContent = harmonyEnabled ? "已開啟" : "關閉中";
+    harmonyToggleBtn.classList.toggle("btn-primary", harmonyEnabled);
+    harmonyToggleBtn.classList.toggle("btn-secondary", !harmonyEnabled);
+    harmonyStyleBtns.forEach((btn) => {
+      btn.classList.toggle("active", harmonyEnabled && btn.dataset.harmony === harmonyStyle);
+    });
+  }
+
+  harmonyToggleBtn.addEventListener("click", () => {
+    harmonyEnabled = !harmonyEnabled;
+    renderHarmonyUI();
+    window.api.updateControl({ harmony_enabled: harmonyEnabled });
+  });
+
+  harmonyStyleBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      harmonyStyle = btn.dataset.harmony;
+      // 直接按聲部就等於「我要和聲」——還要再按一次開關才有聲音的話沒人找得到
+      const patch = { harmony_style: harmonyStyle };
+      if (!harmonyEnabled) {
+        harmonyEnabled = true;
+        patch.harmony_enabled = true;
+      }
+      renderHarmonyUI();
+      window.api.updateControl(patch);
+    });
+  });
+
+  bindPercentSlider(harmonyLevelSlider, harmonyLevelText, "harmony_level");
+  renderHarmonyUI();
+
   // 演唱模式。單人＝人聲不進喇叭，是筆電內建麥克風唯一不會嘯叫的用法。
   let singMode = "solo";
   function updateSingModeUI(mode) {
@@ -1147,8 +1199,11 @@ document.addEventListener("DOMContentLoaded", () => {
   dryVoiceBtn.addEventListener("click", () => {
     micReverbSlider.value = 0; pct(micReverbText, 0);
     micEchoSlider.value = 0; pct(micEchoText, 0);
-    window.api.updateControl({ mic_reverb: 0, mic_echo: 0 });
-    showNotification("🎙️ 已切換為乾聲（殘響與回音關閉）");
+    // 「乾聲」是「只剩我自己的聲音」，和聲也算效果，一起關掉才符合這個字面意思
+    harmonyEnabled = false;
+    renderHarmonyUI();
+    window.api.updateControl({ mic_reverb: 0, mic_echo: 0, harmony_enabled: false });
+    showNotification("🎙️ 已切換為乾聲（殘響、回音與和聲關閉）");
   });
 
   // --- 調音台開關 ---
@@ -1380,6 +1435,15 @@ document.addEventListener("DOMContentLoaded", () => {
     default_mic_echo_repeat: { label: "回音重複", percent: true },
     default_mic_echo_time_ms: { label: "回音間隔", unit: " ms" },
     default_mic_tone: { label: "高頻柔化", hint: "防尖銳", percent: true },
+    default_harmony_enabled: { label: "開機就開和聲", hint: "預設關" },
+    default_harmony_style: {
+      label: "和聲聲部",
+      choiceLabels: {
+        third: "上三度", low_third: "下三度", fifth: "上五度",
+        octave: "低八度", duet: "雙聲部",
+      },
+    },
+    default_harmony_level: { label: "和聲音量", percent: true },
     default_sing_mode: { label: "演唱模式", choiceLabels: { solo: "🎧 單人", party: "🔊 多人" } },
     default_show_pitch: { label: "顯示音準導唱線" },
     loudness_normalize: { label: "啟用自動音量平衡", hint: "各首歌一樣大聲" },
@@ -1409,6 +1473,7 @@ document.addEventListener("DOMContentLoaded", () => {
       keys: ["default_music_volume", "default_mic_volume", "default_vocal_volume",
              "default_pitch_shift", "default_mic_reverb", "default_mic_echo",
              "default_mic_echo_repeat", "default_mic_echo_time_ms", "default_mic_tone",
+             "default_harmony_enabled", "default_harmony_style", "default_harmony_level",
              "default_sing_mode", "default_show_pitch"],
     },
     {

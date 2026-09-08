@@ -234,6 +234,43 @@
         </div>
       </div>
 
+      <!-- 和聲（雙聲部）：跟著旋律在音階上疊第二個聲部，一個人唱起來像兩個人 -->
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🎶 和聲（雙聲部）
+          <button id="harmonyToggleBtn" class="btn btn-secondary mixer-mini-btn"
+                  title="一鍵開關和聲">關閉中</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🎼 聲部<small>音階上的度數</small></label>
+          <div class="mode-switch harmony-styles" style="flex: 1;">
+            <button class="mode-btn harmony-style-btn" data-harmony="third"
+                    title="上三度：最標準的 KTV 和聲">三度</button>
+            <button class="mode-btn harmony-style-btn" data-harmony="low_third"
+                    title="下三度：主唱在高音區時往下疊比較穩">下三</button>
+            <button class="mode-btn harmony-style-btn" data-harmony="fifth"
+                    title="上五度：空心、開闊，適合搖滾與台語歌的長音">五度</button>
+            <button class="mode-btn harmony-style-btn" data-harmony="octave"
+                    title="低八度疊唱：男聲厚度，任何調都不會錯">八度</button>
+            <button class="mode-btn harmony-style-btn" data-harmony="duet"
+                    title="雙聲部：上三度＋低八度，最接近對唱的聽感">雙聲</button>
+          </div>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔊 和聲音量<small>不會蓋過主唱</small></label>
+          <input type="range" id="harmonyLevelSlider" min="0" max="1" step="0.05" value="0.5">
+          <span id="harmonyLevelText" class="slider-value">50%</span>
+        </div>
+
+        <p class="mixer-hint">
+          和聲會依這首歌的<b>調性</b>決定疊三度還是四度（固定升 4 個半音有一半的音會變調外音）。
+          判不出調性的歌自動退成低八度疊唱。和聲屬於人聲，
+          <b>單人模式（人聲不進喇叭）聽不到</b> —— 要聽請切多人模式並使用外接喇叭。
+        </p>
+      </div>
+
       <div class="mixer-section">
         <div class="mixer-section-title">
           🔁 練唱模式（A-B 循環）

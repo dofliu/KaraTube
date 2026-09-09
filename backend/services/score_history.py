@@ -21,6 +21,11 @@ logger = logging.getLogger("KaraTube.ScoreHistory")
 # 只保留最近 N 筆成績，個人最佳另外存所以不會因裁切而遺失
 MAX_ENTRIES = 1000
 
+# 對唱模式的平手門檻（分數差佔較高分的比例）。
+# 必須與舞台端 frontend/js/duet-scorer.js 的 TIE_RATIO 一致 ——
+# 兩邊各判一次勝負的話，畫面與手機通知會講出不同的結果。
+DUET_TIE_RATIO = 0.03
+
 
 class ScoreHistory:
     def __init__(self, score_file: Path):
@@ -29,6 +34,11 @@ class ScoreHistory:
         self._entries: List[Dict[str, Any]] = []
         # song_id -> 該曲個人最佳的那一筆成績
         self._bests: Dict[str, Dict[str, Any]] = {}
+        # 對唱模式的「這位演唱者在這首歌的最佳」。
+        # 刻意跟 _bests 分開存而不是塞進同一個 dict：
+        # _bests 的鍵是 song_id，混進「song_id + 名字」的複合鍵之後，
+        # 任何照 song_id 查表的地方都會多出查不到歌的鍵，那種 bug 很難找。
+        self._singer_bests: Dict[str, Dict[str, Any]] = {}
         self._load()
 
     def _load(self):
@@ -42,24 +52,35 @@ class ScoreHistory:
                 bests = raw.get("bests", {})
                 self._bests = {k: v for k, v in bests.items()
                                if isinstance(v, dict)} if isinstance(bests, dict) else {}
+                # 舊版檔案沒有這一區（對唱模式之前的紀錄），當成空的就好
+                singer = raw.get("singer_bests", {})
+                self._singer_bests = {k: v for k, v in singer.items()
+                                      if isinstance(v, dict)} if isinstance(singer, dict) else {}
         except Exception as e:
             logger.warning(f"評分歷史讀取失敗，重新開始: {e}")
             self._entries = []
             self._bests = {}
+            self._singer_bests = {}
 
     def _save(self):
         try:
             self.score_file.parent.mkdir(parents=True, exist_ok=True)
             payload = {"updated_at": datetime.now().isoformat(timespec="seconds"),
                        "entries": self._entries,
-                       "bests": self._bests}
+                       "bests": self._bests,
+                       "singer_bests": self._singer_bests}
             self.score_file.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
             logger.warning(f"評分歷史寫入失敗: {e}")
 
-    def record(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """記一筆唱畢成績，回傳含個人最佳與擊敗比例的結算資料。"""
+    @staticmethod
+    def _singer_key(song_id: str, singer: str) -> str:
+        # \x00 不可能出現在 song_id 或名字裡，所以不會有「歌名剛好含分隔符」的碰撞
+        return f"{song_id}\x00{singer}"
+
+    def _build_entry(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """把前端送來的成績整理成一筆紀錄。看不懂（沒 song_id、分數是文字）回 None。"""
         song_id = result.get("song_id") or result.get("id")
         try:
             score = int(result.get("score", 0))
@@ -73,6 +94,11 @@ class ScoreHistory:
             "title": result.get("title", ""),
             "artist": result.get("artist", ""),
             "thumbnail": result.get("thumbnail", ""),
+            # 對唱模式才有值：這一筆是哪一位唱的。
+            # 空字串代表單人演唱（絕大多數的歷史紀錄），
+            # 這樣舊資料不用轉換，新舊兩種紀錄也能排在同一條時間軸上。
+            "singer": str(result.get("singer") or "")[:12],
+            "duet": bool(result.get("duet")),
             "score": score,
             "accuracy": _clamp_float(result.get("accuracy"), 0.0, 1.0),
             "max_combo": _clamp_int(result.get("max_combo"), 0, 10 ** 6),
@@ -83,34 +109,111 @@ class ScoreHistory:
             "worst_section": str(result.get("worst_section") or "")[:24],
             "sung_at": datetime.now().isoformat(timespec="seconds"),
         }
+        return entry
 
-        with self._lock:
-            # 擊敗比例：跟「這一筆之前」的所有歷史成績比
-            previous = [int(e.get("score", 0)) for e in self._entries]
-            beat_percent = (
-                round(100 * sum(1 for s in previous if s < score) / len(previous))
-                if previous else None
-            )
+    def _record_locked(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        """把一筆整理好的紀錄寫進歷史（呼叫前必須先拿到鎖，且由呼叫端負責存檔）。"""
+        song_id = entry["song_id"]
+        score = entry["score"]
+        singer = entry.get("singer") or ""
 
-            prev_best = self._bests.get(song_id)
-            prev_best_score = int(prev_best.get("score", -1)) if prev_best else -1
-            is_new_best = score > prev_best_score
-            if is_new_best:
-                self._bests[song_id] = dict(entry)
+        # 擊敗比例：跟「這一筆之前」的所有歷史成績比
+        previous = [int(e.get("score", 0)) for e in self._entries]
+        beat_percent = (
+            round(100 * sum(1 for s in previous if s < score) / len(previous))
+            if previous else None
+        )
 
-            self._entries.append(entry)
-            if len(self._entries) > MAX_ENTRIES:
-                self._entries = self._entries[-MAX_ENTRIES:]
-            self._save()
+        # 這台機器在這首歌的最高分（不分是誰唱的）
+        prev_best = self._bests.get(song_id)
+        prev_best_score = int(prev_best.get("score", -1)) if prev_best else -1
+        if score > prev_best_score:
+            self._bests[song_id] = dict(entry)
+
+        # 對唱模式再多維護一份「這位演唱者在這首歌的最佳」。
+        # 「刷新紀錄」對有名字的人來說指的是刷新自己的紀錄 ——
+        # 拿全機器的最高分去比，等於每次跟包廂裡唱得最好的那個人比，沒有意義。
+        if singer:
+            key = self._singer_key(song_id, singer)
+            prev_singer = self._singer_bests.get(key)
+            prev_singer_score = int(prev_singer.get("score", -1)) if prev_singer else -1
+            reference_score = prev_singer_score
+            if score > prev_singer_score:
+                self._singer_bests[key] = dict(entry)
+        else:
+            reference_score = prev_best_score
+
+        is_new_best = score > reference_score
+
+        self._entries.append(entry)
+        if len(self._entries) > MAX_ENTRIES:
+            self._entries = self._entries[-MAX_ENTRIES:]
 
         summary = dict(entry)
         summary["is_new_best"] = is_new_best
-        summary["best_score"] = max(score, prev_best_score)
-        summary["previous_best"] = prev_best_score if prev_best_score >= 0 else None
+        summary["best_score"] = max(score, reference_score)
+        summary["previous_best"] = reference_score if reference_score >= 0 else None
         summary["beat_percent"] = beat_percent
-        logger.info(f"唱畢結算: {entry.get('title') or song_id} {score} 分"
+        who = f"{singer} " if singer else ""
+        logger.info(f"唱畢結算: {who}{entry.get('title') or song_id} {score} 分"
                     f"（{'刷新個人最佳' if is_new_best else '個人最佳 ' + str(summary['best_score'])}）")
         return summary
+
+    def record(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """記一筆唱畢成績，回傳含個人最佳與擊敗比例的結算資料。"""
+        entry = self._build_entry(result)
+        if entry is None:
+            return None
+        with self._lock:
+            summary = self._record_locked(entry)
+            self._save()
+        return summary
+
+    def record_duet(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        對唱模式的唱畢結算：兩位演唱者的成績一起記。
+
+        `payload` 形狀是 `{song_id, title, artist, thumbnail, a: {...}, b: {...}}`，
+        兩位共用歌曲資訊，各自帶 singer / score / accuracy / max_combo / grade。
+
+        刻意做成一支方法而不是「呼叫 record 兩次」：兩筆要嘛都進去、要嘛都不進去，
+        而且只存檔一次。分兩次寫的話，中間出事就會在歷史裡留下
+        「一場只有一個人的對唱」—— 那筆資料之後永遠說不清是誰的問題。
+        """
+        if not isinstance(payload, dict):
+            return None
+        shared = {k: payload.get(k, "") for k in ("song_id", "title", "artist", "thumbnail")}
+        sides = {}
+        for which in ("a", "b"):
+            side = payload.get(which)
+            if not isinstance(side, dict):
+                return None
+            entry = self._build_entry({**shared, **side, "duet": True})
+            if entry is None:
+                return None
+            # 名字是對唱紀錄的重點（沒有名字就分不出兩筆是誰的），沒給就用麥克風代號
+            if not entry["singer"]:
+                entry["singer"] = "A 麥" if which == "a" else "B 麥"
+            sides[which] = entry
+
+        with self._lock:
+            result = {which: self._record_locked(entry) for which, entry in sides.items()}
+            self._save()
+
+        score_a = result["a"]["score"]
+        score_b = result["b"]["score"]
+        margin = abs(score_a - score_b)
+        top = max(score_a, score_b)
+        # 平手門檻與舞台端同一個比例（frontend/js/duet-scorer.js 的 TIE_RATIO）：
+        # 兩邊算出不同的勝負，畫面說平手、手機通知說 A 贏，是最糟的那種不一致。
+        tie = top == 0 or margin / top <= DUET_TIE_RATIO
+        result["winner"] = "tie" if tie else ("a" if score_a > score_b else "b")
+        result["margin"] = margin
+        # 廣播給點歌台的通知只需要一行字的材料，所以這裡就把它整理好
+        result["song_id"] = shared["song_id"]
+        result["title"] = shared["title"]
+        result["duet"] = True
+        return result
 
     def best_for(self, song_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -126,6 +229,17 @@ class ScoreHistory:
         with self._lock:
             return {k: dict(v) for k, v in self._bests.items()}
 
+    def singer_best_for(self, song_id: str, singer: str) -> Optional[Dict[str, Any]]:
+        """對唱模式：這位演唱者在這首歌的個人最佳。沒唱過回 None。"""
+        with self._lock:
+            best = self._singer_bests.get(self._singer_key(song_id, singer or ""))
+            return dict(best) if best else None
+
+    def singer_bests(self) -> List[Dict[str, Any]]:
+        """所有「某人在某首歌的最佳」。複合鍵不好直接吐給前端，所以攤平成清單。"""
+        with self._lock:
+            return [dict(v) for v in self._singer_bests.values()]
+
     def total_count(self) -> int:
         with self._lock:
             return len(self._entries)
@@ -134,6 +248,7 @@ class ScoreHistory:
         with self._lock:
             self._entries = []
             self._bests = {}
+            self._singer_bests = {}
             self._save()
         logger.info("評分歷史已清空")
 

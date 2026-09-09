@@ -31,11 +31,13 @@ def snapshot_history_and_scores():
     saved_history = [dict(e) for e in song_history._entries]
     saved_scores = [dict(e) for e in score_history._entries]
     saved_bests = {k: dict(v) for k, v in score_history._bests.items()}
+    saved_singer_bests = {k: dict(v) for k, v in score_history._singer_bests.items()}
     yield
     song_history._entries = saved_history
     song_history._save()
     score_history._entries = saved_scores
     score_history._bests = saved_bests
+    score_history._singer_bests = saved_singer_bests
     score_history._save()
 
 
@@ -189,6 +191,56 @@ def test_scores_carry_section_verdict(snapshot_history_and_scores):
 
     best = client.get("/api/scores/test_score_sections/best").json()["best"]
     assert best["best_section"] == "副歌 1"
+
+
+def test_duet_scores_flow(snapshot_history_and_scores):
+    """對唱結算：兩位一起送、一起記，回傳的勝負與各自的個人最佳都要在。"""
+    res = client.post("/api/scores/duet", json={
+        "song_id": "test_duet_001", "title": "對唱測試",
+        "a": {"singer": "小明", "score": 5000, "accuracy": 0.6,
+              "max_combo": 40, "grade": "SS"},
+        "b": {"singer": "小美", "score": 3000, "accuracy": 0.4,
+              "max_combo": 12, "grade": "A"},
+    })
+    assert res.status_code == 200
+    result = res.json()["result"]
+    assert result["winner"] == "a"
+    assert result["margin"] == 2000
+    assert result["duet"] is True
+    assert result["a"]["singer"] == "小明"
+    assert result["b"]["is_new_best"] is True
+
+    data = client.get("/api/scores").json()
+    sung = [e for e in data["scores"] if e["song_id"] == "test_duet_001"]
+    assert len(sung) == 2
+    assert {e["singer"] for e in sung} == {"小明", "小美"}
+    # 個人最佳（某人在某首歌）另外攤平成清單回傳
+    assert any(b["singer"] == "小美" and b["score"] == 3000 for b in data["singer_bests"])
+
+
+def test_duet_scores_reject_incomplete_payload(snapshot_history_and_scores):
+    """缺一邊就整筆不收 —— 半場的對唱紀錄之後永遠說不清是誰的問題。"""
+    res = client.post("/api/scores/duet", json={
+        "song_id": "test_duet_bad", "a": {"singer": "小明", "score": 100}})
+    assert res.status_code == 400
+    res = client.post("/api/scores/duet", json={
+        "a": {"score": 100}, "b": {"score": 50}})
+    assert res.status_code == 400
+    assert not any(e["song_id"] == "test_duet_bad"
+                   for e in client.get("/api/scores").json()["scores"])
+
+
+def test_duet_control_params_round_trip():
+    """對唱開關與暱稱是共享控制參數，/api/control 要收得下也回得出來。"""
+    res = client.post("/api/control", json={
+        "duet_enabled": True, "duet_name_a": "小明", "duet_name_b": "小美"})
+    assert res.status_code == 200
+    state = res.json()["state"]
+    assert state["duet_enabled"] is True
+    assert state["duet_name_a"] == "小明"
+    # 測完關掉，不要讓後面的測試（與本機）留在對唱模式
+    client.post("/api/control", json={
+        "duet_enabled": False, "duet_name_a": "", "duet_name_b": ""})
 
 
 def test_scores_requires_song_id():

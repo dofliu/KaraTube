@@ -117,3 +117,131 @@ def test_clear(tmp_path):
     assert s.best_for("a") is None
     data = json.loads((tmp_path / "score_history.json").read_text(encoding="utf-8"))
     assert data["entries"] == [] and data["bests"] == {}
+
+
+# --- 對唱模式（兩位演唱者一起記）---
+
+
+def duet_payload(score_a=5000, score_b=4000, name_a="小明", name_b="小美", song_id="d1"):
+    return {
+        "song_id": song_id,
+        "title": "屋頂",
+        "artist": "吳宗憲 / 溫嵐",
+        "a": {"singer": name_a, "score": score_a, "accuracy": 0.62, "max_combo": 40,
+              "grade": "SS", "best_section": "副歌 1"},
+        "b": {"singer": name_b, "score": score_b, "accuracy": 0.51, "max_combo": 22,
+              "grade": "S"},
+    }
+
+
+def test_duet_records_both_singers_in_one_shot(tmp_path):
+    s = make_scores(tmp_path)
+    r = s.record_duet(duet_payload())
+
+    assert r["winner"] == "a"
+    assert r["margin"] == 1000
+    assert r["a"]["singer"] == "小明"
+    assert r["b"]["singer"] == "小美"
+    # 兩筆都進了歷史，而且兩筆都標記為對唱
+    assert s.total_count() == 2
+    assert all(e["duet"] is True for e in s.recent(10))
+    # 歌曲資訊由兩位共用（前端只送一份）
+    assert all(e["title"] == "屋頂" for e in s.recent(10))
+
+
+def test_duet_personal_best_is_per_singer(tmp_path):
+    s = make_scores(tmp_path)
+    s.record_duet(duet_payload(score_a=5000, score_b=4000))
+    # 第二輪：小美進步到 4500，但仍低於小明第一輪的 5000。
+    # 個人最佳要跟「自己」比，不是跟包廂裡唱最好的人比。
+    r = s.record_duet(duet_payload(score_a=4800, score_b=4500))
+
+    assert r["b"]["is_new_best"] is True
+    assert r["b"]["previous_best"] == 4000
+    assert r["a"]["is_new_best"] is False
+    assert r["a"]["best_score"] == 5000
+
+    assert s.singer_best_for("d1", "小美")["score"] == 4500
+    assert s.singer_best_for("d1", "小明")["score"] == 5000
+    assert s.singer_best_for("d1", "沒唱過的人") is None
+
+
+def test_duet_also_updates_song_level_best(tmp_path):
+    s = make_scores(tmp_path)
+    s.record_duet(duet_payload(score_a=5000, score_b=4000))
+    # 這台機器在這首歌的最高分（不分是誰唱的）也要更新
+    assert s.best_for("d1")["score"] == 5000
+    assert s.best_for("d1")["singer"] == "小明"
+
+
+def test_duet_tie_uses_same_threshold_as_stage(tmp_path):
+    s = make_scores(tmp_path)
+    # 差 2%（門檻 3%）→ 平手，與 frontend/js/duet-scorer.js 的判定一致
+    r = s.record_duet(duet_payload(score_a=50000, score_b=49000))
+    assert r["winner"] == "tie"
+    # 差 10% → 分出勝負
+    r2 = s.record_duet(duet_payload(score_a=50000, score_b=45000, song_id="d2"))
+    assert r2["winner"] == "a"
+
+
+def test_duet_zero_zero_is_a_tie_not_a_crash(tmp_path):
+    s = make_scores(tmp_path)
+    r = s.record_duet(duet_payload(score_a=0, score_b=0))
+    assert r["winner"] == "tie"
+    assert r["margin"] == 0
+
+
+def test_duet_missing_side_records_nothing(tmp_path):
+    s = make_scores(tmp_path)
+    assert s.record_duet({"song_id": "x", "a": {"score": 100}}) is None
+    assert s.record_duet({"a": {"score": 100}, "b": {"score": 50}}) is None
+    assert s.record_duet("not a dict") is None
+    # 一筆都不能進去：半場的對唱紀錄之後永遠說不清是誰的問題
+    assert s.total_count() == 0
+
+
+def test_duet_without_names_falls_back_to_mic_labels(tmp_path):
+    s = make_scores(tmp_path)
+    r = s.record_duet(duet_payload(name_a="", name_b=""))
+    assert r["a"]["singer"] == "A 麥"
+    assert r["b"]["singer"] == "B 麥"
+
+
+def test_duet_bests_persist_across_restart(tmp_path):
+    s = make_scores(tmp_path)
+    s.record_duet(duet_payload(score_a=5000, score_b=4000))
+
+    reloaded = make_scores(tmp_path)
+    assert reloaded.singer_best_for("d1", "小明")["score"] == 5000
+    assert len(reloaded.singer_bests()) == 2
+    assert reloaded.total_count() == 2
+
+
+def test_old_file_without_singer_bests_still_loads(tmp_path):
+    """對唱模式之前存下來的評分歷史檔沒有 singer_bests 那一區。"""
+    path = tmp_path / "score_history.json"
+    path.write_text(json.dumps({
+        "entries": [{"song_id": "a", "score": 900}],
+        "bests": {"a": {"song_id": "a", "score": 900}},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    s = ScoreHistory(path)
+    assert s.total_count() == 1
+    assert s.singer_bests() == []
+    assert s.best_for("a")["score"] == 900
+
+
+def test_clear_also_wipes_singer_bests(tmp_path):
+    s = make_scores(tmp_path)
+    s.record_duet(duet_payload())
+    s.clear()
+    assert s.singer_bests() == []
+    assert s.total_count() == 0
+
+
+def test_solo_record_keeps_empty_singer_field(tmp_path):
+    """單人演唱的紀錄不該憑空多出一個名字（歷史清單會突然出現「A 麥」）。"""
+    s = make_scores(tmp_path)
+    r = s.record({"song_id": "a", "score": 1000})
+    assert r["singer"] == ""
+    assert r["duet"] is False

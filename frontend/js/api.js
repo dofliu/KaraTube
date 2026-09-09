@@ -67,6 +67,22 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  /**
+   * 對唱模式的唱畢結算：兩位演唱者的成績一起送。
+   *
+   * 刻意不是「呼叫兩次 submitScore」—— 兩筆分開送的話，
+   * 中間斷線就會只記到一半（歷史上留下一場只有一個人的對唱），
+   * 而且會廣播兩次結算通知，包廂裡每支手機都跳兩則。
+   */
+  async submitDuetScore(resultData) {
+    const res = await fetch(`${this.baseUrl}/api/scores/duet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resultData)
+    });
+    return await res.json();
+  }
+
   async getScores(limit = 50) {
     const res = await fetch(`${this.baseUrl}/api/scores?limit=${limit}`);
     return await res.json();

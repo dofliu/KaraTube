@@ -777,6 +777,26 @@ input[type="range"] {
   text-decoration: line-through;
 }
 
+/* 對唱模式的演唱者暱稱欄。滑桿之外唯一在調音台裡的文字輸入，
+   所以樣式跟著 mixer-row 的節奏走（跟滑桿一樣佔滿中間） */
+.duet-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main, #fff);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.duet-name-input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+  background: rgba(0, 240, 255, 0.08);
+}
+
 /* --- 系統設定頁 --- */
 .setting-toggle {
   min-width: 74px;

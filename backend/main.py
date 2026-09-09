@@ -499,12 +499,29 @@ async def submit_score(payload: Dict[str, Any] = Body(...)):
     return {"status": "success", "result": result}
 
 
+@app.post("/api/scores/duet")
+async def submit_duet_score(payload: Dict[str, Any] = Body(...)):
+    """
+    對唱模式的唱畢結算：兩位演唱者的成績一起送、一起記、廣播一則通知。
+
+    形狀是 `{song_id, title, artist, thumbnail, a: {...}, b: {...}}`。
+    分兩次呼叫 `/api/scores` 也能記到分，但中間斷線就會留下一場
+    只有一個人的對唱，而且包廂裡每支手機會跳兩則結算通知。
+    """
+    result = score_history.record_duet(payload)
+    if result is None:
+        raise HTTPException(status_code=400, detail="Missing song_id / a / b or invalid score")
+    await ws_manager.broadcast({"type": "SCORE_FINAL", "data": result})
+    return {"status": "success", "result": result}
+
+
 @app.get("/api/scores")
 async def get_scores(limit: int = Query(50, ge=1, le=200)):
-    """評分歷史：最近的演唱成績與每首歌的個人最佳。"""
+    """評分歷史：最近的演唱成績與每首歌的個人最佳（含對唱的個人最佳）。"""
     return {
         "scores": score_history.recent(limit),
         "bests": score_history.bests(),
+        "singer_bests": score_history.singer_bests(),
         "total_count": score_history.total_count(),
     }
 

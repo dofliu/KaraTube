@@ -271,6 +271,34 @@
         </p>
       </div>
 
+      <!-- 對唱模式：兩支麥克風分別評分，唱完比出勝負 -->
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🎤🎤 對唱模式（兩支麥克風分別評分）
+          <button id="duetToggleBtn" class="btn btn-secondary mixer-mini-btn"
+                  title="一鍵開關對唱模式">關閉中</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🅰️ A 麥<small>演唱者暱稱</small></label>
+          <input type="text" id="duetNameA" class="duet-name-input" maxlength="12"
+                 placeholder="A 麥">
+        </div>
+
+        <div class="mixer-row">
+          <label>🅱️ B 麥<small>演唱者暱稱</small></label>
+          <input type="text" id="duetNameB" class="duet-name-input" maxlength="12"
+                 placeholder="B 麥">
+        </div>
+
+        <p class="mixer-hint">
+          兩支麥克風各自計分，唱完的結算畫面會比出勝負。第二支麥克風<b>接在哪</b>
+          （另一個 USB 裝置，或同一台音效介面的右聲道）要在<b>舞台端的 ⚙️ 音訊裝置</b>設定 ——
+          那是那台機器的硬體接法。兩支麥克風請<b>拉開距離、各自靠近嘴巴</b>：
+          靠太近時系統會把小聲的那一支判成串音而暫時不計分（結算畫面會提示比例）。
+        </p>
+      </div>
+
       <div class="mixer-section">
         <div class="mixer-section-title">
           🔁 練唱模式（A-B 循環）

@@ -2,11 +2,19 @@
 //
 // 依賴 section-scorer.js（段落評分與等級門檻），player.html 的 <script> 順序要在它之後。
 class PitchEngine {
-  constructor(canvasElement, scoreValueEl, comboValueEl) {
-    this.canvas = canvasElement;
-    this.ctx = canvasElement.getContext('2d');
+  /**
+   * @param {HTMLCanvasElement|null} canvasElement
+   *   音準導唱線畫在哪裡。對唱模式的第二位演唱者用 null ——
+   *   他吃同一套評分邏輯但不自己畫圖（軌跡由主引擎一起畫在同一張畫布上）。
+   * @param {object} options
+   *   label 演唱者標籤（對唱模式的「PERFECT!」浮字要標明是誰的，否則兩人搶著跳字沒人看得懂）
+   */
+  constructor(canvasElement, scoreValueEl, comboValueEl, options = {}) {
+    this.canvas = canvasElement || null;
+    this.ctx = this.canvas ? this.canvas.getContext('2d') : null;
     this.scoreValueEl = scoreValueEl;
     this.comboValueEl = comboValueEl;
+    this.label = options.label ? String(options.label) : "";
 
     this.pitchData = { notes: [], points: [] };
     this.score = 0;
@@ -38,7 +46,7 @@ class PitchEngine {
   }
 
   resizeCanvas() {
-    if (this.canvas) {
+    if (this.canvas && this.ctx) {
       this.canvas.width = this.canvas.offsetWidth * window.devicePixelRatio;
       this.canvas.height = this.canvas.offsetHeight * window.devicePixelRatio;
       this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
@@ -90,6 +98,11 @@ class PitchEngine {
     this.analyser = analyser;
   }
 
+  /** 對唱模式的演唱者暱稱（點歌台可以隨時改，浮字要跟著改）。 */
+  setLabel(label) {
+    this.label = label ? String(label) : "";
+  }
+
   // Real-time Autocorrelation Pitch Detector
   /**
    * 只量麥克風原始訊號的 RMS，不做音高偵測。
@@ -113,10 +126,17 @@ class PitchEngine {
     return this.lastRms;
   }
 
-  detectUserPitch(currentTime) {
+  /**
+   * @param {boolean} reuseRms
+   *   true = 不重抓波形，直接用 measureRms() 剛才填好的緩衝區。
+   *   對唱模式要先量兩支麥克風的電平才能決定這一幀算誰的，
+   *   量完再叫 tick() 的話，同一幀就會抓兩次波形 —— 自相關是整條迴圈裡最貴的一步，
+   *   多抓一次純粹是浪費（而且兩次抓到的樣本還不一樣，除錯時會很困惑）。
+   */
+  detectUserPitch(currentTime, reuseRms = false) {
     if (!this.analyser) return 0;
 
-    const rms = this.measureRms();
+    const rms = reuseRms ? this.lastRms : this.measureRms();
     if (rms < 0.015) return 0; // Below noise floor
 
     // Autocorrelation algorithm
@@ -170,19 +190,26 @@ class PitchEngine {
    * 回傳這一幀的判定 `{ hasNote, sang, hit, perfect }`：
    * 段落評分與導唱自動 ducking 都吃這份判定，不各自再偵測一次音高
    * （偵測是整條迴圈裡最貴的一步，而且兩邊算出不同結果的話會非常難查）。
+   *
+   * @param {object} options
+   *   credit   false = 這一幀不計分（對唱模式判定為串音時：另一位演唱者的聲音
+   *            從這支麥克風漏進來，記進來就等於幫他加分）。音高照樣偵測 ——
+   *            串音判定本身就需要知道這支麥克風收到的音高是什麼。
+   *   reuseRms true = 電平已經由外面量過了，不要重抓一次波形。
    */
-  tick(currentTime) {
-    const userMidi = this.detectUserPitch(currentTime);
-    this.lastUserMidi = userMidi;
+  tick(currentTime, options = {}) {
+    const credit = options.credit === undefined ? true : !!options.credit;
+    const userMidi = this.detectUserPitch(currentTime, !!options.reuseRms);
+    this.lastUserMidi = credit ? userMidi : 0;
 
     // 有導唱音符的時刻才算「機會」，前奏間奏不列入音準率分母
     const activeNote = this.pitchData.notes
       ? this.pitchData.notes.find(n => currentTime >= n.start && currentTime <= n.end)
       : null;
-    if (activeNote) this.noteFrames++;
+    if (activeNote && credit) this.noteFrames++;
 
     let outcome = { hit: false, perfect: false };
-    if (userMidi > 0) {
+    if (userMidi > 0 && credit) {
       this.sangFrames++;
       this.userPitchHistory.push({ time: currentTime, midi: userMidi });
       if (this.userPitchHistory.length > 120) this.userPitchHistory.shift();
@@ -191,7 +218,10 @@ class PitchEngine {
 
     const frame = {
       hasNote: !!activeNote,
-      sang: userMidi > 0,
+      sang: userMidi > 0 && credit,
+      // 這一幀有沒有算進成績（false = 判定為串音）。徽章與統計要分得清
+      // 「沒人唱」與「有唱但不算他的」—— 兩者在現場是完全不同的問題。
+      credited: credit,
       hit: outcome.hit,
       perfect: outcome.perfect,
       // 麥克風原始電平：自動增益用它決定要加多少（前饋，量的是增益節點之前的訊號）
@@ -200,12 +230,15 @@ class PitchEngine {
       // noteStart 同時是「換音符了沒」的識別碼 —— 同一個音符不重算移調量）
       noteMidi: activeNote ? activeNote.midi : 0,
       noteStart: activeNote ? activeNote.start : null,
-      // 使用者這一幀唱到的音高（0 = 沒偵測到）
+      // 這支麥克風這一幀收到的音高（0 = 沒偵測到）。
+      // 不管有沒有計分都給實際偵測值 —— 對唱的串音判定要靠「兩支麥克風的音高
+      // 一不一樣」，把不計分的那邊歸零就等於拿掉了判斷的依據。
       userMidi,
     };
 
     // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練
-    this.sectionScorer.count(currentTime, frame);
+    // （判定為串音的幀不進段落統計，否則段落命中率的分母會混進別人唱的時間）
+    if (credit) this.sectionScorer.count(currentTime, frame);
 
     return frame;
   }
@@ -233,8 +266,14 @@ class PitchEngine {
     };
   }
 
-  updateAndRender(currentTime) {
-    if (!this.canvas) return;
+  /**
+   * @param {Array<{engine: PitchEngine, color: string}>} extraTrails
+   *   另外要畫在同一張畫布上的音高軌跡。對唱模式用它把第二位演唱者的軌跡
+   *   疊在同一條導唱線上（兩個人各自一種顏色）—— 分成兩張畫布的話，
+   *   同一個音符在兩張圖上的位置對不起來，反而看不出誰唱得比較準。
+   */
+  updateAndRender(currentTime, extraTrails = []) {
+    if (!this.canvas || !this.ctx) return;
     const width = this.canvas.offsetWidth;
     const height = this.canvas.offsetHeight;
     this.ctx.clearRect(0, 0, width, height);
@@ -295,44 +334,55 @@ class PitchEngine {
     }
 
     // 音高偵測與計分在 tick() 完成，這裡只負責畫出最新結果
-    const userMidi = this.lastUserMidi;
+    // 對唱模式的第二位先畫（顏色較暗），主唱的軌跡疊在上面
+    for (const extra of extraTrails) {
+      if (!extra || !extra.engine) continue;
+      this._drawTrail(extra.engine.userPitchHistory, extra.color || "#7cf6a0",
+                      windowStart, windowDuration, width, midiToY);
+      this._drawCursor(extra.engine.lastUserMidi, extra.color || "#7cf6a0", currentX, midiToY);
+    }
 
-    // Draw User Pitch Trail
-    if (this.userPitchHistory.length > 1) {
-      this.ctx.beginPath();
-      this.ctx.strokeStyle = "#ff007f";
-      this.ctx.shadowColor = "#ff007f";
-      this.ctx.shadowBlur = 12;
-      this.ctx.lineWidth = 3;
+    this._drawTrail(this.userPitchHistory, "#ff007f",
+                    windowStart, windowDuration, width, midiToY);
+    this._drawCursor(this.lastUserMidi, "#00f0ff", currentX, midiToY);
+  }
 
-      let started = false;
-      for (const pt of this.userPitchHistory) {
-        if (pt.time >= windowStart && pt.time <= windowStart + windowDuration) {
-          const x = ((pt.time - windowStart) / windowDuration) * width;
-          const y = midiToY(pt.midi);
-          if (!started) {
-            this.ctx.moveTo(x, y);
-            started = true;
-          } else {
-            this.ctx.lineTo(x, y);
-          }
+  /** 一條音高軌跡。抽出來是因為對唱模式要在同一張畫布上畫兩條（只差顏色）。 */
+  _drawTrail(history, color, windowStart, windowDuration, width, midiToY) {
+    if (!history || history.length < 2) return;
+    this.ctx.beginPath();
+    this.ctx.strokeStyle = color;
+    this.ctx.shadowColor = color;
+    this.ctx.shadowBlur = 12;
+    this.ctx.lineWidth = 3;
+
+    let started = false;
+    for (const pt of history) {
+      if (pt.time >= windowStart && pt.time <= windowStart + windowDuration) {
+        const x = ((pt.time - windowStart) / windowDuration) * width;
+        const y = midiToY(pt.midi);
+        if (!started) {
+          this.ctx.moveTo(x, y);
+          started = true;
+        } else {
+          this.ctx.lineTo(x, y);
         }
       }
-      this.ctx.stroke();
-      this.ctx.shadowBlur = 0;
     }
+    this.ctx.stroke();
+    this.ctx.shadowBlur = 0;
+  }
 
-    // Draw Current User Pitch Cursor
-    if (userMidi > 0) {
-      const cursorY = midiToY(userMidi);
-      this.ctx.fillStyle = "#00f0ff";
-      this.ctx.shadowColor = "#00f0ff";
-      this.ctx.shadowBlur = 16;
-      this.ctx.beginPath();
-      this.ctx.arc(currentX, cursorY, 6, 0, Math.PI * 2);
-      this.ctx.fill();
-      this.ctx.shadowBlur = 0;
-    }
+  /** 現在唱到的音高游標（播放頭上那顆點）。 */
+  _drawCursor(midi, color, currentX, midiToY) {
+    if (!(midi > 0)) return;
+    this.ctx.fillStyle = color;
+    this.ctx.shadowColor = color;
+    this.ctx.shadowBlur = 16;
+    this.ctx.beginPath();
+    this.ctx.arc(currentX, midiToY(midi), 6, 0, Math.PI * 2);
+    this.ctx.fill();
+    this.ctx.shadowBlur = 0;
   }
 
   /** 回傳這一幀的判定 `{ hit, perfect }`，讓段落評分沿用同一個結果。 */
@@ -380,7 +430,8 @@ class PitchEngine {
 
     const toast = document.createElement('div');
     toast.className = 'floating-fx';
-    toast.textContent = text;
+    // 對唱模式兩個人的浮字會同時跳出來，不標名字的話沒人知道那句 PERFECT 是誰的
+    toast.textContent = this.label ? `${this.label} ${text}` : text;
     toast.style.left = `${30 + Math.random() * 40}%`;
     toast.style.top = `${25 + Math.random() * 20}%`;
 

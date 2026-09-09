@@ -20,6 +20,18 @@ class AudioEngine {
     this.delayNode = null;
     this.delayGain = null;
     this.micAnalyser = null;
+
+    // 對唱模式的第二支麥克風。
+    // 'off'     單麥（原行為）
+    // 'device'  第二支麥克風是另一個輸入裝置（兩支 USB 麥克風）
+    // 'channel' 同一個立體聲輸入裝置的左右聲道（兩支麥克風接一台音效介面，
+    //           這是包廂真正的接法：L = A 麥、R = B 麥）
+    this.duetMode = "off";
+    this.duetStream = null;
+    this.duetSource = null;
+    this.channelSplitter = null;
+    this.micAnalyserB = null;
+    this.chainB = null;
     // 自動增益的節點與目前倍率。麥克風還沒開之前 setMicAutoGain 也可能被呼叫
     // （舞台端的迴圈不等麥克風權限），所以這裡先給合法初值。
     this.micAgcGain = null;
@@ -230,19 +242,56 @@ class AudioEngine {
     this.delayGain = this.echoOutGain;
   }
 
+  /**
+   * 開一條麥克風輸入串流。
+   *
+   * @param {string} deviceId 指定裝置（空值 = 系統預設）
+   * @param {boolean} stereo  要不要立體聲（對唱的「同一裝置左右聲道」模式需要）
+   */
+  async _openMicStream(deviceId = "", stereo = false) {
+    const audio = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      latency: 0.01,
+    };
+    if (deviceId) audio.deviceId = { exact: deviceId };
+    // ideal 而不是 exact：拿不到立體聲時要能退回單聲道並告訴使用者，
+    // 而不是整個 getUserMedia 失敗（那樣連麥克風都開不起來）。
+    if (stereo) audio.channelCount = { ideal: 2 };
+    return navigator.mediaDevices.getUserMedia({ audio });
+  }
+
+  /**
+   * 換掉 A 麥的來源串流（換裝置、切換左右聲道對唱都要）。
+   *
+   * 舊的 source 節點一定要先 disconnect：停掉串流只讓它變成靜音，
+   * 節點本身還掛在音訊圖上（接著 analyser 與前級鏈）。
+   * 一直不拆的話每換一次裝置就多一個殭屍節點，最後量到的電平是好幾條路徑的和。
+   */
+  _replaceMicSource(stream) {
+    if (this.micSource) {
+      try { this.micSource.disconnect(); } catch (e) { /* 還沒接過 */ }
+    }
+    if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
+    this.micStream = stream;
+    this.micSource = this.ctx.createMediaStreamSource(stream);
+  }
+
+  /** 這條串流實際拿到幾個聲道。左右聲道對唱要靠它確認硬體真的給了立體聲。 */
+  _streamChannelCount(stream) {
+    const track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+    if (!track || typeof track.getSettings !== "function") return 1;
+    const count = Number(track.getSettings().channelCount);
+    return Number.isFinite(count) && count > 0 ? count : 1;
+  }
+
   async startMicrophone() {
     this.initContext();
     if (this.isMicActive) return true;
 
     try {
-      this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          latency: 0.01
-        }
-      });
+      this.micStream = await this._openMicStream();
 
       this.micSource = this.ctx.createMediaStreamSource(this.micStream);
       this.micGain = this.ctx.createGain();
@@ -251,15 +300,11 @@ class AudioEngine {
       // Pitch Analyser
       this.micAnalyser = this.ctx.createAnalyser();
       this.micAnalyser.fftSize = 2048;
-      this.micSource.connect(this.micAnalyser);
 
       // 麥克風處理鏈。monitorGain 是「要不要從喇叭放出人聲」的總開關，
       // 放在效果送出之前，單人模式才能連殘響與回音一起靜音。
       this._buildMicChain();
-      this.micSource.connect(this.micHighpass);
-      this.micHighpass.connect(this.micDeEss);
-      this.micDeEss.connect(this.micAgcGain);
-      this.micAgcGain.connect(this.micLimiter);
+      this._routeInputs();
       this.micLimiter.connect(this.micGain);
 
       this.micGain.connect(this.monitorGain);
@@ -295,36 +340,97 @@ class AudioEngine {
    * 順序很重要：自動增益一定要在 limiter **之前**。
    * 反過來的話，AGC 加上去的增益就沒有任何東西擋著，
    * 判斷失誤（突然的咳嗽、拍打麥克風）會直接變成削峰的爆音。
+   *
+   * 寫成工廠（建好一條並在內部接完 highpass → deEss → agcGain → limiter）
+   * 是因為對唱模式要兩條一模一樣的鏈。兩邊各寫一次的話，
+   * 哪天調了 A 的 de-esser 卻忘了 B，兩支麥克風的音色就會不一樣 ——
+   * 而那種差異在包廂裡只會被講成「B 麥比較差」，沒人會想到是程式。
    */
+  _createMicChain() {
+    const highpass = this.ctx.createBiquadFilter();
+    highpass.type = "highpass";
+    highpass.frequency.value = 110;
+    highpass.Q.value = 0.7;
+
+    const deEss = this.ctx.createBiquadFilter();
+    deEss.type = "highshelf";
+    deEss.frequency.value = 5500;
+    deEss.gain.value = -5;
+
+    // 麥克風自動增益的倍率。刻意跟音量滑桿分開兩個節點：
+    // 使用者拉的音量與機器的自動調整是兩件事，混在同一個 gain 上，
+    // 自動調整動過之後滑桿的刻度就跟實際音量對不起來了。
+    const agcGain = this.ctx.createGain();
+    agcGain.gain.value = 1.0;
+
+    const limiter = this.ctx.createDynamicsCompressor();
+    limiter.threshold.value = -14;
+    limiter.knee.value = 6;
+    limiter.ratio.value = 12;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.15;
+
+    highpass.connect(deEss);
+    deEss.connect(agcGain);
+    agcGain.connect(limiter);
+
+    return { highpass, deEss, agcGain, limiter, agcLevel: 1.0 };
+  }
+
   _buildMicChain() {
     if (this.micHighpass) return;
 
-    this.micHighpass = this.ctx.createBiquadFilter();
-    this.micHighpass.type = "highpass";
-    this.micHighpass.frequency.value = 110;
-    this.micHighpass.Q.value = 0.7;
-
-    this.micDeEss = this.ctx.createBiquadFilter();
-    this.micDeEss.type = "highshelf";
-    this.micDeEss.frequency.value = 5500;
-    this.micDeEss.gain.value = -5;
-
-    // 麥克風自動增益的倍率。刻意跟 micGain（使用者的麥克風音量滑桿）分開兩個節點：
-    // 使用者拉的音量與機器的自動調整是兩件事，混在同一個 gain 上，
-    // 自動調整動過之後滑桿的刻度就跟實際音量對不起來了。
-    this.micAgcGain = this.ctx.createGain();
-    this.micAgcGain.gain.value = 1.0;
+    const chain = this._createMicChain();
+    this.micHighpass = chain.highpass;
+    this.micDeEss = chain.deEss;
+    this.micAgcGain = chain.agcGain;
     this.micAgcLevel = 1.0;
-
-    this.micLimiter = this.ctx.createDynamicsCompressor();
-    this.micLimiter.threshold.value = -14;
-    this.micLimiter.knee.value = 6;
-    this.micLimiter.ratio.value = 12;
-    this.micLimiter.attack.value = 0.003;
-    this.micLimiter.release.value = 0.15;
+    this.micLimiter = chain.limiter;
 
     this.monitorGain = this.ctx.createGain();
     this.monitorGain.gain.value = 0;   // 預設不外放，由 setSingMode 決定
+  }
+
+  /**
+   * 把輸入訊號接到量測用的 analyser 與前級鏈上。
+   *
+   * 每次換裝置、開關對唱都要重新走一次 —— 這裡是唯一決定「哪個訊號算誰」的地方，
+   * 分散在各處接線的話，切換模式時一定會留下沒斷掉的舊連線
+   * （那個 bug 的症狀是「B 麥的分數跟 A 一模一樣」，很難查）。
+   *
+   * analyser 一律接在前級鏈**之前**：自動增益是前饋的，量的必須是原始電平；
+   * 對唱的串音判定也一樣要比原始電平，否則兩邊的自動增益會把音量差抹平，
+   * 「誰在唱」就永遠判不出來。
+   */
+  _routeInputs() {
+    if (!this.micSource) return;
+    try { this.micSource.disconnect(); } catch (e) { /* 還沒接過 */ }
+    if (this.channelSplitter) {
+      try { this.channelSplitter.disconnect(); } catch (e) { /* 還沒接過 */ }
+      this.channelSplitter = null;
+    }
+    if (this.duetSource) {
+      try { this.duetSource.disconnect(); } catch (e) { /* 還沒接過 */ }
+    }
+
+    if (this.duetMode === "channel" && this.chainB) {
+      // 立體聲輸入：左聲道給 A、右聲道給 B
+      this.channelSplitter = this.ctx.createChannelSplitter(2);
+      this.micSource.connect(this.channelSplitter);
+      this.channelSplitter.connect(this.micAnalyser, 0);
+      this.channelSplitter.connect(this.micHighpass, 0);
+      this.channelSplitter.connect(this.micAnalyserB, 1);
+      this.channelSplitter.connect(this.chainB.highpass, 1);
+      return;
+    }
+
+    this.micSource.connect(this.micAnalyser);
+    this.micSource.connect(this.micHighpass);
+
+    if (this.duetMode === "device" && this.duetSource && this.chainB) {
+      this.duetSource.connect(this.micAnalyserB);
+      this.duetSource.connect(this.chainB.highpass);
+    }
   }
 
   /**
@@ -371,6 +477,136 @@ class AudioEngine {
     this.micAgcLevel = clamped;
     if (this.micAgcGain && this.ctx) {
       this.micAgcGain.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.015);
+    }
+    return clamped;
+  }
+
+  // --- 對唱模式（第二支麥克風）---
+  //
+  // 第二支麥克風走一條與 A 完全相同的前級鏈，最後也接到 monitorGain ——
+  // 所以「人聲外放」的總開關、殘響與回音送出兩支麥克風是共用的
+  // （兩支麥克風的效果不一樣，聽起來會像兩個不同的房間在對唱）。
+  //
+  // 但量測（analyser）與自動增益是各自獨立的：換人唱不用重調音量這件事，
+  // 對唱模式下反而更重要 —— 兩個人的音量與距離幾乎不可能一樣。
+
+  /**
+   * 開第二支麥克風。
+   *
+   * @param {object} source
+   *   mode 'device' = 另一個輸入裝置（兩支 USB 麥克風）
+   *        'channel' = 同一個立體聲裝置的左右聲道（兩支麥克風接一台音效介面）
+   *   deviceId 'device' 模式要用哪個裝置；'channel' 模式指的是 A 麥那個裝置
+   * @returns {Promise<{ok: boolean, reason?: string, mode?: string}>}
+   *   失敗一定要說得出原因 —— 這個功能壞掉的樣子是「B 麥的分數跟 A 一樣」，
+   *   沒有明確的錯誤訊息，現場只會以為是評分不準。
+   */
+  async startDuetMic(source = {}) {
+    this.initContext();
+    if (!this.isMicActive) return { ok: false, reason: "麥克風還沒開啟" };
+
+    const mode = source.mode === "channel" ? "channel" : "device";
+    const deviceId = source.deviceId || "";
+
+    if (mode === "device" && !deviceId) {
+      return { ok: false, reason: "請選第二支麥克風的裝置" };
+    }
+
+    if (!this.chainB) {
+      this.chainB = this._createMicChain();
+      this.micAnalyserB = this.ctx.createAnalyser();
+      this.micAnalyserB.fftSize = 2048;
+      this.micGainB = this.ctx.createGain();
+      this.micGainB.gain.value = 1.0;
+      this.chainB.limiter.connect(this.micGainB);
+      this.micGainB.connect(this.monitorGain);
+      this.micAgcLevelB = 1.0;
+    }
+
+    try {
+      if (mode === "channel") {
+        // A 麥那條串流本來是單聲道開的，要重開成立體聲才有右聲道可以分
+        const stream = await this._openMicStream(deviceId, true);
+        if (this._streamChannelCount(stream) < 2) {
+          stream.getTracks().forEach((t) => t.stop());
+          return {
+            ok: false,
+            reason: "這個裝置只給單聲道，無法用左右聲道分兩支麥克風（請改選兩個不同的輸入裝置）",
+          };
+        }
+        this._stopDuetStream();
+        this._replaceMicSource(stream);
+      } else {
+        const stream = await this._openMicStream(deviceId, false);
+        this._stopDuetStream();
+        this.duetStream = stream;
+        this.duetSource = this.ctx.createMediaStreamSource(stream);
+      }
+    } catch (e) {
+      console.warn("第二支麥克風開啟失敗:", e);
+      return { ok: false, reason: "第二支麥克風開啟失敗（裝置被占用或權限不足）" };
+    }
+
+    this.duetMode = mode;
+    this._routeInputs();
+    return { ok: true, mode };
+  }
+
+  _stopDuetStream() {
+    if (this.duetStream) {
+      this.duetStream.getTracks().forEach((t) => t.stop());
+      this.duetStream = null;
+    }
+    this.duetSource = null;
+  }
+
+  /**
+   * 關掉第二支麥克風，回到單麥。
+   *
+   * 左右聲道模式要把 A 麥的串流重開成單聲道 —— 留著立體聲串流不會壞，
+   * 但右聲道的訊號會一直混進 A 的量測裡（原本是 B 的聲音），
+   * 等於關掉對唱之後 A 的分數還在被別人影響。
+   */
+  async stopDuetMic() {
+    if (this.duetMode === "off") return true;
+    const wasChannel = this.duetMode === "channel";
+    this.duetMode = "off";
+    this._stopDuetStream();
+    if (this.micGainB && this.ctx) {
+      this.micGainB.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
+    }
+
+    if (wasChannel) {
+      try {
+        this._replaceMicSource(await this._openMicStream("", false));
+      } catch (e) {
+        console.warn("回復單聲道麥克風失敗，沿用現有串流:", e);
+      }
+    }
+    this._routeInputs();
+    if (this.micGainB && this.ctx) {
+      // 重新接好之後才把音量放回來，避免切換的瞬間漏出一段未處理的訊號
+      this.micGainB.gain.setTargetAtTime(1, this.ctx.currentTime, 0.05);
+    }
+    return true;
+  }
+
+  /** 第二支麥克風的音量滑桿。 */
+  setMicVolumeB(volume) {
+    if (this.micGainB && this.ctx) {
+      this.micGainB.gain.setTargetAtTime(Math.max(0, Math.min(2, Number(volume) || 0)),
+                                         this.ctx.currentTime, 0.05);
+    }
+  }
+
+  /** 第二支麥克風的自動增益倍率（與 A 各自獨立，兩個人的距離不會一樣）。 */
+  setMicAutoGainB(level) {
+    const clamped = Math.max(0.1, Math.min(8, Number(level)));
+    if (!Number.isFinite(clamped)) return this.micAgcLevelB;
+    if (clamped === this.micAgcLevelB) return clamped;
+    this.micAgcLevelB = clamped;
+    if (this.chainB && this.ctx) {
+      this.chainB.agcGain.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.015);
     }
     return clamped;
   }
@@ -507,23 +743,16 @@ class AudioEngine {
   async setInputDevice(deviceId) {
     if (!this.isMicActive) return false;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          latency: 0.01
-        }
-      });
+      // 左右聲道對唱時新裝置也要開成立體聲，否則換完裝置 B 麥就沒訊號了
+      const stream = await this._openMicStream(deviceId, this.duetMode === "channel");
+      if (this.duetMode === "channel" && this._streamChannelCount(stream) < 2) {
+        stream.getTracks().forEach((t) => t.stop());
+        console.warn("新裝置不支援立體聲，左右聲道對唱無法沿用，沿用原裝置");
+        return false;
+      }
       // 換裝置要重接整條鏈，舊的 stream 必須停掉否則會繼續佔用麥克風
-      if (this.micSource) this.micSource.disconnect();
-      if (this.micStream) this.micStream.getTracks().forEach(t => t.stop());
-
-      this.micStream = stream;
-      this.micSource = this.ctx.createMediaStreamSource(stream);
-      this.micSource.connect(this.micAnalyser);
-      this.micSource.connect(this.micHighpass);
+      this._replaceMicSource(stream);
+      this._routeInputs();
       return true;
     } catch (e) {
       console.warn("切換麥克風失敗:", e);

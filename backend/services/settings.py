@@ -52,6 +52,16 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
                               "choices": HARMONY_STYLE_CHOICES},
     "default_harmony_level": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0},
 
+    # --- 對唱模式（兩支麥克風分別評分）---
+    # 預設關著：第二支麥克風不是每台機器都有，開機就打開只會讓舞台端
+    # 一直跳「第二支麥克風開不起來」。
+    "default_duet_enabled": {"type": "bool", "default": False},
+    # 串音判定門檻（dB）：兩支麥克風的電平差超過這個值，就只算大聲的那一位。
+    # 房間越小、喇叭越大聲，串音越嚴重，門檻要調高；
+    # 但調太高會把「唱得比較收的那一位」也一起判成串音（他就一直沒分數）。
+    # 9 dB 是近距離收音的合理起點，現場照結算畫面的串音比例微調。
+    "duet_crosstalk_margin_db": {"type": "float", "default": 9.0, "min": 3.0, "max": 24.0},
+
     # --- 自動音量平衡 (EBU R128) ---
     "loudness_normalize": {"type": "bool", "default": True},
     # -14 LUFS 是串流平台的通用目標，也是 KTV 包廂裡不刺耳又夠有力的音量
@@ -110,6 +120,7 @@ CONTROL_DEFAULT_KEYS = {
     "default_harmony_enabled": "harmony_enabled",
     "default_harmony_style": "harmony_style",
     "default_harmony_level": "harmony_level",
+    "default_duet_enabled": "duet_enabled",
     "default_sing_mode": "sing_mode",
     "default_show_pitch": "show_pitch",
 }

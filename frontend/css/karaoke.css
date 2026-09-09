@@ -908,3 +908,170 @@ body.hide-pitch .pitch-visualizer-container {
   color: var(--accent-yellow);
   font-variant-numeric: tabular-nums;
 }
+
+/* --- 對唱模式（兩支麥克風分別評分）--- */
+
+/* 對唱計分板取代單人計分卡：同時亮兩個分數只會讓人不知道該看哪一個 */
+body.duet-mode .score-card {
+  display: none;
+}
+
+.duet-board {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 268px;
+  padding: 6px 16px 8px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(124, 246, 160, 0.4);
+  box-shadow: 0 0 20px rgba(124, 246, 160, 0.2);
+}
+
+.duet-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 1px 0;
+  /* 領先者的邊框會亮起來，換人領先時不要瞬間閃 */
+  transition: opacity 0.2s ease;
+}
+
+.duet-name {
+  flex: 0 0 84px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.duet-score {
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  font-family: 'Courier New', Courier, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.duet-combo {
+  flex: 1;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--accent-pink);
+  white-space: nowrap;
+}
+
+/* 領先的那一位：名字與分數亮起來（一眼就看得出現在誰在前面） */
+.duet-row.leading .duet-name { color: var(--accent-yellow); }
+.duet-row.leading .duet-score { text-shadow: 0 0 14px var(--accent-yellow); }
+
+/* 被判為串音而暫時不計分的那一位：整列變淡，並在 combo 欄說明原因 */
+.duet-row.muted { opacity: 0.45; }
+.duet-row.muted .duet-combo { color: var(--text-muted); font-weight: 700; }
+
+/* A 麥的音高軌跡是桃紅色，B 麥是青綠色 —— 計分板的名字用同一組顏色對應 */
+#duetRowA .duet-name::before { content: "● "; color: #ff007f; }
+#duetRowB .duet-name::before { content: "● "; color: #7cf6a0; }
+
+/* --- 對唱結算：兩欄成績並排 + 勝負橫幅 --- */
+
+.settlement-duet {
+  margin: 4px 0 14px;
+  padding: 14px 18px 12px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.duet-banner {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+  margin: 6px 0 12px;
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--accent-yellow);
+  text-shadow: 0 0 16px rgba(255, 222, 89, 0.4);
+}
+
+.duet-banner span {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.duet-banner.is-tie {
+  color: var(--accent-cyan);
+  text-shadow: 0 0 16px rgba(0, 240, 255, 0.35);
+}
+
+.duet-cols {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+}
+
+.duet-col {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.duet-col.is-winner {
+  background: rgba(255, 222, 89, 0.1);
+  border-color: rgba(255, 222, 89, 0.45);
+}
+
+.duet-col-name {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent-cyan);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.duet-col-score {
+  font-size: 30px;
+  font-weight: 900;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.duet-col-grade {
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--accent-yellow);
+}
+
+.duet-col-stats {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.duet-col-best {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+  min-height: 16px;
+  margin-top: 4px;
+}
+
+/* 串音警告：分數不公平的原因寫在這裡，不然使用者會以為自己真的輸了 */
+.duet-col-warn {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-pink);
+  margin-top: 2px;
+}

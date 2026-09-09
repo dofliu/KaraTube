@@ -63,6 +63,12 @@ class QueueManager:
         self.harmony_enabled: bool = False
         self.harmony_style: str = "third"
         self.harmony_level: float = 0.5
+        # 對唱模式：兩支麥克風分別評分。
+        # 開關與兩位演唱者的暱稱是共享狀態（點歌台按下去所有裝置同步），
+        # 但「第二支麥克風接在哪」是那台機器的硬體接法，記在舞台端的 localStorage。
+        self.duet_enabled: bool = False
+        self.duet_name_a: str = ""
+        self.duet_name_b: str = ""
         # 演唱模式：solo = 人聲不進喇叭（筆電內建麥克風唯一安全的用法）
         #           party = 人聲外放，需要外接喇叭
         self.sing_mode: str = "solo"
@@ -107,6 +113,9 @@ class QueueManager:
             "harmony_enabled": self.harmony_enabled,
             "harmony_style": self.harmony_style,
             "harmony_level": self.harmony_level,
+            "duet_enabled": self.duet_enabled,
+            "duet_name_a": self.duet_name_a,
+            "duet_name_b": self.duet_name_b,
             "sing_mode": self.sing_mode,
             "lyric_offset_ms": self.lyric_offset_ms,
             "show_pitch": self.show_pitch,
@@ -377,6 +386,14 @@ class QueueManager:
                 self.harmony_style = style
         if "harmony_level" in params:
             self.harmony_level = max(0.0, min(1.0, float(params["harmony_level"])))
+        if "duet_enabled" in params:
+            self.duet_enabled = bool(params["duet_enabled"])
+        # 暱稱長度截 12 字：對唱計分板一行要塞兩個名字，手機端塞爆版面的話
+        # 舞台上就看不到分數了（跟 requested_by 同一個理由，只是空間更小）
+        if "duet_name_a" in params:
+            self.duet_name_a = str(params["duet_name_a"] or "").strip()[:12]
+        if "duet_name_b" in params:
+            self.duet_name_b = str(params["duet_name_b"] or "").strip()[:12]
         if "sing_mode" in params:
             self.sing_mode = "party" if params["sing_mode"] == "party" else "solo"
         if "lyric_offset_ms" in params:

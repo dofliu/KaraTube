@@ -39,6 +39,21 @@
           <div id="scoreValue" class="score-value">000000</div>
           <div id="comboValue" class="combo-badge"></div>
         </div>
+
+        <!-- 對唱計分板：兩支麥克風各自的即時分數（對唱模式開啟時取代單人計分卡） -->
+        <div id="duetBoard" class="duet-board" style="display: none;">
+          <div class="score-label">🎤🎤 DUET SCORE</div>
+          <div id="duetRowA" class="duet-row">
+            <span class="duet-name">A 麥</span>
+            <span class="duet-score">000000</span>
+            <span class="duet-combo"></span>
+          </div>
+          <div id="duetRowB" class="duet-row">
+            <span class="duet-name">B 麥</span>
+            <span class="duet-score">000000</span>
+            <span class="duet-combo"></span>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -111,6 +126,8 @@
         </div>
         <!-- 段落評分：每段命中率長條圖 + 最佳/待加強段落點名（由 player.js 產生） -->
         <div id="settleSections" class="settlement-sections" style="display: none;"></div>
+        <!-- 對唱結果：兩位演唱者的分數並排 + 勝負橫幅（由 player.js 產生） -->
+        <div id="settleDuet" class="settlement-duet" style="display: none;"></div>
         <!-- 導唱獨立度：導唱自動淡出的時間比例（導唱沒開或唱太短就不顯示） -->
         <div id="settleGuide" class="settlement-guide" style="display: none;"></div>
         <!-- 麥克風建議：自動增益一直大幅補償時，提示拿近／拿遠一點 -->
@@ -159,6 +176,20 @@
         自動增益只在有人唱的時候調整（安靜時絕不加大，否則底噪會被一起放大）。
       </p>
 
+      <!-- 對唱模式的第二支麥克風：來源是「這台機器怎麼接的」，所以在舞台端選 -->
+      <div class="stage-panel-row">
+        <label>🎤🎤 第二支麥克風</label>
+        <select id="duetSourceSelect"></select>
+      </div>
+      <p id="duetSourceHint" class="stage-panel-hint"></p>
+
+      <!-- 第二支麥克風的收音電平（對唱模式開啟時才顯示） -->
+      <div id="micMeterRowB" class="stage-panel-row mic-meter-row" style="display: none;">
+        <label>📶 B 麥電平</label>
+        <div class="mic-meter"><i id="micMeterFillB" data-zone="low" style="width: 0%"></i></div>
+        <span id="micMeterTextB" class="mic-meter-text">自動增益 +0.0 dB</span>
+      </div>
+
       <div class="stage-panel-row">
         <label>🔈 喇叭輸出</label>
         <select id="outputDeviceSelect"></select>
@@ -181,6 +212,8 @@
        實際移調的 harmony-worklet.js 不從這裡載入 —— 它是 AudioWorklet 模組，
        由 audio-effects.js 用 audioWorklet.addModule() 載進音訊執行緒。 -->
   <script src="/js/harmony-planner.js"></script>
+  <!-- 對唱模式的串音判定與對戰結果（純邏輯），player.js 會 new DuetScorer() -->
+  <script src="/js/duet-scorer.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

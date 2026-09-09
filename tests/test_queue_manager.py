@@ -230,7 +230,7 @@ def test_full_state_contains_control_fields(tmp_path):
     for key in ("current_song", "queue", "is_playing", "vocal_volume",
                 "pitch_shift", "music_volume", "mic_volume", "lyric_offset_ms",
                 "show_pitch", "sing_mode", "harmony_enabled", "harmony_style",
-                "harmony_level"):
+                "harmony_level", "duet_enabled", "duet_name_a", "duet_name_b"):
         assert key in state
 
 
@@ -395,3 +395,51 @@ def test_full_state_contains_loop_fields(tmp_path):
     state = manager.get_full_state()
     for key in ("loop_enabled", "loop_start", "loop_end"):
         assert key in state
+
+
+# --- 對唱模式（兩支麥克風分別評分）---
+
+def test_duet_controls_are_shared_state(tmp_path):
+    """對唱開關與兩位演唱者的暱稱是共享狀態：點歌台改，舞台端與其他手機同步。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        # 預設關著：第二支麥克風不是每台機器都有
+        assert manager.duet_enabled is False
+        assert manager.duet_name_a == ""
+
+        await manager.update_controls({
+            "duet_enabled": True,
+            "duet_name_a": "小明",
+            "duet_name_b": "小美",
+        })
+        state = manager.get_full_state()
+        assert state["duet_enabled"] is True
+        assert state["duet_name_a"] == "小明"
+        assert state["duet_name_b"] == "小美"
+
+    asyncio.run(scenario())
+
+
+def test_duet_names_are_trimmed_and_capped(tmp_path):
+    """暱稱截 12 字：對唱計分板一行要塞兩個名字，塞爆就看不到分數了。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({
+            "duet_name_a": "  小明  ",
+            "duet_name_b": "美" * 40,
+        })
+        assert manager.duet_name_a == "小明"
+        assert manager.duet_name_b == "美" * 12
+
+    asyncio.run(scenario())
+
+
+def test_duet_can_be_turned_off_by_the_stage(tmp_path):
+    """舞台端第二支麥克風開不起來時會把開關改回 False，狀態要真的跟著關。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        await manager.update_controls({"duet_enabled": True})
+        await manager.update_controls({"duet_enabled": False})
+        assert manager.get_full_state()["duet_enabled"] is False
+
+    asyncio.run(scenario())

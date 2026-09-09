@@ -151,3 +151,17 @@ def test_harmony_defaults_off_and_never_louder_than_lead(settings):
     assert defaults["harmony_style"] == "duet"
     assert "harmony_enabled" in defaults
     assert "harmony_level" in defaults
+
+
+def test_duet_defaults_and_crosstalk_margin(settings):
+    """對唱模式預設關著；串音判定門檻要能調，而且越界要夾回合法範圍。"""
+    assert settings.get("default_duet_enabled") is False
+    assert settings.get("duet_crosstalk_margin_db") == 9.0
+
+    # 房間小、喇叭大聲時要調高；滑到底也不能變成 0 dB（那等於沒有判定）
+    assert settings.update({"duet_crosstalk_margin_db": 15})["duet_crosstalk_margin_db"] == 15.0
+    assert settings.update({"duet_crosstalk_margin_db": 0})["duet_crosstalk_margin_db"] == 3.0
+    assert settings.update({"duet_crosstalk_margin_db": 999})["duet_crosstalk_margin_db"] == 24.0
+
+    # 開機預設要推得進 QueueManager 的控制狀態
+    assert "duet_enabled" in settings.control_defaults()

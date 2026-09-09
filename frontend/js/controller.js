@@ -970,6 +970,20 @@ document.addEventListener("DOMContentLoaded", () => {
       renderHarmonyUI();
     }
 
+    // 對唱模式：舞台端第二支麥克風開不起來時會把 duet_enabled 改回 false，
+    // 這裡同步回來，按鈕才不會停在「已開啟」而實際上沒在對唱
+    if (state.duet_enabled !== undefined && !!state.duet_enabled !== duetEnabled) {
+      duetEnabled = !!state.duet_enabled;
+      renderDuetUI();
+    }
+    // 暱稱：不覆蓋正在打字的欄位（別人改名字時把你打一半的內容抽走最惱人）
+    if (state.duet_name_a !== undefined && document.activeElement !== duetNameA) {
+      duetNameA.value = state.duet_name_a || "";
+    }
+    if (state.duet_name_b !== undefined && document.activeElement !== duetNameB) {
+      duetNameB.value = state.duet_name_b || "";
+    }
+
     if (state.sing_mode !== undefined && state.sing_mode !== singMode) {
       updateSingModeUI(state.sing_mode);
     }
@@ -1128,6 +1142,44 @@ document.addEventListener("DOMContentLoaded", () => {
 
   bindPercentSlider(harmonyLevelSlider, harmonyLevelText, "harmony_level");
   renderHarmonyUI();
+
+  // --- 對唱模式（兩支麥克風分別評分）---
+  // 開關與兩位演唱者的暱稱是共享控制參數；「第二支麥克風接在哪」不在這裡 ——
+  // 那是舞台端那台機器的硬體接法（見 player.html 的音訊裝置面板）。
+  const duetToggleBtn = document.getElementById("duetToggleBtn");
+  const duetNameA = document.getElementById("duetNameA");
+  const duetNameB = document.getElementById("duetNameB");
+
+  let duetEnabled = false;
+
+  function renderDuetUI() {
+    duetToggleBtn.textContent = duetEnabled ? "已開啟" : "關閉中";
+    duetToggleBtn.classList.toggle("btn-primary", duetEnabled);
+    duetToggleBtn.classList.toggle("btn-secondary", !duetEnabled);
+  }
+
+  duetToggleBtn.addEventListener("click", () => {
+    duetEnabled = !duetEnabled;
+    renderDuetUI();
+    // 舞台端第二支麥克風開不起來時會把這個參數改回 false 並在舞台上說明原因，
+    // 所以這裡不用先問「有沒有第二支麥克風」——按下去就知道。
+    window.api.updateControl({ duet_enabled: duetEnabled });
+  });
+
+  /**
+   * 暱稱用 change（離開欄位／按 Enter）而不是 input 送出。
+   *
+   * 每打一個字就廣播一次的話，包廂裡每台裝置都會在你打字的過程中
+   * 一直重畫計分板，而且舞台端的浮字會跟著半成品的名字跳。
+   */
+  [[duetNameA, "duet_name_a"], [duetNameB, "duet_name_b"]].forEach(([input, key]) => {
+    if (!input) return;
+    input.addEventListener("change", () => {
+      window.api.updateControl({ [key]: input.value.trim().slice(0, 12) });
+    });
+  });
+
+  renderDuetUI();
 
   // 演唱模式。單人＝人聲不進喇叭，是筆電內建麥克風唯一不會嘯叫的用法。
   let singMode = "solo";
@@ -1444,6 +1496,8 @@ document.addEventListener("DOMContentLoaded", () => {
       },
     },
     default_harmony_level: { label: "和聲音量", percent: true },
+    default_duet_enabled: { label: "開機就開對唱", hint: "預設關" },
+    duet_crosstalk_margin_db: { label: "串音判定門檻", unit: " dB", step: 1 },
     default_sing_mode: { label: "演唱模式", choiceLabels: { solo: "🎧 單人", party: "🔊 多人" } },
     default_show_pitch: { label: "顯示音準導唱線" },
     loudness_normalize: { label: "啟用自動音量平衡", hint: "各首歌一樣大聲" },
@@ -1475,6 +1529,14 @@ document.addEventListener("DOMContentLoaded", () => {
              "default_mic_echo_repeat", "default_mic_echo_time_ms", "default_mic_tone",
              "default_harmony_enabled", "default_harmony_style", "default_harmony_level",
              "default_sing_mode", "default_show_pitch"],
+    },
+    {
+      title: "🎤🎤 對唱模式",
+      hint: "兩支麥克風分別評分，唱完比出勝負。串音判定門檻＝兩支麥克風的電平差超過幾 dB " +
+            "就只算大聲的那一位（另一位這時收到的多半是隔壁那支漏過來的聲音）。" +
+            "房間小、喇叭大聲就調高；調太高會讓唱得比較收的那一位一直沒分數 —— " +
+            "結算畫面會顯示被判成串音的時間比例，照它調。",
+      keys: ["default_duet_enabled", "duet_crosstalk_margin_db"],
     },
     {
       title: "🔊 自動音量平衡 (EBU R128)",
@@ -1700,6 +1762,17 @@ document.addEventListener("DOMContentLoaded", () => {
   // 舞台端唱完一首會廣播結算結果，點歌台同步顯示，讓包廂裡每支手機都看得到
   window.api.on("SCORE_FINAL", (msg) => {
     const r = msg.data || {};
+    // 對唱模式送來的是兩位的成績（形狀不一樣：a / b / winner），要分開講
+    if (r.duet && r.a && r.b) {
+      const name = (side) => side.singer || "麥克風";
+      const line = `${name(r.a)} ${r.a.score} 分（${r.a.grade || "-"}）` +
+                   ` vs ${name(r.b)} ${r.b.score} 分（${r.b.grade || "-"}）`;
+      const verdict = r.winner === "tie"
+        ? `🤝 平手（差 ${r.margin} 分）`
+        : `🏆 ${name(r.winner === "b" ? r.b : r.a)} 勝出（+${r.margin}）`;
+      showNotification(`🎤🎤 ${r.title || "對唱結束"}：${line} ・ ${verdict}`);
+      return;
+    }
     if (!r.title && !r.score) return;
     const bestPart = r.is_new_best ? " ・ 🎉 刷新個人最佳！" : "";
     // 段落評分：表現太平均時後端兩個欄位都是空的，就不畫蛇添足

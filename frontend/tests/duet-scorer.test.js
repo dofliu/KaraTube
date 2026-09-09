@@ -1,0 +1,266 @@
+/**
+ * 對唱模式的前端單元測試（node --test，不需要瀏覽器也不需要 npm 套件）。
+ *
+ * 這個功能有一種特別惡劣的壞法：**看起來完全正常，但分數是假的**。
+ * 兩支麥克風在同一個房間，A 唱歌時 B 的麥克風也收得到 —— 串音判定一旦失效，
+ * B 只要舉著麥克風站著就會有跟 A 差不多的分數，而畫面上完全看不出異狀
+ * （兩邊的分數都在跳、Combo 也在累計）。現場沒有人有辦法發現這件事。
+ *
+ * 所以判定的每一條規則都在這裡釘死：電平主導、遲滯、音高分歧例外、
+ * 以及「只有一個人在唱」時不要亂比勝負。
+ */
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const {
+  DuetScorer,
+  SILENCE_DB,
+  SOLID_SIGNAL_DB,
+  DEFAULT_MARGIN_DB,
+  MIN_CREDITED_SECONDS,
+  TIE_RATIO,
+} = require("../js/duet-scorer.js");
+
+const FRAME = 1 / 60;
+
+/** dBFS 轉線性 RMS，測試裡用 dB 描述電平比較好讀。 */
+function rms(db) {
+  return Math.pow(10, db / 20);
+}
+
+/**
+ * 餵 seconds 秒的幀，回傳最後一幀的判定。
+ * @param {object} mics { aDb, bDb, aMidi, bMidi }
+ */
+function feed(duet, seconds, mics) {
+  const frames = Math.max(1, Math.round(seconds / FRAME));
+  let decision = null;
+  for (let i = 0; i < frames; i++) {
+    decision = duet.decide(FRAME, {
+      rms: mics.aDb === null ? 0 : rms(mics.aDb),
+      midi: mics.aMidi || 0,
+    }, {
+      rms: mics.bDb === null ? 0 : rms(mics.bDb),
+      midi: mics.bMidi || 0,
+    });
+  }
+  return decision;
+}
+
+test("關閉時不做任何判定：兩支麥克風各自照常計分", () => {
+  const d = new DuetScorer({ enabled: false });
+  const decision = feed(d, 1, { aDb: -20, bDb: null });
+  assert.equal(decision.a, true);
+  assert.equal(decision.b, true);
+  assert.equal(decision.reason, "disabled");
+});
+
+test("兩邊都安靜：誰都不計分（底噪不該累積成績）", () => {
+  const d = new DuetScorer({ enabled: true });
+  const decision = feed(d, 1, { aDb: SILENCE_DB - 10, bDb: SILENCE_DB - 10 });
+  assert.equal(decision.a, false);
+  assert.equal(decision.b, false);
+  assert.equal(decision.dominant, "both");
+});
+
+test("串音：A 唱歌、B 只收到漏過來的聲音（音高一樣）→ 只算 A", () => {
+  const d = new DuetScorer({ enabled: true });
+  // B 比 A 小 12 dB，超過預設門檻 9 dB
+  const decision = feed(d, 2, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  assert.equal(decision.dominant, "a");
+  assert.equal(decision.a, true);
+  assert.equal(decision.b, false, "串音被算進 B 的成績了");
+  assert.equal(decision.reason, "dominance");
+});
+
+test("一起唱（電平差不多）→ 兩邊都算", () => {
+  const d = new DuetScorer({ enabled: true });
+  const decision = feed(d, 2, { aDb: -20, bDb: -22, aMidi: 60, bMidi: 64 });
+  assert.equal(decision.dominant, "both");
+  assert.equal(decision.a, true);
+  assert.equal(decision.b, true);
+});
+
+test("一邊完全靜音：有聲音的那邊主導（最乾淨的情況也要對）", () => {
+  const d = new DuetScorer({ enabled: true });
+  const decision = feed(d, 1, { aDb: null, bDb: -18, bMidi: 62 });
+  assert.equal(decision.dominant, "b");
+  assert.equal(decision.a, false);
+  assert.equal(decision.b, true);
+});
+
+test("音高分歧例外：B 小 10 dB 但唱的是別的音 → 還是算 B 的分", () => {
+  const d = new DuetScorer({ enabled: true });
+  // -30 dB 高於「訊號夠紮實」門檻，音高差 4 個半音（三度）
+  const decision = feed(d, 2, { aDb: -20, bDb: -30, aMidi: 60, bMidi: 64 });
+  assert.equal(decision.dominant, "a", "電平上仍然是 A 主導");
+  assert.equal(decision.b, true, "唱不同音的第二個人被當成串音了");
+  assert.equal(decision.reason, "pitch-divergence");
+});
+
+test("音高分歧不適用於微弱訊號：接近底噪的假音高不能放串音進來", () => {
+  const d = new DuetScorer({ enabled: true });
+  // -40 dB 在噪音閘門之上、但低於「訊號夠紮實」門檻
+  assert.ok(-40 > SILENCE_DB && -40 < SOLID_SIGNAL_DB);
+  const decision = feed(d, 2, { aDb: -20, bDb: -40, aMidi: 60, bMidi: 67 });
+  assert.equal(decision.b, false);
+  assert.equal(decision.reason, "dominance");
+});
+
+test("音高一樣就不是分歧：同一個聲音漏過去，音高當然一樣", () => {
+  const d = new DuetScorer({ enabled: true });
+  const decision = feed(d, 2, { aDb: -20, bDb: -30, aMidi: 60, bMidi: 60.5 });
+  assert.equal(decision.b, false);
+});
+
+test("遲滯：進入獨佔之後，電平差縮小到門檻一半以上仍維持獨佔", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 2, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  assert.equal(d.dominant, "a");
+  // 差 6 dB：低於 9 dB 的進入門檻，但高於 4.5 dB 的釋放門檻 → 維持現狀
+  const decision = feed(d, 1, { aDb: -20, bDb: -26, aMidi: 60, bMidi: 60 });
+  assert.equal(decision.dominant, "a");
+  assert.equal(decision.b, false);
+});
+
+test("遲滯：電平差縮到釋放門檻以內才回到兩邊都算", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 2, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  const decision = feed(d, 1, { aDb: -20, bDb: -23, aMidi: 60, bMidi: 60 });
+  assert.equal(decision.dominant, "both");
+  assert.equal(decision.b, true);
+});
+
+test("遲滯：從『兩邊都算』出發，差 6 dB 不足以進入獨佔", () => {
+  const d = new DuetScorer({ enabled: true });
+  const decision = feed(d, 2, { aDb: -20, bDb: -26, aMidi: 60, bMidi: 60 });
+  assert.equal(decision.dominant, "both");
+  assert.equal(decision.b, true);
+});
+
+test("門檻可調：調高之後原本算串音的電平差就會被當成兩個人一起唱", () => {
+  const d = new DuetScorer({ enabled: true, marginDb: 18 });
+  const decision = feed(d, 2, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  assert.equal(decision.dominant, "both");
+  assert.equal(decision.b, true);
+});
+
+test("門檻夾在合法範圍（設定頁滑到底也不能變成 0 dB 或 100 dB）", () => {
+  assert.equal(new DuetScorer({ marginDb: 0 }).marginDb, 3);
+  assert.equal(new DuetScorer({ marginDb: 999 }).marginDb, 24);
+  assert.equal(new DuetScorer({ marginDb: "abc" }).marginDb, 3);
+  assert.equal(new DuetScorer({}).marginDb, DEFAULT_MARGIN_DB);
+});
+
+test("改門檻不清掉統計：唱到一半調參數不該把前面唱的作廢", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 3, { aDb: -20, bDb: -20, aMidi: 60, bMidi: 60 });
+  const before = d.micSummary().a.credited_seconds;
+  d.configure({ marginDb: 12 });
+  assert.equal(d.micSummary().a.credited_seconds, before);
+});
+
+test("開關切換兩個方向都重來：上一段的包絡線與統計不能沿用", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 3, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  assert.ok(d.micSummary().a.credited_seconds > 0);
+  d.configure({ enabled: false });
+  assert.equal(d.micSummary().a.credited_seconds, 0);
+  assert.equal(d.dominant, "both");
+});
+
+test("時間統計：被算到、有唱卻被判成串音、以及主導時間", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 4, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  const s = d.micSummary();
+  assert.ok(Math.abs(s.a.credited_seconds - 4) < 0.15, `A credited=${s.a.credited_seconds}`);
+  // B 一路有聲音但都被判成串音
+  assert.ok(s.b.denied_seconds > 3.5, `B denied=${s.b.denied_seconds}`);
+  assert.equal(s.b.credited_seconds, 0);
+  assert.ok(s.b.crosstalk_ratio > 0.95);
+  assert.ok(s.a.lead_seconds > 3.5);
+  assert.equal(s.a.crosstalk_ratio, 0);
+});
+
+test("超大 dt（分頁切回來）被夾住，不會一幀就累積好幾秒", () => {
+  const d = new DuetScorer({ enabled: true });
+  d.decide(30, { rms: rms(-20), midi: 60 }, { rms: 0, midi: 0 });
+  // 看未四捨五入的累計值：夾在 0.25 秒（micSummary 只留一位小數，會顯示 0.3）
+  assert.ok(d.stats.a.credited <= 0.25, `credited=${d.stats.a.credited}`);
+});
+
+test("徽章：被判成串音的那一位要問得出來（不然使用者以為評分壞了）", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 2, { aDb: -20, bDb: -32, aMidi: 60, bMidi: 60 });
+  assert.equal(d.mutedSinger(), "b");
+  feed(d, 2, { aDb: -20, bDb: -20, aMidi: 60, bMidi: 60 });
+  assert.equal(d.mutedSinger(), null);
+});
+
+// --- 對戰結果 ---
+
+/** 讓兩位都累積足夠的「有唱」時間，才會進入對戰判定。 */
+function bothSing(duet, seconds = MIN_CREDITED_SECONDS + 2) {
+  feed(duet, seconds, { aDb: -20, bDb: -21, aMidi: 60, bMidi: 64 });
+}
+
+test("兩位都唱：分數高的勝出", () => {
+  const d = new DuetScorer({ enabled: true });
+  bothSing(d);
+  const v = d.verdict({ score: 50000, accuracy: 0.6, grade: "SS" },
+                      { score: 30000, accuracy: 0.4, grade: "A" });
+  assert.equal(v.contested, true);
+  assert.equal(v.winner, "a");
+  assert.equal(v.margin, 20000);
+  assert.equal(v.score_b, 30000);
+});
+
+test("分數只差一點算平手（逐幀評分的雜訊不該被當成勝負）", () => {
+  const d = new DuetScorer({ enabled: true });
+  bothSing(d);
+  const v = d.verdict({ score: 50000 }, { score: 49000 });
+  assert.equal(v.winner, "tie");
+  assert.ok(v.margin_ratio <= TIE_RATIO);
+});
+
+test("剛好超過平手門檻就要分出勝負", () => {
+  const d = new DuetScorer({ enabled: true });
+  bothSing(d);
+  const v = d.verdict({ score: 50000 }, { score: 48000 });   // 差 4%
+  assert.equal(v.winner, "a");
+});
+
+test("只有一個人唱（另一支麥克風放在桌上）：不比勝負", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, MIN_CREDITED_SECONDS + 2, { aDb: -20, bDb: null, aMidi: 60 });
+  const v = d.verdict({ score: 40000 }, { score: 0 });
+  assert.equal(v.contested, false);
+  assert.equal(v.winner, "a");
+});
+
+test("兩個人都只唱了兩句：唱太短不足以比，也不比", () => {
+  const d = new DuetScorer({ enabled: true });
+  feed(d, 3, { aDb: -20, bDb: -21, aMidi: 60, bMidi: 64 });
+  const v = d.verdict({ score: 4000 }, { score: 1000 });
+  assert.equal(v.contested, false);
+  assert.equal(v.winner, null);
+});
+
+test("對戰結果附上串音比例：分數不公平的原因要說得出來", () => {
+  const d = new DuetScorer({ enabled: true });
+  // B 一直被判成串音，但仍累積了足夠的被算到時間（一起唱的段落）
+  feed(d, MIN_CREDITED_SECONDS + 2, { aDb: -20, bDb: -21, aMidi: 60, bMidi: 64 });
+  feed(d, 8, { aDb: -20, bDb: -34, aMidi: 60, bMidi: 60 });
+  const v = d.verdict({ score: 50000 }, { score: 20000 });
+  assert.equal(v.contested, true);
+  assert.ok(v.mics.b.crosstalk_ratio > 0.3, `crosstalk=${v.mics.b.crosstalk_ratio}`);
+});
+
+test("壞資料不會炸：分數是 undefined / 文字時當成 0 分", () => {
+  const d = new DuetScorer({ enabled: true });
+  bothSing(d);
+  const v = d.verdict({}, { score: "abc" });
+  assert.equal(v.score_a, 0);
+  assert.equal(v.score_b, 0);
+  assert.equal(v.winner, "tie");
+});

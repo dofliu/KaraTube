@@ -87,10 +87,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const micAgcBadgeText = document.getElementById("micAgcBadgeText");
   const harmonyBadge = document.getElementById("harmonyBadge");
   const harmonyBadgeText = document.getElementById("harmonyBadgeText");
+  const duetBoard = document.getElementById("duetBoard");
+  const duetRowA = document.getElementById("duetRowA");
+  const duetRowB = document.getElementById("duetRowB");
+  const duetSourceSelect = document.getElementById("duetSourceSelect");
+  const duetSourceHint = document.getElementById("duetSourceHint");
+  const micMeterFillB = document.getElementById("micMeterFillB");
+  const micMeterTextB = document.getElementById("micMeterTextB");
+  const micMeterRowB = document.getElementById("micMeterRowB");
 
   // Initializing Engines
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
   const pitchEngine = new PitchEngine(pitchCanvas, scoreValueEl, comboValueEl);
+  // 對唱模式的第二位演唱者：同一套評分邏輯，但不自己畫圖也不寫主計分板
+  // （軌跡疊在同一張畫布上，分數寫進對唱計分板）。
+  const pitchEngineB = new PitchEngine(null, null, null, { label: "B" });
   const clock = new MediaClock(audioInst);
   // 導唱音量自動 ducking：唱穩了導唱自己退到背景，唱不下去它馬上回來。
   // 參數由設定頁決定，這裡先放預設值，收到 SETTINGS_UPDATE 再覆寫。
@@ -101,11 +112,22 @@ document.addEventListener("DOMContentLoaded", () => {
   // 和聲（雙聲部）：跟著旋律在音階上疊三度／五度／低八度。
   // 開關與風格是共享控制參數（點歌台可改），這裡先照預設值建。
   const harmony = new HarmonyPlanner({ enabled: false, style: "third", level: 0.5 });
+  // 對唱模式：兩支麥克風分別評分，並負責回答「這一幀該算誰的」（串音判定）。
+  const duet = new DuetScorer({ enabled: false });
+  // 第二支麥克風的自動增益。跟 A 各自獨立 —— 兩個人的音量與距離不會一樣，
+  // 共用一組增益的話等於用同一把尺量兩個人，音量差反而被放大。
+  const micAgcB = new MicAutoGain({ enabled: true, targetDb: -18 });
 
   const OFFSET_STORAGE_KEY = "karatube_lyric_offset_ms";
   const PITCH_STORAGE_KEY = "karatube_show_pitch";
   const INPUT_DEV_KEY = "karatube_input_device";
   const OUTPUT_DEV_KEY = "karatube_output_device";
+  // 第二支麥克風的來源是「這台機器怎麼接的」（哪個裝置 / 左右聲道），
+  // 不是包廂的共享設定，所以記在本機而不是共享狀態。
+  const DUET_SOURCE_KEY = "karatube_duet_source";
+
+  // 對唱模式第二位演唱者的音高軌跡顏色（A 是桃紅色，B 用青綠色分辨）
+  const DUET_B_COLOR = "#7cf6a0";
 
   let currentSongId = null;
   let currentSongMeta = null;
@@ -155,6 +177,33 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastHarmonyFrameMs = 0;
   let lastHarmonyBadgeText = "";
 
+  // --- 對唱模式的狀態 ---
+  // duetEnabled 是共享狀態（點歌台按下去所有裝置同步），
+  // duetActive 是「這台機器的第二支麥克風真的開起來了」——
+  // 兩者必須分開：按鈕按下去但第二支麥克風開不起來（沒選裝置、裝置被占用）
+  // 是很常見的情況，混成一個變數的話畫面會說在對唱，實際上只有一個人在計分。
+  let duetEnabled = false;
+  let duetActive = false;
+  let duetNameA = "";
+  let duetNameB = "";
+  let duetSource = { mode: "device", deviceId: "" };
+  try {
+    const saved = JSON.parse(localStorage.getItem(DUET_SOURCE_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      duetSource = {
+        mode: saved.mode === "channel" ? "channel" : "device",
+        deviceId: String(saved.deviceId || ""),
+      };
+    }
+  } catch (e) { /* 沒存過或無痕模式，用預設值 */ }
+  // 上一幀兩支麥克風偵測到的音高。串音判定要用它 ——
+  // 串音是同一個聲音的複製品（音高一樣），音高明顯不同才代表真的有兩個人在唱。
+  let lastMidiA = 0;
+  let lastMidiB = 0;
+  let lastDuetFrameMs = 0;
+  let lastDuetBoardMs = 0;
+  let lastMicFrameMsB = 0;
+
   let outputLatency = 0.05;
   let syncToastTimer = null;
   let lastVocResync = 0;
@@ -188,6 +237,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // 把本機記住的微調值推回共享狀態，讓點歌台的滑桿顯示一致
     window.api.send("CONTROL", { data: { lyric_offset_ms: lyricOffsetMs, show_pitch: showPitch } });
     await refreshAudioDevices();
+    // 解鎖前點歌台就已經打開對唱的話，現在才輪得到第二支麥克風
+    if (duetEnabled && !duetActive) await startDuetAudio();
     if (currentSongId) {
       playMedia();
     }
@@ -235,7 +286,14 @@ document.addEventListener("DOMContentLoaded", () => {
       micAgc.configure({ enabled: s.mic_agc_enabled, targetDb: s.mic_agc_target_db });
       // 關掉的當下就要放掉增益，不能等到下一幀（下一幀可能是暫停中，永遠不會來）
       window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
+      // 第二支麥克風吃同一組設定（兩支麥克風的自動增益政策不該不一樣）
+      micAgcB.configure({ enabled: s.mic_agc_enabled, targetDb: s.mic_agc_target_db });
+      window.audioEngine.setMicAutoGainB(micAgcB.enabled ? micAgcB.level : 1.0);
       renderMicMeter();
+    }
+    // 串音判定門檻：房間越小、喇叭越大聲，串音越嚴重，門檻就要調高
+    if (s.duet_crosstalk_margin_db !== undefined) {
+      duet.configure({ marginDb: s.duet_crosstalk_margin_db });
     }
     // 響度目標或開關改了，正在唱的這首要立刻跟上，不用等下一首
     if (currentSongId) applyLoudness(currentSongId);
@@ -334,6 +392,21 @@ document.addEventListener("DOMContentLoaded", () => {
       micAgcBadge.style.display = show ? "flex" : "none";
       if (show) micAgcBadgeText.textContent = `麥克風自動增益 ${signed}`;
     }
+
+    // 第二支麥克風的音量表。對唱模式最常見的現場問題是「B 麥根本沒進訊號」
+    // （選錯裝置、介面右聲道沒插），有一條自己的表頭三秒就看得出來。
+    if (micMeterRowB) micMeterRowB.style.display = duetActive ? "block" : "none";
+    if (duetActive && micMeterFillB) {
+      const level = micAgcB.meterLevel();
+      micMeterFillB.style.width = `${Math.round(level * 100)}%`;
+      micMeterFillB.dataset.zone = level < 0.2 ? "low" : (level > 0.9 ? "hot" : "ok");
+      if (micMeterTextB) {
+        const gainDbB = micAgcB.gainDb;
+        micMeterTextB.textContent = micAgcB.enabled
+          ? `${singerName("b")}　自動增益 ${gainDbB >= 0 ? "+" : ""}${gainDbB.toFixed(1)} dB`
+          : `${singerName("b")}　自動增益：關閉`;
+      }
+    }
   }
 
   /**
@@ -347,7 +420,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (micMeterTimer) return;
     micMeterTimer = setInterval(() => {
       if (!audioInst.paused) return;   // 演唱中由渲染迴圈負責，不要兩邊都餵
-      updateMicAgc(pitchEngine.measureRms(), performance.now());
+      const now = performance.now();
+      updateMicAgc(pitchEngine.measureRms(), now);
+      // 對唱模式下 B 麥也要能試音 —— 開唱前確認兩支都有訊號正是這個面板的用途
+      if (duetActive) updateMicAgcB(pitchEngineB.measureRms(), now);
     }, 66);
   }
 
@@ -362,6 +438,9 @@ document.addEventListener("DOMContentLoaded", () => {
     micAgc.reset();
     lastMicFrameMs = 0;
     window.audioEngine.setMicAutoGain(1.0);
+    micAgcB.reset();
+    lastMicFrameMsB = 0;
+    window.audioEngine.setMicAutoGainB(1.0);
     renderMicMeter();
   }
 
@@ -431,6 +510,167 @@ document.addEventListener("DOMContentLoaded", () => {
     updateHarmonyBadge();
   }
 
+  // --- 對唱模式（兩支麥克風分別評分）---
+
+  /** 這位演唱者在畫面上叫什麼。點歌台沒設暱稱就用麥克風代號。 */
+  function singerName(which) {
+    const custom = which === "a" ? duetNameA : duetNameB;
+    return (custom || "").trim() || (which === "a" ? "A 麥" : "B 麥");
+  }
+
+  /**
+   * 共享狀態裡的對唱設定變了。
+   *
+   * 開關要真的去開／關第二支麥克風的硬體，所以這裡是非同步的；
+   * 開不起來就把共享狀態改回關閉 —— 讓按鈕停在「開」但實際上沒作用，
+   * 是最糟的選擇（畫面說在對唱，成績卻只有一個人的）。
+   */
+  async function applyDuetState(state) {
+    if (state.duet_name_a !== undefined) duetNameA = String(state.duet_name_a || "");
+    if (state.duet_name_b !== undefined) duetNameB = String(state.duet_name_b || "");
+    pitchEngine.setLabel(duetEnabled ? singerName("a") : "");
+    pitchEngineB.setLabel(singerName("b"));
+
+    if (state.duet_enabled === undefined || !!state.duet_enabled === duetEnabled) {
+      renderDuetBoard(performance.now(), true);
+      return;
+    }
+
+    duetEnabled = !!state.duet_enabled;
+    duet.configure({ enabled: duetEnabled });
+    pitchEngine.setLabel(duetEnabled ? singerName("a") : "");
+
+    if (!duetEnabled) {
+      await disableDuetAudio();
+      renderDuetBoard(performance.now(), true);
+      return;
+    }
+    await startDuetAudio();
+  }
+
+  /**
+   * 真的去把第二支麥克風開起來。
+   *
+   * 兩個地方會呼叫：點歌台按下對唱開關時，以及舞台被點擊解鎖音訊時
+   * （開關可能在解鎖之前就按了）。
+   */
+  async function startDuetAudio() {
+    if (!isAudioUnlocked) {
+      // 舞台還沒被點過（瀏覽器的自動播放政策擋著），連 A 麥都還沒開。
+      // 這時候不是「開不起來」而是「還沒輪到」—— 把意圖留著，
+      // 解鎖時會再開一次。硬把開關關掉的話，點歌台那邊看起來就像按了沒反應。
+      showToast("🎤🎤 對唱模式：點一下舞台畫面啟用麥克風後生效");
+      renderDuetBoard(performance.now(), true);
+      return false;
+    }
+
+    const result = await window.audioEngine.startDuetMic(duetSource);
+    if (!result.ok) {
+      duetActive = false;
+      showToast(`⚠️ 對唱模式：${result.reason}`);
+      // 改回關閉。這會再回來一次 STATE_UPDATE，但那時候
+      // duet_enabled 已經與本地一致，所以不會無限來回。
+      window.api.send("CONTROL", { data: { duet_enabled: false } });
+      renderDuetBoard(performance.now(), true);
+      return false;
+    }
+    duetActive = true;
+    pitchEngineB.setAnalyser(window.audioEngine.micAnalyserB);
+    // 第二位演唱者吃的是同一首歌的導唱音符與曲式（同一把尺才能比）
+    pitchEngineB.setPitchData(pitchEngine.pitchData);
+    pitchEngineB.setSections(pitchEngine.sectionScorer.sections);
+    resetDuet();
+    showToast(`🎤🎤 對唱模式已開啟（${singerName("a")} vs ${singerName("b")}）`);
+    renderDuetBoard(performance.now(), true);
+    return true;
+  }
+
+  async function disableDuetAudio() {
+    duetActive = false;
+    await window.audioEngine.stopDuetMic();
+    micAgcB.reset();
+    window.audioEngine.setMicAutoGainB(1.0);
+    resetDuet();
+  }
+
+  /** 換歌／重唱：串音判定的包絡線與兩邊的成績都要歸零。 */
+  function resetDuet() {
+    duet.reset();
+    pitchEngineB.resetScoring();
+    lastMidiA = 0;
+    lastMidiB = 0;
+    lastDuetFrameMs = 0;
+    micAgcB.resetStats();
+  }
+
+  /**
+   * 這一幀該算誰的。
+   *
+   * 順序很重要：先量兩支麥克風的原始電平，判定完才叫兩邊的 tick()
+   * （tick 會帶 reuseRms，不重抓波形）。反過來的話就得在還不知道
+   * 「這一幀是誰在唱」的時候先計分，那就沒有串音判定可言了。
+   */
+  function decideDuetCredit(nowMs) {
+    const rmsA = pitchEngine.measureRms();
+    const rmsB = pitchEngineB.measureRms();
+    const dt = lastDuetFrameMs ? (nowMs - lastDuetFrameMs) / 1000 : 0;
+    lastDuetFrameMs = nowMs;
+    return duet.decide(dt, { rms: rmsA, midi: lastMidiA }, { rms: rmsB, midi: lastMidiB });
+  }
+
+  /** 第二支麥克風的自動增益（與 A 同一套邏輯，各自一個實例）。 */
+  function updateMicAgcB(rms, nowMs) {
+    const dt = lastMicFrameMsB ? (nowMs - lastMicFrameMsB) / 1000 : 0;
+    lastMicFrameMsB = nowMs;
+    if (dt > 0) {
+      micAgcB.update(dt, { rms });
+      window.audioEngine.setMicAutoGainB(micAgcB.enabled ? micAgcB.level : 1.0);
+    }
+  }
+
+  /**
+   * 對唱計分板：兩位演唱者的即時分數、Combo，以及誰領先。
+   *
+   * 商用機的對唱畫面就是這樣：兩個人各自一條，分數即時跳。
+   * 文字每 200ms 才更新一次 —— 60fps 直接寫 textContent，
+   * 兩個人四個欄位等於每秒 240 次重排。
+   */
+  function renderDuetBoard(nowMs, force = false) {
+    if (!duetBoard) return;
+    const show = duetEnabled && duetActive;
+    document.body.classList.toggle("duet-mode", show);
+    if (!show) {
+      if (duetBoard.style.display !== "none") duetBoard.style.display = "none";
+      return;
+    }
+    duetBoard.style.display = "flex";
+    if (!force && nowMs - lastDuetBoardMs < 200) return;
+    lastDuetBoardMs = nowMs;
+
+    const muted = duet.mutedSinger();
+    const rows = [
+      { el: duetRowA, which: "a", engine: pitchEngine },
+      { el: duetRowB, which: "b", engine: pitchEngineB },
+    ];
+    const scoreA = pitchEngine.score;
+    const scoreB = pitchEngineB.score;
+
+    rows.forEach(({ el, which, engine }) => {
+      if (!el) return;
+      const leading = scoreA !== scoreB &&
+        ((which === "a" && scoreA > scoreB) || (which === "b" && scoreB > scoreA));
+      el.classList.toggle("leading", leading);
+      // 被判成串音的那一位標明原因：不講的話「我明明在唱，分數卻不動」
+      // 只會被當成評分壞了（實際上是兩支麥克風靠太近）。
+      el.classList.toggle("muted", muted === which);
+      el.querySelector(".duet-name").textContent = singerName(which);
+      el.querySelector(".duet-score").textContent =
+        engine.score.toString().padStart(6, "0");
+      el.querySelector(".duet-combo").textContent =
+        muted === which ? "串音靜音中" : (engine.combo > 2 ? `${engine.combo} COMBO!` : "");
+    });
+  }
+
   /** 換歌／重唱：ducking 的信心度與暖機時間都不能跨曲沿用。 */
   function resetGuideDuck() {
     guideDucker.reset();
@@ -467,6 +707,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleBest = document.getElementById("settleBest");
   const settleBeat = document.getElementById("settleBeat");
   const settleSections = document.getElementById("settleSections");
+  const settleDuet = document.getElementById("settleDuet");
   const settleGuide = document.getElementById("settleGuide");
   const settleMic = document.getElementById("settleMic");
   let settlementTimer = null;
@@ -625,6 +866,11 @@ document.addEventListener("DOMContentLoaded", () => {
     settleCombo.textContent = `${result.max_combo}`;
     settleBest.textContent = "";
     settleBeat.textContent = "";
+    // 上一首可能是對唱，對戰區塊要收掉（不然單人成績單上會留著別人的比分）
+    if (settleDuet) {
+      settleDuet.innerHTML = "";
+      settleDuet.style.display = "none";
+    }
     renderSectionBreakdown(result);
     renderGuideIndependence();
     renderMicAdvice();
@@ -648,6 +894,118 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (e) {
       console.warn("結算成績上傳失敗:", e);
+    }
+  }
+
+  /** 對唱結算送進 /api/scores/duet 的成績單（兩位一起送，見 api.js 的說明）。 */
+  function duetScorePayload(song, resultA, resultB) {
+    const side = (which, result) => ({
+      singer: singerName(which),
+      score: result.score,
+      accuracy: result.accuracy,
+      max_combo: result.max_combo,
+      grade: result.grade,
+      best_section: result.best_section ? result.best_section.label : "",
+      worst_section: result.worst_section ? result.worst_section.label : "",
+    });
+    return {
+      song_id: song.song_id,
+      title: song.title,
+      artist: song.artist,
+      thumbnail: song.thumbnail,
+      a: side("a", resultA),
+      b: side("b", resultB),
+    };
+  }
+
+  /**
+   * 對唱對戰結果：兩欄成績並排，上面一條勝負橫幅。
+   *
+   * 段落長條圖在對唱模式收起來 —— 兩個人各一張圖塞不進結算畫面的九秒，
+   * 而且「誰贏」才是這個模式的人在看的東西（段落成績仍完整記進評分歷史）。
+   */
+  function renderDuetVerdict(verdict, resultA, resultB) {
+    if (!settleDuet) return;
+    const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+    const banner = verdict.winner === "tie"
+      ? `<div class="duet-banner is-tie">🤝 平手！只差 ${verdict.margin.toLocaleString()} 分</div>`
+      : `<div class="duet-banner">🏆 ${escapeHtml(singerName(verdict.winner))} 勝出` +
+        `<span>領先 ${verdict.margin.toLocaleString()} 分</span></div>`;
+
+    const column = (which, result) => {
+      const win = verdict.winner === which ? " is-winner" : "";
+      const mic = verdict.mics[which];
+      // 串音比例高就直接講出來：那不是唱不好，是兩支麥克風靠太近，
+      // 分數本身已經不公平，不說的話使用者會以為自己真的輸了。
+      const warn = mic.crosstalk_ratio >= 0.3
+        ? `<span class="duet-col-warn">⚠️ 有 ${pct(mic.crosstalk_ratio)} 的時間被判為串音</span>`
+        : "";
+      return `<div class="duet-col${win}">` +
+        `<div class="duet-col-name">${escapeHtml(singerName(which))}</div>` +
+        `<div class="duet-col-score">${result.score.toLocaleString()}</div>` +
+        `<div class="duet-col-grade" data-grade="${escapeHtml(result.grade)}">${escapeHtml(result.grade)}</div>` +
+        `<div class="duet-col-stats">音準 ${pct(result.accuracy)} ・ COMBO ${result.max_combo}</div>` +
+        `<div class="duet-col-best" data-singer="${which}"></div>${warn}</div>`;
+    };
+
+    settleDuet.style.display = "block";
+    settleDuet.innerHTML = `<div class="settlement-label">🎤🎤 對唱結果</div>${banner}` +
+      `<div class="duet-cols">${column("a", resultA)}${column("b", resultB)}</div>`;
+  }
+
+  /**
+   * 對唱模式的唱畢結算。
+   *
+   * 主分數區顯示勝出者的成績（平手時顯示較高的那一份），
+   * 詳細的兩欄比較在下面的對戰區塊。
+   */
+  async function showDuetSettlement(song, resultA, resultB, verdict) {
+    hideIntroCard();
+    const top = verdict.winner === "b" ? resultB : resultA;
+    if (!settlementOverlay || !settlementEnabled) {
+      if (settlementEnabled === false && song) {
+        window.api.submitDuetScore(duetScorePayload(song, resultA, resultB)).catch(() => {});
+      }
+      window.api.send("SONG_ENDED");
+      return;
+    }
+
+    settleSongTitle.textContent = song.title || "";
+    settleGrade.textContent = top.grade;
+    settleGrade.dataset.grade = top.grade;
+    settleAccuracy.textContent = `${Math.round(top.accuracy * 100)}%`;
+    settleCombo.textContent = `${top.max_combo}`;
+    settleBest.textContent = "";
+    settleBeat.textContent = "";
+    if (settleSections) {
+      settleSections.innerHTML = "";
+      settleSections.style.display = "none";
+    }
+    renderDuetVerdict(verdict, resultA, resultB);
+    renderGuideIndependence();
+    renderMicAdvice();
+    settlementOverlay.classList.add("show");
+    animateScoreCount(top.score);
+
+    settlementTimer = setTimeout(finishSettlement, settlementMs);
+
+    try {
+      const res = await window.api.submitDuetScore(duetScorePayload(song, resultA, resultB));
+      const data = (res && res.result) || {};
+      ["a", "b"].forEach((which) => {
+        const r = data[which] || {};
+        const el = settleDuet && settleDuet.querySelector(`.duet-col-best[data-singer="${which}"]`);
+        if (!el) return;
+        if (r.is_new_best) {
+          el.textContent = r.previous_best != null
+            ? `🎉 刷新紀錄（原 ${r.previous_best.toLocaleString()}）`
+            : "🎉 本曲首次演唱";
+        } else if (r.best_score != null) {
+          el.textContent = `🏆 本曲最佳 ${r.best_score.toLocaleString()}`;
+        }
+      });
+    } catch (e) {
+      console.warn("對唱結算成績上傳失敗:", e);
     }
   }
 
@@ -698,7 +1056,7 @@ document.addEventListener("DOMContentLoaded", () => {
     showToast(
       `🎬 字幕同步 ${sign}${lyricOffsetMs} ms（${desc}）` +
       `<span class="sync-hint">← → 調整 50ms ・ Shift+← → 微調 10ms ・ 0 歸零 ・ P 開關音準線 ` +
-      `・ 自動補償 ${(outputLatency * 1000).toFixed(0)}ms</span>`);
+      `・ D 對唱模式 ・ 自動補償 ${(outputLatency * 1000).toFixed(0)}ms</span>`);
   }
 
   function setLyricOffset(ms, broadcast = true) {
@@ -730,6 +1088,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // 所以自動增益的加成上限跟著收緊（configure 會立刻把現有增益夾回新範圍）。
     micAgc.configure({ maxBoostDb: isParty ? 6 : 9 });
     window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
+    micAgcB.configure({ maxBoostDb: isParty ? 6 : 9 });
+    window.audioEngine.setMicAutoGainB(micAgcB.enabled ? micAgcB.level : 1.0);
     modeSoloBtn.classList.toggle("active", !isParty);
     modePartyBtn.classList.toggle("active", isParty);
     modeHint.innerHTML = isParty
@@ -769,11 +1129,71 @@ document.addEventListener("DOMContentLoaded", () => {
         ? "選外接喇叭或音效介面，可以直接消掉機殼傳導那條回授路徑。"
         : "此瀏覽器不支援指定輸出裝置（需 Chrome 110+），請改從作業系統的音效設定切換。";
 
+      fillDuetSourceSelect(inputs, savedIn);
+
       if (savedIn) await window.audioEngine.setInputDevice(savedIn);
       if (savedOut && canSelectOutput) await window.audioEngine.setOutputDevice(savedOut);
     } catch (e) {
       console.warn("列舉音訊裝置失敗:", e);
     }
+  }
+
+  /**
+   * 第二支麥克風的來源選單。
+   *
+   * 兩種接法都要支援，因為它們對應兩種真實的硬體：
+   *   * 兩個輸入裝置 —— 兩支 USB 麥克風，最便宜的做法。
+   *   * 同一裝置的左右聲道 —— 兩支麥克風接一台音效介面／混音器，
+   *     這是包廂真正的接法（也只有這條路能用真正的動圈麥克風）。
+   * A 麥自己那個裝置不列進「另一個裝置」的選項：同一個裝置開兩次會拿到
+   * 一模一樣的訊號，兩個人的分數就會完全一樣 —— 那是最難察覺的壞法。
+   */
+  function fillDuetSourceSelect(inputs, currentInputId) {
+    if (!duetSourceSelect) return;
+    const others = inputs.filter((d) => d.id && d.id !== (currentInputId || ""));
+    duetSourceSelect.innerHTML =
+      `<option value="channel">同一裝置的右聲道（立體聲介面 / 混音器）</option>` +
+      others.map((d) => `<option value="device:${d.id}">${d.label}</option>`).join("");
+    const wanted = duetSource.mode === "channel" ? "channel" : `device:${duetSource.deviceId}`;
+    if ([...duetSourceSelect.options].some((o) => o.value === wanted)) {
+      duetSourceSelect.value = wanted;
+    } else {
+      // 記住的裝置不在了（USB 麥克風被拔掉）：退回左右聲道，不要留一個選不到的值
+      duetSource = { mode: "channel", deviceId: "" };
+      duetSourceSelect.value = "channel";
+    }
+    if (duetSourceHint) {
+      duetSourceHint.textContent = others.length
+        ? "兩支 USB 麥克風選各自的裝置；兩支麥克風接同一台音效介面就用左右聲道。"
+        : "只找到一個輸入裝置：兩支麥克風請接同一台立體聲音效介面（左=A、右=B）。";
+    }
+  }
+
+  if (duetSourceSelect) {
+    duetSourceSelect.addEventListener("change", async (e) => {
+      const value = e.target.value || "channel";
+      duetSource = value.startsWith("device:")
+        ? { mode: "device", deviceId: value.slice(7) }
+        : { mode: "channel", deviceId: "" };
+      try { localStorage.setItem(DUET_SOURCE_KEY, JSON.stringify(duetSource)); } catch (err) { }
+      if (!duetEnabled) {
+        showToast("🎤🎤 已記住第二支麥克風來源，開啟對唱模式即生效");
+        return;
+      }
+      // 對唱正開著就當場換過去（不然要關掉再開一次才會生效）
+      await window.audioEngine.stopDuetMic();
+      const result = await window.audioEngine.startDuetMic(duetSource);
+      duetActive = result.ok;
+      if (result.ok) {
+        pitchEngineB.setAnalyser(window.audioEngine.micAnalyserB);
+        resetDuet();
+        showToast("🎤🎤 已切換第二支麥克風");
+      } else {
+        showToast(`⚠️ 對唱模式：${result.reason}`);
+        window.api.send("CONTROL", { data: { duet_enabled: false } });
+      }
+      renderDuetBoard(performance.now(), true);
+    });
   }
 
   inputDeviceSelect.addEventListener("change", async (e) => {
@@ -826,6 +1246,10 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (e.key === "s" || e.key === "S") {
       e.preventDefault();
       toggleAudioSetup();
+    } else if (e.key === "d" || e.key === "D") {
+      // 對唱一鍵開關：舞台前面的人不會回去點歌台按（第二支麥克風常常是臨時遞過來的）
+      e.preventDefault();
+      window.api.send("CONTROL", { data: { duet_enabled: !duetEnabled } });
     } else if (e.key === "m" || e.key === "M") {
       // 現場嘯叫時的緊急切換：一鍵回到單人模式，人聲立刻離開喇叭
       e.preventDefault();
@@ -879,6 +1303,12 @@ document.addEventListener("DOMContentLoaded", () => {
       updateHarmonyBadge();
     }
     if (state.sing_mode !== undefined) applySingMode(state.sing_mode);
+    // 對唱模式：開關會去動硬體（第二支麥克風），所以是非同步的。
+    // 不 await —— 這個函式後面還要處理播放狀態，等麥克風開起來會讓畫面卡住。
+    if (state.duet_enabled !== undefined || state.duet_name_a !== undefined ||
+        state.duet_name_b !== undefined) {
+      applyDuetState(state).catch((e) => console.warn("對唱模式切換失敗:", e));
+    }
 
     // 點歌台（含手機）調整字幕同步時同步套用，但不要再廣播回去造成迴圈
     if (state.lyric_offset_ms !== undefined && state.lyric_offset_ms !== lyricOffsetMs) {
@@ -915,8 +1345,11 @@ document.addEventListener("DOMContentLoaded", () => {
       karaokeRenderer.setLyrics([]);
       pitchEngine.setPitchData(null);
       pitchEngine.setSections([]);
+      pitchEngineB.setPitchData(null);
+      pitchEngineB.setSections([]);
       resetHarmony([]);
       resetGuideDuck();
+      resetDuet();
     }
   }
 
@@ -950,6 +1383,10 @@ document.addEventListener("DOMContentLoaded", () => {
     pitchEngine.setPitchData(pitch);
     // 先 setPitchData（它會歸零評分）再載段落，順序反了段落統計會被清掉
     pitchEngine.setSections((structure && structure.sections) || []);
+    // 對唱的第二位吃同一份導唱音符與曲式（同一把尺才比得出誰唱得好）
+    pitchEngineB.setPitchData(pitch);
+    pitchEngineB.setSections((structure && structure.sections) || []);
+    resetDuet();
     // 和聲的調性是從這首歌的導唱音符估出來的，換歌一定要重估（不能沿用上一首的調）
     resetHarmony((pitch && pitch.notes) || []);
     resetGuideDuck();
@@ -991,6 +1428,7 @@ document.addEventListener("DOMContentLoaded", () => {
     hideSettlement();
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
+    resetDuet();
     resetGuideDuck();
     // 調性不用重估（還是同一首歌），但移調器裡的殘留樣本要清掉
     resetHarmony();
@@ -1022,6 +1460,7 @@ document.addEventListener("DOMContentLoaded", () => {
     lastVocResync = lastVideoResync = performance.now();
     // 舊的音高軌跡時間都落在新位置的「未來」，留著會在導唱線上畫出鬼影。分數不歸零。
     pitchEngine.clearTrail();
+    pitchEngineB.clearTrail();
   }
 
   // --- 練唱模式：A-B 區段循環 ---
@@ -1104,15 +1543,41 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     karaokeRenderer.update(displayTime);
+
     // 評分心跳與畫面分離：音準線隱藏時照樣計分，唱畢結算才公平
-    const frame = pitchEngine.tick(displayTime);
-    // 同一份判定直接餵給自動 ducking，不重新偵測一次音高
-    updateGuideDuck(frame, nowMs);
+    let frame;
+    let frameB = null;
+    if (duetActive) {
+      // 對唱：先量兩支麥克風的電平判定這一幀算誰的，再各自計分
+      // （tick 帶 reuseRms，同一幀不會重抓兩次波形）
+      const credit = decideDuetCredit(nowMs);
+      frame = pitchEngine.tick(displayTime, { credit: credit.a, reuseRms: true });
+      frameB = pitchEngineB.tick(displayTime, { credit: credit.b, reuseRms: true });
+      lastMidiA = frame.userMidi;
+      lastMidiB = frameB.userMidi;
+      updateMicAgcB(frameB.rms, nowMs);
+      renderDuetBoard(nowMs);
+    } else {
+      frame = pitchEngine.tick(displayTime);
+    }
+
+    // 同一份判定直接餵給自動 ducking，不重新偵測一次音高。
+    // 對唱模式看的是「有沒有人唱準」—— 兩個人只要有一個唱得穩，
+    // 導唱就該退到背景（只看 A 的話，B 獨唱的段落導唱會一直全開）。
+    const guideFrame = frameB
+      ? { hasNote: frame.hasNote, sang: frame.sang || frameB.sang, hit: frame.hit || frameB.hit }
+      : frame;
+    updateGuideDuck(guideFrame, nowMs);
     // 自動增益吃的是同一幀量到的麥克風原始電平（frame.rms），也不重複抓波形
     updateMicAgc(frame.rms, nowMs);
-    // 和聲吃的是同一幀的導唱音符（frame.noteMidi）與「有沒有人在唱」（frame.sang）
+    // 和聲吃的是同一幀的導唱音符（frame.noteMidi）與「有沒有人在唱」（frame.sang）。
+    // 對唱模式下和聲只疊在 A 麥上 —— 第二支麥克風本身就是第二個聲部，
+    // 再疊機器和聲會變成四個聲部混在一起，誰都聽不清楚。
     updateHarmony(frame, nowMs);
-    if (showPitch) pitchEngine.updateAndRender(displayTime);
+    if (showPitch) {
+      pitchEngine.updateAndRender(displayTime,
+        duetActive ? [{ engine: pitchEngineB, color: DUET_B_COLOR }] : []);
+    }
 
     if (nowMs - lastTimeBroadcast > 400) {
       lastTimeBroadcast = nowMs;
@@ -1126,6 +1591,27 @@ document.addEventListener("DOMContentLoaded", () => {
   audioInst.addEventListener("ended", () => {
     console.log("Song audio finished.");
     const result = pitchEngine.getFinalResult();
+
+    if (duetActive && currentSongMeta) {
+      const resultB = pitchEngineB.getFinalResult();
+      const verdict = duet.verdict(result, resultB);
+      if (verdict.contested) {
+        // 兩位都真的唱了才亮對戰成績單
+        showDuetSettlement(currentSongMeta, result, resultB, verdict);
+        return;
+      }
+      // 對唱模式開著但只有一個人唱（另一支麥克風放在桌上）：
+      // 亮那一位的單人成績單，硬要比出勝負只會是誤會
+      if (verdict.winner === "b" && resultB.sang) {
+        showSettlement(currentSongMeta, resultB);
+        return;
+      }
+      if (verdict.winner !== "a" && !result.sang) {
+        window.api.send("SONG_ENDED");
+        return;
+      }
+    }
+
     if (result.sang && currentSongMeta) {
       // 有真的開口唱才亮結算畫面；純放歌（沒人唱）直接進下一首
       showSettlement(currentSongMeta, result);

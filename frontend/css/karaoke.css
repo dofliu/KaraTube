@@ -973,9 +973,15 @@ body.duet-mode .score-card {
 .duet-row.muted { opacity: 0.45; }
 .duet-row.muted .duet-combo { color: var(--text-muted); font-weight: 700; }
 
-/* A 麥的音高軌跡是桃紅色，B 麥是青綠色 —— 計分板的名字用同一組顏色對應 */
-#duetRowA .duet-name::before { content: "● "; color: #ff007f; }
-#duetRowB .duet-name::before { content: "● "; color: #7cf6a0; }
+/* A 麥的音高軌跡是桃紅色，B 麥是青綠色 —— 計分板與段落對決都用同一組顏色對應
+   （只在這裡定義一次：換了顏色而三個地方沒一起改，畫面就開始騙人） */
+:root {
+  --duet-a: #ff007f;
+  --duet-b: #7cf6a0;
+}
+
+#duetRowA .duet-name::before { content: "● "; color: var(--duet-a); }
+#duetRowB .duet-name::before { content: "● "; color: var(--duet-b); }
 
 /* --- 對唱結算：兩欄成績並排 + 勝負橫幅 --- */
 
@@ -1074,4 +1080,144 @@ body.duet-mode .score-card {
   font-weight: 700;
   color: var(--accent-pink);
   margin-top: 2px;
+}
+
+/* --- 段落對決：同一段落兩位的命中率往中間對拉 --- */
+
+.duet-section-duel {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.duel-summary {
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  gap: 6px 18px;
+  flex-wrap: wrap;
+  margin: 6px 0 10px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.duel-count-a { color: var(--duet-a); }
+.duel-count-b { color: var(--duet-b); }
+.duel-count-tie { color: var(--text-muted); }
+
+.duel-spot {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-yellow);
+}
+
+.duel-spot b { color: #fff; }
+
+/* 段落多的歌不要把結算卡片撐出畫面（跟單人段落長條圖同一個做法） */
+.duel-rows {
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+/* 一列＝一段：左邊 A 的長條往左長、右邊 B 的往右長，段落標籤釘在正中間。
+   兩邊的百分比欄寬度固定（tabular-nums），數字才不會讓中線左右晃。 */
+.duet-duel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.duel-pct {
+  flex: 0 0 40px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.duel-pct-a { text-align: right; }
+.duel-pct-b { text-align: left; }
+
+.duel-side {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+/* A 的長條從中線往左長，所以整條軌道靠右對齊 */
+.duel-side-a { justify-content: flex-end; }
+
+.duel-side i {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  animation: duelBarGrow 0.9s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.duel-side-a i { background: linear-gradient(90deg, rgba(255, 0, 127, 0.35), var(--duet-a)); }
+.duel-side-b i { background: linear-gradient(90deg, var(--duet-b), rgba(124, 246, 160, 0.35)); }
+
+@keyframes duelBarGrow {
+  from { transform: scaleX(0.05); }
+  to { transform: scaleX(1); }
+}
+
+.duel-side-a i { transform-origin: right center; }
+.duel-side-b i { transform-origin: left center; }
+
+.duel-label {
+  flex: 0 0 96px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 領先的那一邊：百分比亮起來並發光，另一邊留在 muted 色 —— 不用讀數字就知道偏哪邊 */
+.duet-duel-row.is-a .duel-pct-a {
+  color: var(--duet-a);
+  text-shadow: 0 0 10px rgba(255, 0, 127, 0.5);
+}
+
+.duet-duel-row.is-b .duel-pct-b {
+  color: var(--duet-b);
+  text-shadow: 0 0 10px rgba(124, 246, 160, 0.5);
+}
+
+.duet-duel-row.is-tie .duel-pct-a,
+.duet-duel-row.is-tie .duel-pct-b {
+  color: var(--accent-cyan);
+}
+
+/* 分段接唱的段落：整列變淡並標「主唱」。這不是輸贏，畫面不該讓它看起來像輸贏 */
+.duet-duel-row.is-solo { opacity: 0.55; }
+
+.duel-solo-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+  color: var(--bg-primary);
+  background: var(--text-muted);
+  vertical-align: 1px;
+}
+
+.duel-note {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-align: center;
 }

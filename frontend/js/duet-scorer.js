@@ -68,6 +68,24 @@ const MIN_CREDITED_SECONDS = 10;
 // 差 1% 就宣布勝負只會讓人覺得這個分數是隨機的。
 const TIE_RATIO = 0.03;
 
+// --- 段落對決的門檻 ---
+//
+// 一段裡這一位至少要被算到這麼多幀導唱音符，那一段的命中率才算得出來。
+// 必須與 section-scorer.js 的 MIN_SECTION_NOTE_FRAMES 一致 ——
+// 兩邊不一樣就會出現「單人成績單說這段有評分、對唱段落對決說沒有」這種
+// 說不通的畫面（duet-scorer.test.js 有一條測試釘住這件事）。
+const MIN_DUEL_NOTE_FRAMES = 30;
+
+// 命中率差多少才算「這一段是誰的主場」。同樣沿用段落評分的 MIN_SECTION_SPREAD：
+// 兩個人在同一段都唱到 61% 與 59% 時宣布主場，是在幫他們製造爭吵而不是回饋。
+const MIN_DUEL_SPREAD = 0.05;
+
+// 兩位在同一段的參與量（被算到的音符幀數）比例，低於這個值就不並排比高低。
+// A 唱滿整段（400 幀）、B 只在最後跟了一句（40 幀）時，兩個命中率不是同一件事：
+// 跟一句的人只要那一句準就有 100%，唱滿整段的人被自己的難處拉低 ——
+// 這種「比較」比不比還糟，所以退成「這一段主要是 A 唱的」。
+const MIN_DUEL_BALANCE = 0.5;
+
 function clamp(value, lo, hi) {
   const n = Number(value);
   if (!Number.isFinite(n)) return lo;
@@ -103,6 +121,138 @@ function micDb(input) {
 function micMidi(input) {
   const n = Number(input && input.midi);
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function round3(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function noteFramesOf(row) {
+  const n = Number(row && row.note_frames);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function accuracyOf(row) {
+  const n = Number(row && row.accuracy);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+}
+
+/**
+ * 段落對決 (per-section head-to-head)：同一段落裡兩位演唱者並排比較。
+ *
+ * 「誰贏」只是一個數字，「哪一段是誰的主場」才是包廂裡真正想知道的事 ——
+ * 商用機的對唱採點（DAM のデュエット採点）唱完會把兩個人的段落成績排在一起，
+ * 一眼看出副歌是誰撐起來的。兩位的段落成績本來就各自算好了（section-scorer.js
+ * 的 summary），所以這裡唯一的工作是「並排」這一步。
+ *
+ * 這件事最容易做錯的地方是**把分工當成勝負**：真正的對唱歌曲本來就是
+ * 主歌 1 你唱、主歌 2 我唱、副歌一起唱。不分辨「兩個人都唱了這一段」與
+ * 「這一段只有一個人唱」的話，畫面會宣布「A 以 68% 完勝 B 的 0%」——
+ * 那不是唱得比較好，那是那一段根本不是 B 唱的，而被冤枉的人沒有辦法反駁。
+ * 所以只有兩邊都唱夠、而且參與量相當的段落才進對決，其餘的一律標成
+ * 「這段由 X 主唱」，不給名次。
+ *
+ * @param {Array} sectionsA A 的段落成績（`PitchEngine.getFinalResult().sections`）
+ * @param {Array} sectionsB B 的段落成績
+ * @returns {object}
+ *   `rows` 依歌曲順序的每一段：`contested` 為 true 時 `leader` 是 'a' / 'b' / 'tie'，
+ *   為 false 時 `main` 是主唱的那一位。兩邊都唱不夠的段落不列出來（沒有資訊）。
+ *   `wins` 對決段落的比數，`a_best` / `b_best` 是各自領先最多的那一段（主場段落）。
+ *   `lead` 是段落對決的整體結論（'a' / 'b' / 'even'；沒有對決段落時為 null）。
+ */
+function compareSections(sectionsA, sectionsB, options = {}) {
+  const minFrames = Number.isFinite(Number(options.minNoteFrames))
+    ? Number(options.minNoteFrames) : MIN_DUEL_NOTE_FRAMES;
+  const spread = Number.isFinite(Number(options.spread))
+    ? Number(options.spread) : MIN_DUEL_SPREAD;
+
+  // 以段落編號配對：兩位吃的是同一份曲式（舞台端把 A 的段落清單直接交給 B），
+  // 所以 index 對得上。用 Map 而不是「兩個陣列同時走」—— 其中一邊少一段
+  // （換歌的時序、或某段完全沒人唱）就會整排錯位，錯位的比較看起來很正常。
+  const paired = new Map();
+  const collect = (list, which) => {
+    for (const row of Array.isArray(list) ? list : []) {
+      if (!row || typeof row !== "object") continue;
+      const index = Number(row.index);
+      if (!Number.isFinite(index)) continue;
+      const slot = paired.get(index) || { index };
+      slot[which] = row;
+      paired.set(index, slot);
+    }
+  };
+  collect(sectionsA, "a");
+  collect(sectionsB, "b");
+
+  const rows = [];
+  for (const slot of paired.values()) {
+    const framesA = noteFramesOf(slot.a);
+    const framesB = noteFramesOf(slot.b);
+    const gradedA = framesA >= minFrames;
+    const gradedB = framesB >= minFrames;
+    // 兩邊都沒唱夠：這一段沒有任何可說的（間奏、或大家都在喝水），不佔畫面
+    if (!gradedA && !gradedB) continue;
+
+    const meta = slot.a || slot.b;
+    const accA = accuracyOf(slot.a);
+    const accB = accuracyOf(slot.b);
+    const balance = Math.max(framesA, framesB) > 0
+      ? Math.min(framesA, framesB) / Math.max(framesA, framesB) : 0;
+    const contested = gradedA && gradedB && balance >= MIN_DUEL_BALANCE;
+    const margin = round3(Math.abs(accA - accB));
+
+    const row = {
+      index: Number(meta.index),
+      kind: String(meta.kind || "verse"),
+      label: String(meta.label || meta.kind || ""),
+      preview: String(meta.preview || ""),
+      start: Number(meta.start) || 0,
+      accuracy_a: round3(accA),
+      accuracy_b: round3(accB),
+      grade_a: slot.a ? String(slot.a.grade || "") : "",
+      grade_b: slot.b ? String(slot.b.grade || "") : "",
+      note_frames_a: framesA,
+      note_frames_b: framesB,
+      balance: round3(balance),
+      contested,
+      // 對決段落：差距不到門檻就是平手，不硬分高下
+      leader: contested ? (margin < spread ? "tie" : (accA > accB ? "a" : "b")) : null,
+      margin: contested ? margin : 0,
+      // 分工段落：誰唱得多就是這一段的主唱（不比高低，只說事實）
+      main: contested ? null : (framesA >= framesB ? "a" : "b"),
+    };
+    rows.push(row);
+  }
+
+  rows.sort((x, y) => x.start - y.start || x.index - y.index);
+
+  const wins = { a: 0, b: 0, tie: 0 };
+  const solo = { a: 0, b: 0 };
+  let bestA = null;
+  let bestB = null;
+  for (const row of rows) {
+    if (!row.contested) {
+      solo[row.main]++;
+      continue;
+    }
+    wins[row.leader]++;
+    // 主場段落＝領先最多的那一段（同樣的領先幅度取先唱到的，結果才穩定）
+    if (row.leader === "a" && (!bestA || row.margin > bestA.margin)) bestA = row;
+    if (row.leader === "b" && (!bestB || row.margin > bestB.margin)) bestB = row;
+  }
+
+  const contestedCount = wins.a + wins.b + wins.tie;
+  const lead = contestedCount === 0
+    ? null : (wins.a > wins.b ? "a" : (wins.b > wins.a ? "b" : "even"));
+
+  return {
+    rows,
+    wins,
+    solo,
+    contested_count: contestedCount,
+    a_best: bestA,
+    b_best: bestB,
+    lead,
+  };
 }
 
 class DuetScorer {
@@ -274,12 +424,17 @@ class DuetScorer {
    * @returns {object}
    *   `contested` —— 兩位都真的唱了，值得亮對戰結果；false 時舞台端退回單人成績單。
    *   `winner` —— 'a' / 'b' / 'tie'（`contested` 為 false 時是唱的那一位或 null）。
+   *   `sections` —— 段落對決（見 `compareSections`）。總分之外的「哪一段是誰的主場」。
    */
   verdict(resultA, resultB) {
     const mics = this.micSummary();
     const scoreA = Math.max(0, Math.round(Number(resultA && resultA.score) || 0));
     const scoreB = Math.max(0, Math.round(Number(resultB && resultB.score) || 0));
     const bothSang = mics.a.sang && mics.b.sang;
+    // 段落對決在兩個分支都算：只有一個人唱時它會全部是分工段落（沒有對決），
+    // 但形狀一致，舞台端就不必為兩種結算各寫一套判斷。
+    const sections = compareSections(
+      resultA && resultA.sections, resultB && resultB.sections);
 
     if (!bothSang) {
       const only = mics.a.sang ? "a" : (mics.b.sang ? "b" : null);
@@ -291,6 +446,7 @@ class DuetScorer {
         score_a: scoreA,
         score_b: scoreB,
         mics,
+        sections,
       };
     }
 
@@ -311,17 +467,20 @@ class DuetScorer {
       grade_a: (resultA && resultA.grade) || "",
       grade_b: (resultB && resultB.grade) || "",
       mics,
+      sections,
     };
   }
 }
 
 if (typeof window !== "undefined") {
   window.DuetScorer = DuetScorer;
+  window.compareDuetSections = compareSections;
 }
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     DuetScorer,
+    compareSections,
     dbFromRms,
     releaseMargin,
     SILENCE_DB,
@@ -330,5 +489,8 @@ if (typeof module !== "undefined" && module.exports) {
     PITCH_DIVERGENCE_SEMITONES,
     MIN_CREDITED_SECONDS,
     TIE_RATIO,
+    MIN_DUEL_NOTE_FRAMES,
+    MIN_DUEL_SPREAD,
+    MIN_DUEL_BALANCE,
   };
 }

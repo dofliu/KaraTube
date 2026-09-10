@@ -1770,7 +1770,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const verdict = r.winner === "tie"
         ? `🤝 平手（差 ${r.margin} 分）`
         : `🏆 ${name(r.winner === "b" ? r.b : r.a)} 勝出（+${r.margin}）`;
-      showNotification(`🎤🎤 ${r.title || "對唱結束"}：${line} ・ ${verdict}`);
+      // 段落對決的主場段落。分段接唱的歌可能兩位都沒有對決段落（欄位是空的），
+      // 那就不提 —— 硬湊一句「主場：無」比不講還糟
+      const spots = ["a", "b"]
+        .filter((k) => r[k].duel_section)
+        .map((k) => `${name(r[k])} ${r[k].duel_section}`)
+        .join("／");
+      const spotPart = spots ? ` ・ ⭐ 主場 ${spots}` : "";
+      showNotification(`🎤🎤 ${r.title || "對唱結束"}：${line} ・ ${verdict}${spotPart}`);
       return;
     }
     if (!r.title && !r.score) return;

@@ -107,6 +107,9 @@ class ScoreHistory:
             # 不入庫；這兩個標籤才是回頭看歷史時有用的東西：這首歌我老是哪一段唱壞。
             "best_section": str(result.get("best_section") or "")[:24],
             "worst_section": str(result.get("worst_section") or "")[:24],
+            # 對唱的段落對決結論：這一位領先最多的那一段（「主場段落」）。
+            # 單人演唱一律空字串 —— 一個人唱沒有對手，談不上主場。
+            "duel_section": str(result.get("duel_section") or "")[:24],
             "sung_at": datetime.now().isoformat(timespec="seconds"),
         }
         return entry

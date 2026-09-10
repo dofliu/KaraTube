@@ -898,16 +898,23 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   /** 對唱結算送進 /api/scores/duet 的成績單（兩位一起送，見 api.js 的說明）。 */
-  function duetScorePayload(song, resultA, resultB) {
-    const side = (which, result) => ({
-      singer: singerName(which),
-      score: result.score,
-      accuracy: result.accuracy,
-      max_combo: result.max_combo,
-      grade: result.grade,
-      best_section: result.best_section ? result.best_section.label : "",
-      worst_section: result.worst_section ? result.worst_section.label : "",
-    });
+  function duetScorePayload(song, resultA, resultB, verdict) {
+    const duel = (verdict && verdict.sections) || {};
+    const side = (which, result) => {
+      // 段落對決的主場段落（對唱才有）：長條圖是現場資訊不入庫，
+      // 但「這首歌的副歌一向是我的主場」是回頭看歷史時真正有用的一句話。
+      const spot = which === "a" ? duel.a_best : duel.b_best;
+      return {
+        singer: singerName(which),
+        score: result.score,
+        accuracy: result.accuracy,
+        max_combo: result.max_combo,
+        grade: result.grade,
+        best_section: result.best_section ? result.best_section.label : "",
+        worst_section: result.worst_section ? result.worst_section.label : "",
+        duel_section: spot ? spot.label : "",
+      };
+    };
     return {
       song_id: song.song_id,
       title: song.title,
@@ -918,11 +925,88 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
+  // 段落對決最多畫幾段。九秒的結算畫面塞不下一首歌的每一段，
+  // 而且十段長條圖沒有人看得完 —— 超過就只留真的有對決的段落。
+  const MAX_DUEL_ROWS = 6;
+
   /**
-   * 對唱對戰結果：兩欄成績並排，上面一條勝負橫幅。
+   * 段落對決：同一段落兩位的命中率往中間對拉的長條圖。
    *
-   * 段落長條圖在對唱模式收起來 —— 兩個人各一張圖塞不進結算畫面的九秒，
-   * 而且「誰贏」才是這個模式的人在看的東西（段落成績仍完整記進評分歷史）。
+   * 兩個人各畫一張獨立的長條圖是最直覺的做法，也是最沒用的做法 ——
+   * 「A 的副歌 1 是 68%」跟「B 的副歌 1 是 41%」分在兩張圖上，眼睛得自己配對。
+   * 對拉的畫法（左邊 A、右邊 B、段落標籤在中間）把比較這件事畫進版面本身，
+   * 掃一眼就知道哪幾段偏一邊。
+   *
+   * 分工段落（只有一個人唱的主歌）照樣列出來但不給名次，並標明「主唱」——
+   * 對唱歌曲本來就是分段接唱，把那些段落畫成 68% 對 0% 是在誣賴沒唱的那一位。
+   */
+  function renderDuetSectionDuel(duel) {
+    const rows0 = (duel && duel.rows) || [];
+    // 只有一段可比就沒有比較的意義（跟單人成績單的段落長條圖同一個判準）
+    if (rows0.length < 2) return "";
+
+    let rows = rows0;
+    if (rows.length > MAX_DUEL_ROWS) {
+      const contested = rows.filter((r) => r.contested);
+      rows = (contested.length >= 2 ? contested : rows).slice(0, MAX_DUEL_ROWS);
+    }
+    const omitted = rows0.length - rows.length;
+
+    const pct = (v) => Math.round((v || 0) * 100);
+    const nameOf = (which) => escapeHtml(singerName(which));
+
+    const summary = duel.contested_count === 0
+      ? `<span>兩位是分段接唱，沒有同時唱的段落可以比高低</span>`
+      : `<span class="duel-count-a">${nameOf("a")} ${duel.wins.a} 段</span>` +
+        `<span class="duel-count-b">${nameOf("b")} ${duel.wins.b} 段</span>` +
+        (duel.wins.tie > 0 ? `<span class="duel-count-tie">平手 ${duel.wins.tie} 段</span>` : "");
+
+    const spotlight = ["a", "b"].map((which) => {
+      const best = which === "a" ? duel.a_best : duel.b_best;
+      if (!best) return "";
+      return `<span class="duel-spot duel-spot-${which}">` +
+        `⭐ ${nameOf(which)}的主場 <b>${escapeHtml(best.label)}</b> +${pct(best.margin)}%</span>`;
+    }).join("");
+
+    const row = (r) => {
+      const cls = r.contested
+        ? (r.leader === "tie" ? " is-tie" : ` is-${r.leader}`)
+        : " is-solo";
+      const title = r.contested
+        ? `${r.label}　${nameOf("a")} ${pct(r.accuracy_a)}% / ${nameOf("b")} ${pct(r.accuracy_b)}%`
+        : `${r.label}　由 ${singerName(r.main)} 主唱（分段接唱，不比高低）`;
+      // 分工段落只畫主唱那一邊，另一邊留白並標成「—」：
+      // 畫成 0% 的長條看起來像「唱了但完全沒中」，那是兩件完全不同的事
+      const show = (which) => r.contested || r.main === which;
+      const value = (which) => (show(which)
+        ? `${pct(which === "a" ? r.accuracy_a : r.accuracy_b)}%` : "—");
+      const width = (which) => (show(which)
+        ? pct(which === "a" ? r.accuracy_a : r.accuracy_b) : 0);
+      const soloTag = r.contested ? "" : `<em class="duel-solo-tag">主唱</em>`;
+      return `<div class="duet-duel-row${cls}" title="${escapeHtml(title)}">` +
+        `<span class="duel-pct duel-pct-a">${value("a")}</span>` +
+        `<span class="duel-side duel-side-a"><i style="width:${width("a")}%"></i></span>` +
+        `<span class="duel-label">${escapeHtml(r.label)}${soloTag}</span>` +
+        `<span class="duel-side duel-side-b"><i style="width:${width("b")}%"></i></span>` +
+        `<span class="duel-pct duel-pct-b">${value("b")}</span>` +
+        `</div>`;
+    };
+
+    const note = omitted > 0
+      ? `<div class="duel-note">（另有 ${omitted} 段未列出，完整段落成績記在評分歷史）</div>`
+      : "";
+
+    return `<div class="duet-section-duel">` +
+      `<div class="settlement-label">🎼 段落對決</div>` +
+      `<div class="duel-summary">${summary}${spotlight}</div>` +
+      `<div class="duel-rows">${rows.map(row).join("")}</div>${note}</div>`;
+  }
+
+  /**
+   * 對唱對戰結果：兩欄成績並排，上面一條勝負橫幅，下面段落對決。
+   *
+   * 段落長條圖不是兩個人各畫一張（塞不進結算畫面的九秒，也沒人配對得起來），
+   * 而是把同一段的兩個命中率往中間對拉 —— 見 renderDuetSectionDuel。
    */
   function renderDuetVerdict(verdict, resultA, resultB) {
     if (!settleDuet) return;
@@ -950,7 +1034,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     settleDuet.style.display = "block";
     settleDuet.innerHTML = `<div class="settlement-label">🎤🎤 對唱結果</div>${banner}` +
-      `<div class="duet-cols">${column("a", resultA)}${column("b", resultB)}</div>`;
+      `<div class="duet-cols">${column("a", resultA)}${column("b", resultB)}</div>` +
+      renderDuetSectionDuel(verdict.sections);
   }
 
   /**
@@ -964,7 +1049,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const top = verdict.winner === "b" ? resultB : resultA;
     if (!settlementOverlay || !settlementEnabled) {
       if (settlementEnabled === false && song) {
-        window.api.submitDuetScore(duetScorePayload(song, resultA, resultB)).catch(() => {});
+        window.api.submitDuetScore(duetScorePayload(song, resultA, resultB, verdict)).catch(() => {});
       }
       window.api.send("SONG_ENDED");
       return;
@@ -990,7 +1075,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settlementTimer = setTimeout(finishSettlement, settlementMs);
 
     try {
-      const res = await window.api.submitDuetScore(duetScorePayload(song, resultA, resultB));
+      const res = await window.api.submitDuetScore(duetScorePayload(song, resultA, resultB, verdict));
       const data = (res && res.result) || {};
       ["a", "b"].forEach((which) => {
         const r = data[which] || {};

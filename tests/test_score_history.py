@@ -245,3 +245,34 @@ def test_solo_record_keeps_empty_singer_field(tmp_path):
     r = s.record({"song_id": "a", "score": 1000})
     assert r["singer"] == ""
     assert r["duet"] is False
+
+
+def test_duet_records_duel_section_per_singer(tmp_path):
+    """段落對決的主場段落要跟著各自那一筆進歷史（回頭看才知道誰擅長哪一段）。"""
+    s = make_scores(tmp_path)
+    payload = duet_payload()
+    payload["a"]["duel_section"] = "副歌 2"
+    payload["b"]["duel_section"] = "主歌 1"
+    r = s.record_duet(payload)
+
+    assert r["a"]["duel_section"] == "副歌 2"
+    assert r["b"]["duel_section"] == "主歌 1"
+    # 主場段落存進紀錄本身，不只是回傳值（重開機後歷史還看得到）
+    assert {e["duel_section"] for e in s.recent(10)} == {"副歌 2", "主歌 1"}
+    assert s.singer_best_for("d1", "小明")["duel_section"] == "副歌 2"
+
+
+def test_single_singer_has_no_duel_section(tmp_path):
+    """一個人唱沒有對手，主場段落一律空字串（不是 None，欄位形狀要一致）。"""
+    s = make_scores(tmp_path)
+    r = s.record({"song_id": "solo", "score": 100, "best_section": "副歌 1"})
+    assert r["duel_section"] == ""
+
+
+def test_duel_section_label_is_truncated(tmp_path):
+    """段落標籤跟 best_section 一樣截斷，壞資料塞不爆歷史檔。"""
+    s = make_scores(tmp_path)
+    payload = duet_payload()
+    payload["a"]["duel_section"] = "副" * 100
+    r = s.record_duet(payload)
+    assert len(r["a"]["duel_section"]) == 24

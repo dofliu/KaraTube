@@ -281,6 +281,25 @@
      同一件事，參與量比例低於一半就退成「這一段主要是他唱的」。
      差距不到 5 個百分點算平手（門檻與段落評分共用一組，兩張成績單不會互相打嘴）。
 
+25. **🌌 情境背景 (Ambient Stage Background)**
+   - 沒抓到 MV 的歌不再是一片黑（那看起來像「這首歌壞掉了」），
+     改放會跟著音樂動的情境視覺，底圖是這首歌的封面放大模糊。
+     待機（沒有歌）時同樣有畫面 —— 商用點歌機的待機情境畫面。
+   - **抓到的 MV 其實是一張圖也算數**：YouTube 上大量「音樂版／歌詞版」上傳
+     其實是一張靜態圖配四分鐘音訊，檔案是有的，所以「有沒有 MV」會回答「有」。
+     舞台每 1.2 秒把畫面縮成 32×18 取一次樣，連續幾筆都幾乎沒有差異就判定
+     「這是一張圖」，換成情境背景（判定約 5 秒完成，通常還藏在片頭卡後面）。
+   - **五種主題**：極光、星空、霓虹、海洋、燭火。「自動」會依歌曲**固定**挑一個 ——
+     同一首歌昨天是星空今天是霓虹，第一個反應會是「機器怎麼怪怪的」。
+   - **背景不准閃**：舞台螢幕在暗房間裡佔滿整面牆，所以亮度走限速器
+     （每秒最多變 0.45，等效閃爍遠低於光敏性癲癇的 3 Hz 安全線）。
+     鼓點只推「動態」（粒子、波形），永遠不碰亮度。
+   - **背景不准跟歌詞搶**：亮度被主題錨點、設定頁的亮度上限、字幕區的 vignette
+     壓三道；設定頁可一路調到只剩 30%，也可以整個關掉（回到黑畫面）。
+   - **成本是最低優先**：30fps 上限、半解析度畫布（柔邊交給 GPU 的 CSS blur）、
+     分頁看不見就完全不畫，並量測每幀成本自動降級 ——
+     背景掉幀沒人會發現，字幕與評分掉幀所有人都會。
+
 ---
 
 ## 🚀 快速啟動
@@ -350,7 +369,7 @@ KaraTube/
 │       ├── song_history.py      # 已唱歷史（演唱時間序列）
 │       ├── score_history.py     # 評分歷史與個人最佳（唱畢結算）
 │       ├── library.py           # 曲庫分類（語言/歌手判定）、新歌榜、推薦歌單
-│       ├── settings.py          # 系統設定（預設調音、導唱淡出、快取上限、排程時段、模型選擇）
+│       ├── settings.py          # 系統設定（預設調音、導唱淡出、情境背景、快取上限、排程時段、模型選擇）
 │       ├── batch_scheduler.py    # 排程預處理（半夜整批跑歌，有人唱歌就讓開）
 │       ├── search_service.py    # YouTube 即時搜尋、播放清單展開
 │       └── queue_manager.py     # 點歌佇列與狀態廣播
@@ -373,6 +392,8 @@ KaraTube/
 │       ├── harmony-planner.js   # 和聲規劃（調性判定、音階度數、出聲時機）
 │       ├── harmony-worklet.js   # 和聲移調 DSP（AudioWorklet，跑在音訊執行緒）
 │       ├── duet-scorer.js       # 對唱模式：串音判定（這一幀該算誰的）、對戰結果與段落對決
+│       ├── ambient-visuals.js   # 情境背景的決策（主題、亮度限速、靜態 MV 偵測）
+│       ├── ambient-stage.js     # 情境背景的渲染（頻譜取樣、影格取樣、五種主題的畫法）
 │       ├── batch-view.js        # 排程預處理分頁的純顯示邏輯（挑項目、時段字串）
 │       └── audio-effects.js     # Web Audio 混音、升降 Key、殘響 DSP
 │   └── tests/
@@ -382,6 +403,7 @@ KaraTube/
 │       ├── harmony-planner.test.js # 和聲的調性與音階度數單元測試（node --test）
 │       ├── harmony-shifter.test.js # 移調器的數值測試（真的量頻率，node --test）
 │       ├── duet-scorer.test.js     # 對唱串音判定與勝負單元測試（node --test）
+│       ├── ambient-visuals.test.js # 情境背景的決策與亮度限速單元測試（node --test）
 │       └── batch-view.test.js      # 排程預處理顯示邏輯單元測試（node --test）
 │
 ├── tests/                       # 後端單元與 API 測試（pytest）
@@ -404,12 +426,12 @@ KaraTube/
 ## 🧪 測試與 CI
 
 ```bash
-# 後端（289 條）
+# 後端（293 條）
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ruff check .
 
-# 前端純邏輯（149 條，用 Node 內建測試執行器，不需要 npm install）
+# 前端純邏輯（176 條，用 Node 內建測試執行器，不需要 npm install）
 node --test "frontend/tests/*.test.js"
 ```
 
@@ -436,7 +458,7 @@ GitHub Actions 會在每個 PR 自動跑：後端 `compileall` + `ruff` lint + `
 
 ```bash
 curl -s http://localhost:8080/api/version
-# {"name":"KaraTube","version":"1.4.0","codename":"Two Mics"}
+# {"name":"KaraTube","version":"1.6.0","codename":"Never Black"}
 ```
 
 點歌台的 **⚙️ 系統設定** 頁尾也會顯示版本。

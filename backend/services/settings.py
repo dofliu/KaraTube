@@ -27,6 +27,16 @@ SING_MODE_CHOICES = ("solo", "party")
 # 實際移調量由舞台端依這首歌的調性算（frontend/js/harmony-planner.js）。
 HARMONY_STYLE_CHOICES = ("third", "low_third", "fifth", "octave", "duet")
 
+# 情境背景（沒抓到 MV 時的動態視覺）。
+#   auto   只有在這首歌沒有可用的 MV 時才出場（抓不到影片，或抓到的其實是一張靜態圖）
+#   always 一律用情境背景（有些包廂覺得 MV 會讓人分心，或版權畫面不想放）
+#   off    關掉（沒有 MV 就是黑畫面，等於這個功能沒加之前的行為）
+AMBIENT_BG_MODE_CHOICES = ("auto", "always", "off")
+# 主題 id 必須與 frontend/js/ambient-visuals.js 的 THEMES 一致
+# （tests/test_settings.py 有一條測試把兩邊釘在一起）。
+# "auto" 不是主題，是「依歌曲穩定挑一個」—— 同一首歌永遠是同一個背景。
+AMBIENT_THEME_CHOICES = ("auto", "aurora", "starfield", "neon", "ocean", "ember")
+
 # 每個設定欄位：型別、預設值、範圍或選項。
 # UI 也是照這張表長出來的，加一個欄位不用同時改三個地方。
 SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
@@ -98,6 +108,16 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # --- AI 模型（改完要重開伺服器才會生效）---
     "whisper_model": {"type": "choice", "default": "small", "choices": WHISPER_MODEL_CHOICES},
     "demucs_model": {"type": "choice", "default": "htdemucs", "choices": DEMUCS_MODEL_CHOICES},
+
+    # --- 情境背景 ---
+    # 沒有 MV 的歌不該是一片黑（看起來像這首歌壞了）。
+    # 亮度上限：背景再好看也不能跟字幕搶。下限刻意設 0.3 而不是 0 ——
+    # 滑到 0 等於背景被關掉，但模式還顯示開著，畫面說的跟看到的就對不上了。
+    "ambient_bg_mode": {"type": "choice", "default": "auto",
+                        "choices": AMBIENT_BG_MODE_CHOICES},
+    "ambient_bg_theme": {"type": "choice", "default": "auto",
+                         "choices": AMBIENT_THEME_CHOICES},
+    "ambient_bg_brightness": {"type": "float", "default": 0.85, "min": 0.3, "max": 1.0},
 
     # --- 舞台演出 ---
     "intro_card_enabled": {"type": "bool", "default": True},
@@ -246,4 +266,7 @@ class SystemSettings:
             "intro_card_ms": int(data["intro_card_seconds"] * 1000),
             "settlement_enabled": data["settlement_enabled"],
             "settlement_ms": int(data["settlement_seconds"] * 1000),
+            "ambient_bg_mode": data["ambient_bg_mode"],
+            "ambient_bg_theme": data["ambient_bg_theme"],
+            "ambient_bg_brightness": data["ambient_bg_brightness"],
         }

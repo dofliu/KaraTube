@@ -95,6 +95,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const micMeterFillB = document.getElementById("micMeterFillB");
   const micMeterTextB = document.getElementById("micMeterTextB");
   const micMeterRowB = document.getElementById("micMeterRowB");
+  const ambientCanvas = document.getElementById("ambientCanvas");
+  const ambientArt = document.getElementById("ambientArt");
 
   // Initializing Engines
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
@@ -117,6 +119,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // 第二支麥克風的自動增益。跟 A 各自獨立 —— 兩個人的音量與距離不會一樣，
   // 共用一組增益的話等於用同一把尺量兩個人，音量差反而被放大。
   const micAgcB = new MicAutoGain({ enabled: true, targetDb: -18 });
+  // 情境背景：沒抓到 MV（或抓到的其實是一張靜態圖）時的動態視覺。
+  // 參數由設定頁決定，這裡先放預設值，收到 SETTINGS_UPDATE 再覆寫。
+  const ambientStage = new AmbientStage(ambientCanvas, {
+    artEl: ambientArt,
+    videoEl: videoBg,
+    director: { mode: "auto", theme: "auto", brightness: 0.6 },
+  });
 
   const OFFSET_STORAGE_KEY = "karatube_lyric_offset_ms";
   const PITCH_STORAGE_KEY = "karatube_show_pitch";
@@ -228,6 +237,11 @@ document.addEventListener("DOMContentLoaded", () => {
       // 麥克風剛開起來才有電平可量，這裡歸零 dt 的起點，避免第一幀算出好幾秒
       resetMicAgc();
     }
+    // 情境背景要跟著音樂動，而 AudioContext 只有在使用者互動後才建得起來
+    const musicAnalyser = window.audioEngine.getMusicAnalyser();
+    if (musicAnalyser) {
+      ambientStage.setAnalyser(musicAnalyser, window.audioEngine.ctx.sampleRate);
+    }
     isAudioUnlocked = true;
     outputLatency = window.audioEngine.getOutputLatency();
     console.log(`[KaraTube] 輸出延遲 ${(outputLatency * 1000).toFixed(0)}ms，字幕微調 ${lyricOffsetMs}ms`);
@@ -290,6 +304,15 @@ document.addEventListener("DOMContentLoaded", () => {
       micAgcB.configure({ enabled: s.mic_agc_enabled, targetDb: s.mic_agc_target_db });
       window.audioEngine.setMicAutoGainB(micAgcB.enabled ? micAgcB.level : 1.0);
       renderMicMeter();
+    }
+    // 情境背景：模式／主題／亮度，改完當下就要看得到（不能等下一首）
+    if (s.ambient_bg_mode !== undefined || s.ambient_bg_theme !== undefined ||
+        s.ambient_bg_brightness !== undefined) {
+      ambientStage.configure({
+        mode: s.ambient_bg_mode,
+        theme: s.ambient_bg_theme,
+        brightness: s.ambient_bg_brightness,
+      });
     }
     // 串音判定門檻：房間越小、喇叭越大聲，串音越嚴重，門檻就要調高
     if (s.duet_crosstalk_margin_db !== undefined) {
@@ -1435,6 +1458,8 @@ document.addEventListener("DOMContentLoaded", () => {
       resetHarmony([]);
       resetGuideDuck();
       resetDuet();
+      // 待機畫面一樣走情境背景（商用機的待機情境畫面），只是能量固定在低檔
+      ambientStage.clearSong();
     }
   }
 
@@ -1448,6 +1473,14 @@ document.addEventListener("DOMContentLoaded", () => {
     showIntroCard(song);
 
     const songBaseUrl = `/media/songs/${song.song_id}`;
+
+    // 情境背景要先知道這首歌的狀況再載 MV：has_video 是後端從 metadata 讀的，
+    // 沒有 MV 的歌可以直接上情境背景，不必等 <video> 404 回來才發現。
+    ambientStage.startSong({
+      songId: song.song_id,
+      hasVideo: song.has_video === undefined ? undefined : song.has_video !== false,
+      thumbnail: song.thumbnail,
+    });
 
     videoBg.src = `${songBaseUrl}/original_video.mp4`;
     audioInst.src = `${songBaseUrl}/instrumental.mp3`;
@@ -1583,6 +1616,10 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderLoop() {
     requestAnimationFrame(renderLoop);
 
+    // 情境背景在待機（沒有歌）與暫停時也要動，所以放在主時鐘的守門之前。
+    // 它自己會節流到 30fps、分頁看不見就完全不畫，成本不會落在這一條迴圈上。
+    ambientStage.frame(performance.now(), !audioInst.paused && audioInst.currentTime > 0);
+
     // 伴奏軌是唯一的主時鐘。人聲軌與影片都只是跟隨者，
     // 不能拿它們的 currentTime 回頭修正字幕，否則會互相拉扯。
     if (audioInst.paused || !(audioInst.currentTime > 0)) return;
@@ -1669,6 +1706,9 @@ document.addEventListener("DOMContentLoaded", () => {
       window.api.send("TIME_UPDATE", { currentTime: audioTime, duration: duration });
     }
   }
+
+  // MV 根本沒下到（很多歌只有音訊）或檔案壞了：情境背景立刻接手，不留黑畫面。
+  videoBg.addEventListener("error", () => ambientStage.videoFailed());
 
   audioInst.addEventListener("seeked", () => clock.seekedTo(audioInst.currentTime));
   audioInst.addEventListener("playing", () => clock.seekedTo(audioInst.currentTime));

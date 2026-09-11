@@ -44,7 +44,30 @@ class AudioEngine {
     this.harmonySupported = null;   // null = 還沒試過
     this._harmonyLoading = null;
 
+    // 情境背景用的音樂頻譜分析節點（延遲建立：沒開情境背景就不必多掛一個節點）
+    this.musicAnalyser = null;
+
     this.isMicActive = false;
+  }
+
+  /**
+   * 情境背景要看的音樂頻譜。
+   *
+   * 接在 normGain（伴奏＋導唱這條匯流排）上，刻意**不含麥克風與罐頭音效**：
+   * 背景跟著人講話與掌聲抖動，看起來不是「有反應」而是「壞了」。
+   * analyser 只旁聽、不往下接，所以掛上去不影響輸出。
+   */
+  getMusicAnalyser() {
+    if (!this.ctx || !this.normGain) return null;
+    if (!this.musicAnalyser) {
+      this.musicAnalyser = this.ctx.createAnalyser();
+      // 1024 點在 48kHz 下每個 bin 約 47Hz，分得出低頻鼓與人聲的差別就夠了；
+      // 背景不需要更細的解析度，卻要為此每幀多算好幾倍的 FFT。
+      this.musicAnalyser.fftSize = 1024;
+      this.musicAnalyser.smoothingTimeConstant = 0.7;
+      this.normGain.connect(this.musicAnalyser);
+    }
+    return this.musicAnalyser;
   }
 
   initContext() {

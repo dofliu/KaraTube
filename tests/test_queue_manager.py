@@ -443,3 +443,36 @@ def test_duet_can_be_turned_off_by_the_stage(tmp_path):
         assert manager.get_full_state()["duet_enabled"] is False
 
     asyncio.run(scenario())
+
+
+def test_has_video_flag_travels_with_the_song(tmp_path):
+    """
+    舞台端要在載 MV 之前就知道這首有沒有影片（沒有的話直接上情境背景）。
+
+    只靠前端等 <video> 404 的話，那一秒的黑畫面剛好落在第一句歌詞上。
+    """
+    async def scenario():
+        storage = SongStorage(tmp_path / "songs")
+        for song_id, video_path in (("withvideo01", "/cache/withvideo01/original_video.mp4"),
+                                    ("audioonly01", None)):
+            song_dir = tmp_path / "songs" / song_id
+            song_dir.mkdir(parents=True)
+            (song_dir / "metadata.json").write_text(
+                json.dumps({"id": song_id, "title": song_id, "video_path": video_path}),
+                encoding="utf-8")
+        manager = QueueManager(FakeProcessor(), storage,
+                               play_stats=PlayStats(tmp_path / "play_stats.json"),
+                               song_history=SongHistory(tmp_path / "song_history.json"))
+
+        assert (await manager.add_song("withvideo01"))["has_video"] is True
+        assert (await manager.add_song("audioonly01"))["has_video"] is False
+
+        # 還沒處理過的歌是「不知道」，不是「沒有」——
+        # 當成沒有的話，每首有 MV 的歌都會先閃一下情境背景。
+        pending = await manager.add_song("notcached01")
+        assert pending["has_video"] is None
+        await asyncio.sleep(0.05)
+        # 流水線跑完才知道答案（假流水線沒回 video_path = 只有音訊）
+        assert pending["has_video"] is False
+
+    asyncio.run(scenario())

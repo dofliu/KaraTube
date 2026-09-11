@@ -1514,6 +1514,18 @@ document.addEventListener("DOMContentLoaded", () => {
     batch_pause_while_singing: { label: "有人唱歌時暫停", hint: "建議開著" },
     whisper_model: { label: "歌詞辨識模型", hint: "Whisper" },
     demucs_model: { label: "人聲分離模型", hint: "Demucs" },
+    ambient_bg_mode: {
+      label: "情境背景",
+      choiceLabels: { auto: "沒有 MV 時", always: "一律使用", off: "關閉" },
+    },
+    ambient_bg_theme: {
+      label: "背景主題",
+      choiceLabels: {
+        auto: "自動（依歌曲）", aurora: "極光", starfield: "星空",
+        neon: "霓虹", ocean: "海洋", ember: "燭火",
+      },
+    },
+    ambient_bg_brightness: { label: "背景亮度上限", hint: "字幕看不清就調低", percent: true },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -1573,6 +1585,14 @@ document.addEventListener("DOMContentLoaded", () => {
       title: "🤖 AI 模型",
       hint: "模型在伺服器啟動時載入，改完要重開伺服器才會生效。模型越大越準也越慢。",
       keys: ["whisper_model", "demucs_model"],
+    },
+    {
+      title: "🌌 情境背景",
+      hint: "沒抓到 MV 的歌（或抓到的其實是一張靜態圖）不會是黑畫面，" +
+            "改放會跟著音樂動的情境視覺，底圖是這首歌的封面。" +
+            "「自動」主題會依歌曲固定挑一個 —— 同一首歌每次都是同一個背景。" +
+            "背景的亮度變化有限速，不會閃；覺得跟字幕搶就把亮度上限調低。",
+      keys: ["ambient_bg_mode", "ambient_bg_theme", "ambient_bg_brightness"],
     },
     {
       title: "🖥️ 舞台演出",

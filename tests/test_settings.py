@@ -165,3 +165,52 @@ def test_duet_defaults_and_crosstalk_margin(settings):
 
     # 開機預設要推得進 QueueManager 的控制狀態
     assert "duet_enabled" in settings.control_defaults()
+
+
+def test_ambient_background_defaults(settings):
+    """情境背景預設是「只在沒有 MV 時出場」，亮度上限要壓在不搶字幕的位置。"""
+    assert settings.get("ambient_bg_mode") == "auto"
+    assert settings.get("ambient_bg_theme") == "auto"
+    assert settings.get("ambient_bg_brightness") == 0.85
+
+    # 認不得的模式／主題不套用（choice 欄位回 None，呼叫端保留原值）
+    assert settings.update({"ambient_bg_mode": "隨便"})["ambient_bg_mode"] == "auto"
+    assert settings.update({"ambient_bg_theme": "銀河"})["ambient_bg_theme"] == "auto"
+    assert settings.update({"ambient_bg_mode": "off"})["ambient_bg_mode"] == "off"
+    assert settings.update({"ambient_bg_theme": "ocean"})["ambient_bg_theme"] == "ocean"
+
+    # 亮度不能滑到 0：那等於背景被關掉，但模式還顯示開著，畫面說的跟看到的不一樣
+    assert settings.update({"ambient_bg_brightness": 0.0})["ambient_bg_brightness"] == 0.3
+    assert settings.update({"ambient_bg_brightness": 9})["ambient_bg_brightness"] == 1.0
+
+
+def test_ambient_settings_reach_the_stage(settings):
+    """舞台端要拿得到情境背景的三個參數（改完不重開就要生效）。"""
+    settings.update({"ambient_bg_mode": "always", "ambient_bg_theme": "neon",
+                     "ambient_bg_brightness": 0.4})
+    options = settings.stage_options()
+    assert options["ambient_bg_mode"] == "always"
+    assert options["ambient_bg_theme"] == "neon"
+    assert options["ambient_bg_brightness"] == 0.4
+
+
+def test_ambient_theme_choices_match_the_frontend():
+    """
+    設定頁的主題選項與 frontend/js/ambient-visuals.js 的 THEMES 必須一致。
+
+    對不上的話設定頁會列出一個舞台端根本畫不出來的主題（選了之後背景不會變，
+    而且完全沒有錯誤訊息）。註解會被忽略，測試不會 —— 所以直接讀那支 JS 來比。
+    """
+    import re
+    from pathlib import Path
+
+    from backend.services.settings import AMBIENT_THEME_CHOICES
+
+    source = (Path(__file__).resolve().parents[1] /
+              "frontend" / "js" / "ambient-visuals.js").read_text(encoding="utf-8")
+    block = re.search(r"^const THEMES = \{(.*?)^\};", source, re.S | re.M)
+    assert block, "找不到 ambient-visuals.js 的 THEMES 宣告"
+    # 每個主題都以 `  id: {` 開頭（縮排兩格），巢狀欄位縮排更深，不會被撈到
+    js_themes = set(re.findall(r"^  (\w+): \{", block.group(1), re.M))
+
+    assert js_themes == set(AMBIENT_THEME_CHOICES) - {"auto"}

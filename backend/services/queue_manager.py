@@ -137,10 +137,16 @@ class QueueManager:
 
         # Check existing metadata if cached
         cached_meta = self.storage.get_song_metadata(song_id)
+        # 這首有沒有 MV。舞台端靠它決定要不要直接上情境背景 ——
+        # 不給的話舞台只能先試著載 original_video.mp4、等 404 回來才知道，
+        # 那一秒的黑畫面剛好落在片頭的第一句。還沒處理的歌回 None（不知道），
+        # 舞台會先當成有、載不起來再改口（見 ambient-visuals.js startSong）。
+        has_video = None
         if cached_meta:
             title = cached_meta.get("title", title)
             artist = cached_meta.get("artist", artist)
             thumbnail = cached_meta.get("thumbnail", thumbnail)
+            has_video = bool(cached_meta.get("video_path"))
             status = "READY"
             progress = 100
         else:
@@ -154,6 +160,7 @@ class QueueManager:
             "title": title or "Loading...",
             "artist": artist or "",
             "thumbnail": thumbnail or f"https://img.youtube.com/vi/{song_id}/hqdefault.jpg",
+            "has_video": has_video,
             "status": status,
             "progress": progress,
             "status_text": "Queued" if status == "PENDING" else "Ready (Cached)",
@@ -195,6 +202,8 @@ class QueueManager:
             item["title"] = meta.get("title", item["title"])
             item["artist"] = meta.get("artist", item["artist"])
             item["thumbnail"] = meta.get("thumbnail", item["thumbnail"])
+            # 流水線跑完才知道 MV 到底有沒有下到（很多歌只有音訊）
+            item["has_video"] = bool(meta.get("video_path"))
             item["status"] = "READY"
             item["progress"] = 100
             item["status_text"] = "Ready"

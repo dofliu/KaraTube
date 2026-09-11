@@ -22,6 +22,12 @@
   </div>
 
   <div class="stage-wrapper">
+    <!-- 情境背景：沒抓到 MV（或抓到的其實是一張靜態圖）時的動態視覺。
+         art 是這首歌封面放大模糊後的底圖，canvas 是會跟著音樂動的那一層。
+         MV 這一層疊在它們上面，有 MV 時直接蓋住，切換靠 CSS 的淡入淡出。 -->
+    <div id="ambientArt" class="ambient-art"></div>
+    <canvas id="ambientCanvas" class="ambient-canvas"></canvas>
+
     <!-- Background Video MV Layer -->
     <video id="videoBg" class="video-background" muted playsinline loop></video>
     <div class="stage-vignette"></div>
@@ -214,6 +220,10 @@
   <script src="/js/harmony-planner.js"></script>
   <!-- 對唱模式的串音判定與對戰結果（純邏輯），player.js 會 new DuetScorer() -->
   <script src="/js/duet-scorer.js"></script>
+  <!-- 情境背景：ambient-visuals.js 是決策（純邏輯，有測試），
+       ambient-stage.js 是畫圖的那一支，必須排在它後面（要用 AmbientDirector）。 -->
+  <script src="/js/ambient-visuals.js"></script>
+  <script src="/js/ambient-stage.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

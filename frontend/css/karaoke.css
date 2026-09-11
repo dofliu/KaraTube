@@ -25,6 +25,72 @@ body.stage-mode {
   object-fit: cover;
   z-index: 1;
   opacity: 0.85;
+  /* 情境背景接手時淡出，而不是瞬間消失 —— 判定「這其實是一張圖」會落在
+     開唱後幾秒，硬切在畫面上非常刺眼（片頭卡通常還亮著，淡出剛好藏在它後面）。 */
+  transition: opacity 0.8s ease;
+}
+
+.video-background.ambient-hidden {
+  opacity: 0;
+}
+
+/* --- 情境背景 (Ambient Background) ---
+   沒抓到 MV 的歌不該是一片黑（看起來像這首歌壞了）。
+   art 是封面圖放大模糊後的底，canvas 是跟著音樂動的那一層。
+   兩層都刻意壓暗：這是伴唱機，字幕看不清楚就什麼都不用談。 */
+.ambient-art {
+  position: absolute;
+  /* 往外溢出一點，模糊之後邊緣才不會透出黑框 */
+  inset: -6%;
+  background-size: cover;
+  background-position: center;
+  filter: blur(48px) saturate(1.25) brightness(0.42);
+  opacity: 0;
+  transform: scale(1.06);
+  transition: opacity 1.2s ease;
+  z-index: 0;
+  animation: ambient-drift 52s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+.ambient-art.on {
+  opacity: 0.55;
+}
+
+.ambient-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 1s ease;
+  /* 畫布本身只有實際顯示的一半解析度，柔邊交給 GPU 合成的 blur ——
+     在 canvas 裡疊十層漸層做同一件事會貴上一個數量級。 */
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+/* 星點糊掉就只剩一片灰霧，那不是星空 —— 這個主題柔邊要收。 */
+.ambient-canvas[data-motion="stars"] {
+  filter: blur(2.5px);
+}
+
+.ambient-canvas.on {
+  opacity: 1;
+}
+
+@keyframes ambient-drift {
+  from { transform: scale(1.06) translate3d(-1.5%, -1%, 0); }
+  to   { transform: scale(1.14) translate3d(1.5%, 1%, 0); }
+}
+
+/* 背景的亮度變化本來就有限速（見 ambient-visuals.js 的 MAX_LUMA_SLEW），
+   但底圖的緩慢推移對前庭敏感的人仍可能不舒服，照系統偏好停掉。 */
+@media (prefers-reduced-motion: reduce) {
+  .ambient-art {
+    animation: none;
+  }
 }
 
 .stage-vignette {
@@ -35,6 +101,18 @@ body.stage-mode {
               linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, transparent 35%);
   z-index: 2;
   pointer-events: none;
+  transition: background 0.8s ease;
+}
+
+/* 情境背景出場時把 vignette 放輕。
+   這一層的工作是「把任何一支亂七八糟的 MV 壓到字幕看得清楚」，
+   情境背景的亮度本來就是我們自己控制的（而且已經被限速器與亮度上限壓過兩道），
+   照 MV 的力道再壓一次，疊起來就是一片全黑 —— 這是實際 render 出來才看到的。
+   字幕所在的下緣照樣壓好壓滿，那一道不能放。 */
+.ambient-canvas.on ~ .stage-vignette {
+  background: radial-gradient(circle at center, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.42) 100%),
+              linear-gradient(to top, rgba(0,0,0,0.92) 0%, transparent 42%),
+              linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, transparent 28%);
 }
 
 /* Autoplay Prompt Overlay (Ensures AudioContext and Web Audio start smoothly) */

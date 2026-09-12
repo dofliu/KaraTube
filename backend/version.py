@@ -16,10 +16,10 @@
 """
 import os
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 # 版本代號：發布公告與 release 標題用，純粹是給人記的名字
-VERSION_CODENAME = "Never Black"
+VERSION_CODENAME = "Home Turf"
 
 
 def build_id() -> str:

@@ -526,10 +526,37 @@ async def get_scores(limit: int = Query(50, ge=1, le=200)):
     }
 
 
+@app.get("/api/scores/trends")
+async def get_score_trends(limit: int = Query(20, ge=1, le=100)):
+    """
+    跨場次段落趨勢總表：所有唱到「有話可說」（同一曲式至少三場）的歌。
+
+    路由要排在 `/api/scores/{song_id}/best` 之前嗎？不必 —— 段數不同
+    （這支三段、那支四段），FastAPI 不會把 `trends` 當成 song_id。
+    """
+    return {"trends": score_history.trends(limit)}
+
+
 @app.get("/api/scores/{song_id}/best")
 async def get_best_score(song_id: str):
     """單曲個人最佳。還沒唱過回傳 null，讓前端自己決定顯示。"""
     return {"song_id": song_id, "best": score_history.best_for(song_id)}
+
+
+@app.get("/api/scores/{song_id}/trend")
+async def get_song_trend(song_id: str, singer: str = Query("")):
+    """
+    單曲的跨場次段落趨勢（這位演唱者一向強在哪一段）。
+
+    `singer` 空字串＝單人演唱的紀錄。場次不夠時照樣回 200 並附上
+    `status: "insufficient"` 與還差幾場 —— 「再唱兩次就能看出你的弱點」
+    是有用的畫面，404 不是。
+    """
+    return {
+        "song_id": song_id,
+        "singer": singer,
+        "trend": score_history.trend_for(song_id, singer),
+    }
 
 
 @app.get("/api/settings")

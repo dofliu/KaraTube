@@ -88,6 +88,21 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  /**
+   * 跨場次段落趨勢：這位演唱者在這首歌一向強在哪一段。
+   * `singer` 空字串＝單人演唱的紀錄（對唱才有名字）。
+   */
+  async getSongTrend(songId, singer = "") {
+    const params = singer ? `?singer=${encodeURIComponent(singer)}` : "";
+    const res = await fetch(`${this.baseUrl}/api/scores/${songId}/trend${params}`);
+    return await res.json();
+  }
+
+  async getScoreTrends(limit = 20) {
+    const res = await fetch(`${this.baseUrl}/api/scores/trends?limit=${limit}`);
+    return await res.json();
+  }
+
   // --- 曲庫分類瀏覽 / 新歌榜 / 推薦歌單 ---
   async getLibraryFacets() {
     const res = await fetch(`${this.baseUrl}/api/library`);

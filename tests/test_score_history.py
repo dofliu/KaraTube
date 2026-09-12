@@ -276,3 +276,119 @@ def test_duel_section_label_is_truncated(tmp_path):
     payload["a"]["duel_section"] = "副" * 100
     r = s.record_duet(payload)
     assert len(r["a"]["duel_section"]) == 24
+
+
+# --- 跨場次段落趨勢（1.7.0） ---
+
+def sing(store, song_id="t1", singer="", **sections):
+    return store.record({
+        "song_id": song_id, "title": "練唱曲", "score": 1000, "singer": singer,
+        "sections": [{"label": k, "accuracy": v, "note_frames": 200}
+                     for k, v in sections.items()],
+    })
+
+
+def test_sections_are_stored_compacted(tmp_path):
+    """入庫的是標籤與命中率兩個欄位，單場才有意義的欄位不留。"""
+    s = make_scores(tmp_path)
+    s.record({"song_id": "a", "score": 10, "sections": [
+        {"label": "副歌 1", "accuracy": 0.5, "note_frames": 300,
+         "grade": "S", "start": 12.5, "end": 40.0, "perfect_frames": 9},
+    ]})
+    assert s.recent(1)[0]["sections"] == [{"label": "副歌 1", "accuracy": 0.5}]
+
+
+def test_too_short_sections_never_enter_history(tmp_path):
+    """兩幀的段落命中率是運氣不是實力 —— 舞台端濾過，API 這一層再濾一次。"""
+    s = make_scores(tmp_path)
+    s.record({"song_id": "a", "score": 10, "sections": [
+        {"label": "短", "accuracy": 1.0, "note_frames": 3},
+        {"label": "夠長", "accuracy": 0.4, "note_frames": 120},
+        {"label": "舞台端說不算", "accuracy": 0.9, "note_frames": 500, "graded": False},
+    ]})
+    assert [r["label"] for r in s.recent(1)[0]["sections"]] == ["夠長"]
+
+
+def test_sections_are_capped_per_entry(tmp_path):
+    from backend.services.score_history import MAX_SECTIONS_PER_ENTRY
+    s = make_scores(tmp_path)
+    s.record({"song_id": "a", "score": 10, "sections": [
+        {"label": f"第 {i} 段", "accuracy": 0.5, "note_frames": 99} for i in range(40)]})
+    assert len(s.recent(1)[0]["sections"]) == MAX_SECTIONS_PER_ENTRY
+
+
+def test_trend_appears_after_three_performances(tmp_path):
+    s = make_scores(tmp_path)
+    r1 = sing(s, 主歌1=0.8, 副歌1=0.4)
+    assert r1["trend"]["status"] == "insufficient"
+    sing(s, 主歌1=0.78, 副歌1=0.42)
+    r3 = sing(s, 主歌1=0.5, 副歌1=0.15)
+
+    # 結算當下看到的那句話要把剛唱完的這一次算進去
+    assert r3["trend"]["status"] == "ok"
+    assert r3["trend"]["performances"] == 3
+    assert r3["trend"]["weak"]["label"] == "副歌1"
+    assert s.trend_for("t1")["home"]["label"] == "主歌1"
+
+
+def test_trend_is_per_singer(tmp_path):
+    """段落弱點是這個人的弱點，不是這首歌的難點 —— 兩個人不混算。"""
+    s = make_scores(tmp_path)
+    for _ in range(3):
+        sing(s, singer="小明", 主歌1=0.8, 副歌1=0.4)
+        sing(s, singer="小美", 主歌1=0.4, 副歌1=0.8)
+
+    assert s.trend_for("t1", "小明")["weak"]["label"] == "副歌1"
+    assert s.trend_for("t1", "小美")["weak"]["label"] == "主歌1"
+    # 單人（沒有名字）的紀錄自成一組，不會被有名字的場次灌進來
+    assert s.trend_for("t1", "")["status"] == "none"
+
+
+def test_trends_table_lists_only_conclusive_songs(tmp_path):
+    s = make_scores(tmp_path)
+    for _ in range(3):
+        sing(s, song_id="夠多場", 主歌1=0.8, 副歌1=0.4)
+    sing(s, song_id="只唱一次", 主歌1=0.8, 副歌1=0.4)
+
+    rows = s.trends()
+    assert [t["song_id"] for t in rows] == ["夠多場"]
+    assert rows[0]["best_score"] == 1000
+
+
+def test_trends_are_sorted_by_last_sung(tmp_path):
+    s = make_scores(tmp_path)
+    for song in ("先唱的", "後唱的"):
+        for _ in range(3):
+            sing(s, song_id=song, 主歌1=0.8, 副歌1=0.4)
+    assert [t["song_id"] for t in s.trends()][0] == "後唱的"
+
+
+def test_trend_survives_restart(tmp_path):
+    s = make_scores(tmp_path)
+    for _ in range(3):
+        sing(s, 主歌1=0.8, 副歌1=0.4)
+    reopened = make_scores(tmp_path)
+    assert reopened.trend_for("t1")["weak"]["label"] == "副歌1"
+
+
+def test_legacy_entries_without_sections_are_not_a_trend(tmp_path):
+    """1.7.0 之前的紀錄沒有段落資料，要說「沒資料」而不是當成 0%。"""
+    s = make_scores(tmp_path)
+    for _ in range(5):
+        s.record({"song_id": "old", "score": 900})
+    assert s.trend_for("old")["status"] == "none"
+    assert s.trends() == []
+
+
+def test_duet_sides_each_get_their_own_trend(tmp_path):
+    s = make_scores(tmp_path)
+    payload = duet_payload()
+    for side, shape in (("a", (0.8, 0.4)), ("b", (0.4, 0.8))):
+        payload[side]["sections"] = [
+            {"label": "主歌1", "accuracy": shape[0], "note_frames": 200},
+            {"label": "副歌1", "accuracy": shape[1], "note_frames": 200},
+        ]
+    for _ in range(3):
+        r = s.record_duet(payload)
+    assert r["a"]["trend"]["weak"]["label"] == "副歌1"
+    assert r["b"]["trend"]["weak"]["label"] == "主歌1"

@@ -1299,3 +1299,90 @@ body.duet-mode .score-card {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* ============ 跨場次段落趨勢（這首歌你「一向」強在哪一段） ============
+   中線是「這個人自己的平均」，往右是主場（青）、往左是弱點（桃紅）。
+   畫絕對命中率的話看到的是這首歌哪一段難唱，不是這個人哪一段弱。 */
+.settlement-trend {
+  margin: 4px 0 12px;
+  padding: 12px 18px 10px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settlement-trend-headline {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent-yellow);
+  line-height: 1.5;
+}
+
+.settlement-trend-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.settlement-trend-bars {
+  margin-top: 8px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.trend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* 沒被點名的段落（幅度不夠或方向不一致）畫淡色：
+   那一段還沒有結論，不是「剛好等於平均」。 */
+.trend-row.is-dim { opacity: 0.45; }
+
+.trend-bar-side {
+  flex: 1 1 0;
+  height: 9px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  display: flex;
+  overflow: hidden;
+}
+
+/* 左半邊（弱點）從中線往左長，所以長條要靠右對齊 */
+.trend-bar-side.left { justify-content: flex-end; }
+
+.trend-bar-side.left i {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(270deg, var(--accent-pink), rgba(255, 0, 127, 0.35));
+}
+
+.trend-bar-side.right i {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.35), var(--accent-cyan));
+}
+
+.trend-row-label {
+  flex: 0 0 88px;
+  text-align: center;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trend-row-value {
+  flex: 0 0 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.trend-row:not(.is-dim) .trend-row-label,
+.trend-row:not(.is-dim) .trend-row-value { color: var(--text-main); }

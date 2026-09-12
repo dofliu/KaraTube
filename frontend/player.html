@@ -134,6 +134,8 @@
         <div id="settleSections" class="settlement-sections" style="display: none;"></div>
         <!-- 對唱結果：兩位演唱者的分數並排 + 勝負橫幅（由 player.js 產生） -->
         <div id="settleDuet" class="settlement-duet" style="display: none;"></div>
+        <!-- 跨場次趨勢：這首歌你「一向」強在哪一段（唱滿三次才出現，由 player.js 產生） -->
+        <div id="settleTrend" class="settlement-trend" style="display: none;"></div>
         <!-- 導唱獨立度：導唱自動淡出的時間比例（導唱沒開或唱太短就不顯示） -->
         <div id="settleGuide" class="settlement-guide" style="display: none;"></div>
         <!-- 麥克風建議：自動增益一直大幅補償時，提示拿近／拿遠一點 -->
@@ -224,6 +226,8 @@
        ambient-stage.js 是畫圖的那一支，必須排在它後面（要用 AmbientDirector）。 -->
   <script src="/js/ambient-visuals.js"></script>
   <script src="/js/ambient-stage.js"></script>
+  <!-- 跨場次段落趨勢的呈現（純邏輯，點歌台也載同一支，兩邊才會講同一句話） -->
+  <script src="/js/trend-view.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

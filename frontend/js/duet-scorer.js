@@ -31,12 +31,19 @@
 
 // 噪音閘門：低於這個電平當成「這支麥克風沒人唱」。與麥克風自動增益同一個值
 // （-45 dBFS ≈ 安靜房間的底噪加一點空調聲），兩邊的「有沒有人」才會是同一件事。
-const SILENCE_DB = -45;
+//
+// 名字前面那個 DUET_ 不是裝飾：舞台頁面是用 <script> 一支一支載進**同一個全域
+// 作用域**的，mic-agc.js 也有一個 SILENCE_DB。兩支都叫 SILENCE_DB 的話，
+// 後載入的那一支在解析階段就會丟 SyntaxError（重複宣告 const）而整支不執行，
+// 接著 player.js 的 new DuetScorer() 會炸掉、整個舞台腳本停在那一行。
+// 而且 node --test 與 node --check 都測不到：它們是一支一支獨立跑的。
+// frontend/tests/script-scope.test.js 就是在守這件事。
+const DUET_SILENCE_DB = -45;
 
 // 「訊號夠紮實」的門檻：比底噪高 12 dB 以上才敢相信它偵測到的音高。
 // 音高分歧例外只在這條線之上生效 —— 底噪的自相關結果基本上是隨機數，
 // 拿它去跟主唱比對「音高不一樣」，等於把串音全部放進來計分。
-const SOLID_SIGNAL_DB = SILENCE_DB + 12;
+const SOLID_SIGNAL_DB = DUET_SILENCE_DB + 12;
 
 // 電平主導的預設門檻（dB）。9 dB 是「串音進不來、但唱得比較收的人還進得來」的折衷：
 // 近距離收音的串音多半在 -12 dB 以下，而兩個人音量差 9 dB 已經是很明顯的大小聲。
@@ -56,8 +63,11 @@ const PITCH_DIVERGENCE_SEMITONES = 1.5;
 // 電平包絡線：升得快（跟上句子的起音）、掉得慢（字與字之間的空隙不算變小聲）。
 // 直接用瞬時 RMS 判主導會在幀與幀之間亂跳 —— 兩支麥克風收到的波形相位不同，
 // 同一個聲音的瞬時振幅本來就會差。
-const ENV_RISE_TAU = 0.05;
-const ENV_FALL_TAU = 0.25;
+// （名字的 DUET_ 前綴與 DUET_SILENCE_DB 同一個理由：mic-agc.js 也有同名的
+// 兩個常數，而且值不一樣 —— 串音判定要跟得上「誰在唱」的來回切換，所以時間
+// 常數比自動增益短得多。同名 const 會讓後載入的整支不執行。）
+const DUET_ENV_RISE_TAU = 0.05;
+const DUET_ENV_FALL_TAU = 0.25;
 
 // 一位演唱者至少要被算到這麼多秒才算「他有唱」。
 // 對唱模式開著但只有一個人拿麥克風是很常見的（另一支放在桌上），
@@ -322,14 +332,14 @@ class DuetScorer {
 
     // 包絡線。第一幀（-Infinity）直接跳到量到的值，否則指數趨近會永遠停在 -Infinity。
     this.envA = Number.isFinite(this.envA) && step > 0
-      ? approach(this.envA, dbA, step, dbA > this.envA ? ENV_RISE_TAU : ENV_FALL_TAU)
+      ? approach(this.envA, dbA, step, dbA > this.envA ? DUET_ENV_RISE_TAU : DUET_ENV_FALL_TAU)
       : dbA;
     this.envB = Number.isFinite(this.envB) && step > 0
-      ? approach(this.envB, dbB, step, dbB > this.envB ? ENV_RISE_TAU : ENV_FALL_TAU)
+      ? approach(this.envB, dbB, step, dbB > this.envB ? DUET_ENV_RISE_TAU : DUET_ENV_FALL_TAU)
       : dbB;
 
-    const voicedA = this.envA >= SILENCE_DB;
-    const voicedB = this.envB >= SILENCE_DB;
+    const voicedA = this.envA >= DUET_SILENCE_DB;
+    const voicedB = this.envB >= DUET_SILENCE_DB;
 
     // 主導狀態機（Schmitt 遲滯）。兩邊都沒聲音時回到中性，
     // 免得安靜段落把上一句的主導狀態一路帶到下一句。
@@ -483,7 +493,7 @@ if (typeof module !== "undefined" && module.exports) {
     compareSections,
     dbFromRms,
     releaseMargin,
-    SILENCE_DB,
+    DUET_SILENCE_DB,
     SOLID_SIGNAL_DB,
     DEFAULT_MARGIN_DB,
     PITCH_DIVERGENCE_SEMITONES,

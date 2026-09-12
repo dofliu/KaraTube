@@ -731,6 +731,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleBeat = document.getElementById("settleBeat");
   const settleSections = document.getElementById("settleSections");
   const settleDuet = document.getElementById("settleDuet");
+  const settleTrend = document.getElementById("settleTrend");
   const settleGuide = document.getElementById("settleGuide");
   const settleMic = document.getElementById("settleMic");
   let settlementTimer = null;
@@ -781,6 +782,73 @@ document.addEventListener("DOMContentLoaded", () => {
     settleSections.innerHTML =
       `<div class="settlement-label">📊 段落表現</div>${verdict}` +
       `<div class="settlement-section-bars">${bars}</div>`;
+  }
+
+  /**
+   * 結算畫面的「跨場次趨勢」：這首歌你**一向**強在哪一段、弱在哪一段。
+   *
+   * 上面那張段落長條圖講的是這一次（副歌 1 只有 31%），這一塊講的是每一次
+   * （副歌 1 一向比你自己的平均低 9 個百分點）。分開畫是有意的 ——
+   * 今天的失誤與長期的弱點混在同一張圖上，看不出哪一個才需要去練。
+   *
+   * 中線是「這個人自己的平均」，往右是主場、往左是弱點；沒被點名的段落畫淡色
+   * （幅度不夠或方向不一致），代表那一段還沒有結論而不是「剛好是 0」。
+   */
+  function renderTrend(trend) {
+    if (!settleTrend) return;
+    const view = window.TrendView;
+    const summary = view ? view.describeTrend(trend) : { kind: "none" };
+    if (summary.kind === "none") {
+      settleTrend.style.display = "none";
+      settleTrend.innerHTML = "";
+      return;
+    }
+
+    // 場次不夠時只有一句「再唱幾次」，不畫沒有結論的長條圖
+    const rows = summary.kind === "waiting" ? [] : view.trendRows(trend);
+    const bars = rows.map((r) => {
+      const width = Math.round(r.ratio * 50); // 各半邊最多 50%，中線在正中間
+      const dim = r.named ? "" : " is-dim";
+      const title = `${r.label}　平均 ${Math.round(r.accuracy * 100)}%　${r.appearances} 次`;
+      return `<div class="trend-row${dim}" title="${escapeHtml(title)}">` +
+        `<span class="trend-bar-side left">${r.side === "weak"
+          ? `<i style="width:${width}%"></i>` : ""}</span>` +
+        `<span class="trend-row-label">${escapeHtml(r.label)}</span>` +
+        `<span class="trend-bar-side right">${r.side === "home"
+          ? `<i style="width:${width}%"></i>` : ""}</span>` +
+        `<span class="trend-row-value">${escapeHtml(r.text)}</span>` +
+        `</div>`;
+    }).join("");
+
+    const detail = summary.detail
+      ? `<div class="settlement-trend-detail">${escapeHtml(summary.detail)}</div>` : "";
+    settleTrend.style.display = "block";
+    settleTrend.innerHTML =
+      `<div class="settlement-trend-headline">${escapeHtml(summary.headline)}</div>${detail}` +
+      (bars ? `<div class="settlement-trend-bars">${bars}</div>` : "");
+  }
+
+  /**
+   * 對唱的跨場次趨勢：兩位各一行，不畫長條圖。
+   *
+   * 對唱結算畫面已經有一整排段落對決的對拉長條圖了，再疊兩張趨勢圖
+   * 會變成三張長得很像的圖擠在九秒的畫面裡 —— 每一張都看不完。
+   * 所以這裡只留兩句話，各自的完整趨勢圖在點歌台的「我的成績」看。
+   */
+  function renderDuetTrends(data) {
+    if (!settleTrend) return;
+    const view = window.TrendView;
+    const lines = ["a", "b"].map((which) => {
+      const side = (data && data[which]) || {};
+      const summary = view ? view.describeTrend(side.trend) : { kind: "none" };
+      if (summary.kind === "none" || summary.kind === "waiting") return "";
+      const who = side.singer || (which === "a" ? "A 麥" : "B 麥");
+      return `<div class="settlement-trend-headline">` +
+        `<b>${escapeHtml(who)}</b>　${escapeHtml(summary.headline)}</div>`;
+    }).filter(Boolean).join("");
+
+    settleTrend.style.display = lines ? "block" : "none";
+    settleTrend.innerHTML = lines;
   }
 
   /**
@@ -856,6 +924,19 @@ document.addEventListener("DOMContentLoaded", () => {
     requestAnimationFrame(step);
   }
 
+  /**
+   * 每段的命中率，壓成入庫需要的兩個欄位（外加給後端再守一次門的音符幀數）。
+   *
+   * 1.7.0 之前這一整串是「現場資訊」不入庫，只送最佳／最差兩個標籤。
+   * 但那兩個標籤說的是**這一次**哪一段唱壞了，跨場次的「你一向掉副歌」
+   * 只能從每一場的完整段落命中率長出來 —— 標籤本身沒有幅度可以平均。
+   */
+  function sectionPayload(result) {
+    return (result.sections || [])
+      .filter((s) => s && s.graded)
+      .map((s) => ({ label: s.label, accuracy: s.accuracy, note_frames: s.note_frames }));
+  }
+
   /** 送進 /api/scores 的成績單。段落點名只送標籤，長條圖是現場資訊不必入庫。 */
   function scorePayload(song, result) {
     return {
@@ -868,7 +949,8 @@ document.addEventListener("DOMContentLoaded", () => {
       max_combo: result.max_combo,
       grade: result.grade,
       best_section: result.best_section ? result.best_section.label : "",
-      worst_section: result.worst_section ? result.worst_section.label : ""
+      worst_section: result.worst_section ? result.worst_section.label : "",
+      sections: sectionPayload(result)
     };
   }
 
@@ -895,6 +977,8 @@ document.addEventListener("DOMContentLoaded", () => {
       settleDuet.style.display = "none";
     }
     renderSectionBreakdown(result);
+    // 趨勢要等 /api/scores 回來才知道（含這一次的歷史才算數），先收起來
+    renderTrend(null);
     renderGuideIndependence();
     renderMicAdvice();
     settlementOverlay.classList.add("show");
@@ -915,6 +999,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (r.beat_percent != null) {
         settleBeat.textContent = `擊敗全場 ${r.beat_percent}% 的演唱`;
       }
+      renderTrend(r.trend);
     } catch (e) {
       console.warn("結算成績上傳失敗:", e);
     }
@@ -936,6 +1021,9 @@ document.addEventListener("DOMContentLoaded", () => {
         best_section: result.best_section ? result.best_section.label : "",
         worst_section: result.worst_section ? result.worst_section.label : "",
         duel_section: spot ? spot.label : "",
+        // 兩位各自的段落命中率分開送：對唱的串音判定已經把每一幀歸給其中一位，
+        // 所以這兩串是各自的實力，合起來平均反而誰的趨勢都算不出來。
+        sections: sectionPayload(result),
       };
     };
     return {
@@ -1090,6 +1178,7 @@ document.addEventListener("DOMContentLoaded", () => {
       settleSections.style.display = "none";
     }
     renderDuetVerdict(verdict, resultA, resultB);
+    renderTrend(null);
     renderGuideIndependence();
     renderMicAdvice();
     settlementOverlay.classList.add("show");
@@ -1112,6 +1201,7 @@ document.addEventListener("DOMContentLoaded", () => {
           el.textContent = `🏆 本曲最佳 ${r.best_score.toLocaleString()}`;
         }
       });
+      renderDuetTrends(data);
     } catch (e) {
       console.warn("對唱結算成績上傳失敗:", e);
     }

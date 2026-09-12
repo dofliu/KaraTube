@@ -712,3 +712,66 @@ def test_library_new_and_recommend(fake_library_song):
     recs = res.json()["songs"]
     assert len(recs) <= 5
     assert all(r["reason"] and r["reason_tag"] for r in recs)
+
+
+def test_song_trend_endpoint(snapshot_history_and_scores):
+    """跨場次段落趨勢：唱三次之後端點才下結論，之前回報「還差幾場」。"""
+    sections = [{"label": "主歌 1", "accuracy": 0.8, "note_frames": 200},
+                {"label": "副歌 1", "accuracy": 0.4, "note_frames": 200}]
+
+    res = client.get("/api/scores/test_trend_001/trend")
+    assert res.status_code == 200
+    # 從沒唱過也是 200：「還沒有資料」是畫面，404 不是
+    assert res.json()["trend"]["status"] == "none"
+
+    for _ in range(2):
+        client.post("/api/scores", json={"song_id": "test_trend_001",
+                                         "title": "趨勢測試", "score": 800,
+                                         "sections": sections})
+    trend = client.get("/api/scores/test_trend_001/trend").json()["trend"]
+    assert trend["status"] == "insufficient"
+    assert trend["needed"] == 1
+
+    res = client.post("/api/scores", json={"song_id": "test_trend_001",
+                                           "title": "趨勢測試", "score": 800,
+                                           "sections": sections})
+    # 結算回應本身就帶著趨勢，舞台端不必再打一次 API
+    assert res.json()["result"]["trend"]["weak"]["label"] == "副歌 1"
+
+    trend = client.get("/api/scores/test_trend_001/trend").json()["trend"]
+    assert trend["status"] == "ok"
+    assert trend["performances"] == 3
+    assert trend["home"]["label"] == "主歌 1"
+    assert [r["label"] for r in trend["sections"]] == ["主歌 1", "副歌 1"]
+
+
+def test_trends_table_endpoint(snapshot_history_and_scores):
+    sections = [{"label": "主歌 1", "accuracy": 0.75, "note_frames": 200},
+                {"label": "副歌 1", "accuracy": 0.45, "note_frames": 200}]
+    for _ in range(3):
+        client.post("/api/scores", json={"song_id": "test_trend_table",
+                                         "title": "總表測試", "score": 700,
+                                         "singer": "小明", "sections": sections})
+    res = client.get("/api/scores/trends?limit=5")
+    assert res.status_code == 200
+    rows = [t for t in res.json()["trends"] if t["song_id"] == "test_trend_table"]
+    assert len(rows) == 1
+    assert rows[0]["singer"] == "小明"
+    assert rows[0]["weak"]["label"] == "副歌 1"
+
+    # `trends` 不可以被當成 song_id 吃掉（路由順序的老問題）
+    assert client.get("/api/scores/trends").json()["trends"] is not None
+
+
+def test_trend_singer_query_separates_people(snapshot_history_and_scores):
+    for singer, shape in (("甲", (0.8, 0.4)), ("乙", (0.4, 0.8))):
+        for _ in range(3):
+            client.post("/api/scores", json={
+                "song_id": "test_trend_singers", "score": 600, "singer": singer,
+                "sections": [{"label": "主歌 1", "accuracy": shape[0], "note_frames": 200},
+                             {"label": "副歌 1", "accuracy": shape[1], "note_frames": 200}]})
+
+    a = client.get("/api/scores/test_trend_singers/trend?singer=甲").json()["trend"]
+    b = client.get("/api/scores/test_trend_singers/trend?singer=乙").json()["trend"]
+    assert a["weak"]["label"] == "副歌 1"
+    assert b["weak"]["label"] == "主歌 1"

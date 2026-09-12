@@ -1369,3 +1369,129 @@ input[type="range"] {
   color: var(--accent-yellow);
   background: rgba(255, 222, 89, 0.1);
 }
+
+/* ============ 我的成績：跨場次段落趨勢卡 ============
+   長條圖的畫法與舞台結算畫面刻意一致（中線是自己的平均，右青左桃紅）——
+   同一份資料在兩個畫面上長得不一樣的話，使用者會以為那是兩件事。 */
+.trend-card {
+  grid-column: 1 / -1;
+  padding: 12px 14px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.trend-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trend-card-thumb {
+  width: 72px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.trend-card-info { flex: 1; min-width: 0; }
+
+.trend-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trend-card-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.trend-card-singer {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-weight: 800;
+  color: var(--bg-primary);
+  background: var(--accent-cyan);
+}
+
+.trend-card-headline {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--accent-yellow);
+  line-height: 1.5;
+}
+
+.trend-card-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.trend-card-bars { margin-top: 8px; }
+
+.trend-card .trend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* 沒被點名的段落畫淡色：那一段還沒有結論，不是「剛好等於平均」 */
+.trend-card .trend-row.is-dim { opacity: 0.45; }
+
+.trend-card .trend-bar-side {
+  flex: 1 1 0;
+  height: 9px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  display: flex;
+  overflow: hidden;
+}
+
+.trend-card .trend-bar-side.left { justify-content: flex-end; }
+
+.trend-card .trend-bar-side.left i {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(270deg, var(--accent-pink), rgba(255, 0, 127, 0.35));
+}
+
+.trend-card .trend-bar-side.right i {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.35), var(--accent-cyan));
+}
+
+.trend-card .trend-row-label {
+  flex: 0 0 92px;
+  text-align: center;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trend-card .trend-row-value {
+  flex: 0 0 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.trend-card .trend-row:not(.is-dim) .trend-row-label,
+.trend-card .trend-row:not(.is-dim) .trend-row-value { color: var(--text-main); }
+
+@media (max-width: 768px) {
+  .trend-card-head { flex-wrap: wrap; }
+  .trend-card .trend-row-label { flex-basis: 72px; }
+}

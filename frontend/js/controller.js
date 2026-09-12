@@ -228,6 +228,65 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  /**
+   * 我的成績：跨場次的段落趨勢（這首歌你一向強在哪一段）。
+   *
+   * 舞台的結算畫面只亮九秒，而且唱完當下人在喘 —— 真正會回頭看的是這裡。
+   * 每一列是「一首歌 × 一位演唱者」，唱滿三次（同一種曲式）才會出現：
+   * 唱一次就講「你一向如何」是在唬人。
+   */
+  async function loadTrends() {
+    try {
+      const res = await window.api.getScoreTrends(30);
+      const rows = res.trends || [];
+      libSummary.textContent = rows.length
+        ? `${rows.length} 首歌累積出趨勢（同一首唱滿 3 次就會出現）`
+        : "還沒有歌累積到 3 次演唱";
+      if (!rows.length) {
+        searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">還看不出趨勢<br>同一首歌唱滿 3 次，這裡就會告訴你「你一向強在哪一段」</div>`;
+        return;
+      }
+      searchResults.innerHTML =
+        `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">📊 我的成績（跨場次段落趨勢）</div>` +
+        rows.map(renderTrendCard).join("");
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">成績讀取失敗</div>`;
+    }
+  }
+
+  function renderTrendCard(trend) {
+    const view = window.TrendView;
+    const summary = view.describeTrend(trend);
+    const thumb = trend.thumbnail || `https://i.ytimg.com/vi/${trend.song_id}/mqdefault.jpg`;
+    const who = trend.singer ? `<span class="trend-card-singer">${escapeHtml(trend.singer)}</span>` : "";
+    const bars = view.trendRows(trend).map((r) => {
+      const width = Math.round(r.ratio * 50);
+      return `<div class="trend-row${r.named ? "" : " is-dim"}" title="平均 ${Math.round(r.accuracy * 100)}%・${r.appearances} 次">` +
+        `<span class="trend-bar-side left">${r.side === "weak" ? `<i style="width:${width}%"></i>` : ""}</span>` +
+        `<span class="trend-row-label">${escapeHtml(r.label)}</span>` +
+        `<span class="trend-bar-side right">${r.side === "home" ? `<i style="width:${width}%"></i>` : ""}</span>` +
+        `<span class="trend-row-value">${escapeHtml(r.text)}</span>` +
+        `</div>`;
+    }).join("");
+    const detail = summary.detail
+      ? `<div class="trend-card-detail">${escapeHtml(summary.detail)}</div>` : "";
+
+    return `
+      <div class="trend-card">
+        <div class="trend-card-head">
+          <img class="trend-card-thumb" src="${thumb}" loading="lazy" onerror="this.style.visibility='hidden'">
+          <div class="trend-card-info">
+            <div class="trend-card-title" title="${escapeAttr(trend.title || trend.song_id)}">${escapeHtml(trend.title || trend.song_id)}</div>
+            <div class="trend-card-meta">${who}唱過 ${trend.performances} 次 ・ 最佳 ${(trend.best_score || 0).toLocaleString()} 分</div>
+          </div>
+          <button class="btn btn-primary" onclick="window.addSong('${trend.song_id}', '${escapeAttr(trend.title)}', '${escapeAttr(trend.artist || "")}', '${thumb}', false)">🎤 再唱一次</button>
+        </div>
+        <div class="trend-card-headline">${escapeHtml(summary.headline)}</div>
+        ${detail}
+        <div class="trend-card-bars">${bars}</div>
+      </div>`;
+  }
+
   // 快取管理：看每首歌吃多少磁碟、刪除不唱的歌、重新處理壞掉的歌
   async function loadCacheManager() {
     try {
@@ -636,6 +695,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "new") loadNewAndRecommend();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
+    else if (which === "trends") loadTrends();
     else if (which === "cache") loadCacheManager();
     else if (which === "batch") loadBatch();
     else loadCachedRecommendations();

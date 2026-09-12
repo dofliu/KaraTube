@@ -15,7 +15,7 @@ const assert = require("node:assert/strict");
 const {
   DuetScorer,
   compareSections,
-  SILENCE_DB,
+  DUET_SILENCE_DB,
   SOLID_SIGNAL_DB,
   DEFAULT_MARGIN_DB,
   MIN_CREDITED_SECONDS,
@@ -61,7 +61,7 @@ test("關閉時不做任何判定：兩支麥克風各自照常計分", () => {
 
 test("兩邊都安靜：誰都不計分（底噪不該累積成績）", () => {
   const d = new DuetScorer({ enabled: true });
-  const decision = feed(d, 1, { aDb: SILENCE_DB - 10, bDb: SILENCE_DB - 10 });
+  const decision = feed(d, 1, { aDb: DUET_SILENCE_DB - 10, bDb: DUET_SILENCE_DB - 10 });
   assert.equal(decision.a, false);
   assert.equal(decision.b, false);
   assert.equal(decision.dominant, "both");
@@ -105,7 +105,7 @@ test("音高分歧例外：B 小 10 dB 但唱的是別的音 → 還是算 B 的
 test("音高分歧不適用於微弱訊號：接近底噪的假音高不能放串音進來", () => {
   const d = new DuetScorer({ enabled: true });
   // -40 dB 在噪音閘門之上、但低於「訊號夠紮實」門檻
-  assert.ok(-40 > SILENCE_DB && -40 < SOLID_SIGNAL_DB);
+  assert.ok(-40 > DUET_SILENCE_DB && -40 < SOLID_SIGNAL_DB);
   const decision = feed(d, 2, { aDb: -20, bDb: -40, aMidi: 60, bMidi: 67 });
   assert.equal(decision.b, false);
   assert.equal(decision.reason, "dominance");

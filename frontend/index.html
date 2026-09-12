@@ -49,6 +49,7 @@
         <button class="btn btn-secondary lib-tab" data-lib="rankings">🏆 點唱排行</button>
         <button class="btn btn-secondary lib-tab" data-lib="history">🕘 已唱歷史</button>
         <button class="btn btn-secondary lib-tab" data-lib="trends" title="跨場次段落趨勢：同一首唱滿三次就看得出你一向強在哪一段">📊 我的成績</button>
+        <button class="btn btn-secondary lib-tab" data-lib="recordings" title="錄唱回放：把剛剛唱的那一次聽回來（要先到系統設定頁打開錄音）">🎙️ 錄唱回放</button>
         <button class="btn btn-secondary lib-tab" data-lib="cache">🗂️ 快取管理</button>
         <button class="btn btn-secondary lib-tab" data-lib="batch" title="半夜自動把整張播放清單處理好，隔天點下去就是秒播">🌙 排程預處理</button>
         <span id="libSummary" class="lib-summary"></span>
@@ -393,6 +394,9 @@
   <!-- 跨場次段落趨勢的呈現（純邏輯，舞台端載的是同一支）：
        兩邊各寫一次的話，同一份資料會在兩個畫面上講出不同的說法。 -->
   <script src="/js/trend-view.js"></script>
+  <!-- 錄唱回放的判斷與格式化規則（純邏輯，舞台端載的是同一支）：
+       「這一次為什麼沒留下來」在兩個畫面上必須是同一套說法。 -->
+  <script src="/js/take-rules.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

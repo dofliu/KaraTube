@@ -6,13 +6,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException
+from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException,
+                     Request)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 import qrcode
 
-from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, PUBLIC_HOST,
+from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, RECORDINGS_DIR, PUBLIC_HOST,
                             PUBLIC_PORT, DEVICE)
 from backend.pipeline.chorus_detector import analyze_song_structure
 from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
@@ -26,6 +27,8 @@ from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
+from backend.services.recordings import (HARD_MAX_UPLOAD_BYTES, RecordingLibrary,
+                                         suffix_for_mime)
 from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
 from backend.version import __version__, version_info
 
@@ -73,6 +76,7 @@ play_stats = PlayStats(CACHE_DIR / "play_stats.json")
 favorites = Favorites(CACHE_DIR / "favorites.json")
 song_history = SongHistory(CACHE_DIR / "song_history.json")
 score_history = ScoreHistory(CACHE_DIR / "score_history.json")
+recordings = RecordingLibrary(RECORDINGS_DIR)
 # 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
 library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
 
@@ -557,6 +561,125 @@ async def get_song_trend(song_id: str, singer: str = Query("")):
         "singer": singer,
         "trend": score_history.trend_for(song_id, singer),
     }
+
+
+def _recording_quota() -> Dict[str, int]:
+    """目前的錄音配額。每次上傳都重讀設定 —— 使用者調完上限不必重開伺服器。"""
+    return {
+        "max_count": int(settings.get("recording_max_count", 50) or 0),
+        "max_bytes": settings.recording_limit_bytes(),
+    }
+
+
+def _recording_download_name(entry: Dict[str, Any]) -> str:
+    """
+    下載回去的檔名：`20260913-2130 歌名 - 演唱者.webm`。
+
+    檔名裡的斜線與冒號在 Windows 是非法字元，歌名裡它們又很常見
+    （「A/B」「Part 2: ...」），不換掉的話瀏覽器會拿到一個存不下去的檔名。
+    """
+    stamp = str(entry.get("created_at", ""))[:16].replace("-", "").replace(":", "").replace("T", "-")
+    parts = [p for p in (entry.get("title", ""), entry.get("singer", "")) if p]
+    stem = f"{stamp} {' - '.join(parts)}".strip() or str(entry.get("id", "recording"))
+    safe = "".join("_" if c in '\\/:*?"<>|' else c for c in stem)[:120]
+    return f"{safe}{suffix_for_mime(entry.get('mime', ''))}"
+
+
+@app.get("/api/recordings")
+async def list_recordings(limit: int = Query(100, ge=1, le=500),
+                          song_id: str = Query(""),
+                          singer: str = Query("")):
+    """錄唱回放清單：最近錄的排最前面，附配額用量。"""
+    quota = _recording_quota()
+    return {
+        "recordings": recordings.list_all(limit, song_id=song_id, singer=singer),
+        "stats": recordings.stats(**quota),
+        "enabled": bool(settings.get("recording_enabled", False)),
+    }
+
+
+@app.post("/api/recordings")
+async def upload_recording(request: Request,
+                           song_id: str = Query(...),
+                           title: str = Query(""),
+                           artist: str = Query(""),
+                           thumbnail: str = Query(""),
+                           singer: str = Query(""),
+                           mode: str = Query("solo"),
+                           duration_ms: int = Query(0, ge=0),
+                           score: int = Query(0, ge=0),
+                           grade: str = Query(""),
+                           accuracy: float = Query(0.0, ge=0.0, le=1.0)):
+    """
+    舞台端唱完後把錄音上傳進來。音檔是 **raw body**，metadata 走 query string。
+
+    刻意不用 multipart：那要多裝一個 `python-multipart`，而這裡要傳的只有
+    「一個檔案 + 幾個欄位」，raw body 讓後端、測試與前端三邊都少一層解析。
+
+    Content-Length 先擋一次再讀 body —— Starlette 的 `request.body()` 會把整包
+    讀進記憶體，等讀完才發現太大就已經吃掉那些記憶體了。
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > HARD_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="錄音檔太大")
+
+    audio = await request.body()
+    result = recordings.save(
+        audio,
+        {
+            "song_id": song_id, "title": title, "artist": artist, "thumbnail": thumbnail,
+            "singer": singer, "mode": mode, "duration_ms": duration_ms,
+            "score": score, "grade": grade, "accuracy": accuracy,
+            "mime": request.headers.get("content-type", ""),
+        },
+        **_recording_quota(),
+    )
+    if result.get("status") != "saved":
+        # 400 而不是 500：拒絕都是「送進來的東西不合規」，不是伺服器壞了
+        raise HTTPException(status_code=400, detail=result.get("message", "錄音存檔失敗"))
+
+    await ws_manager.broadcast({"type": "RECORDING_SAVED", "data": result["recording"]})
+    return {"status": "success", **result, "stats": recordings.stats(**_recording_quota())}
+
+
+@app.get("/api/recordings/{rec_id}/audio")
+async def get_recording_audio(rec_id: str, download: int = Query(0, ge=0, le=1)):
+    """錄音檔本體。`download=1` 才給 Content-Disposition，否則就地播放。"""
+    entry = recordings.get(rec_id)
+    path = recordings.path_for(rec_id)
+    if entry is None or path is None:
+        raise HTTPException(status_code=404, detail="找不到這筆錄音")
+    return FileResponse(
+        path,
+        media_type=entry.get("mime") or "application/octet-stream",
+        filename=_recording_download_name(entry) if download else None,
+    )
+
+
+@app.post("/api/recordings/{rec_id}/pin")
+async def pin_recording(rec_id: str, payload: Dict[str, Any] = Body(default={})):
+    """標記保留（配額滿了也不會被自動清掉）。沒給 pinned 就當成切換。"""
+    entry = recordings.get(rec_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="找不到這筆錄音")
+    pinned = payload.get("pinned")
+    target = (not entry.get("pinned")) if pinned is None else bool(pinned)
+    return {"status": "success", "recording": recordings.set_pinned(rec_id, target)}
+
+
+@app.delete("/api/recordings/{rec_id}")
+async def delete_recording(rec_id: str):
+    if not recordings.delete(rec_id):
+        raise HTTPException(status_code=404, detail="找不到這筆錄音")
+    return {"status": "success", "stats": recordings.stats(**_recording_quota())}
+
+
+@app.delete("/api/recordings")
+async def clear_recordings(include_pinned: int = Query(0, ge=0, le=1)):
+    """清空錄音。預設保留「標記保留」的那幾筆，要全刪得明確送 include_pinned=1。"""
+    removed = recordings.clear(keep_pinned=not include_pinned)
+    return {"status": "success", "removed": removed,
+            "stats": recordings.stats(**_recording_quota())}
 
 
 @app.get("/api/settings")

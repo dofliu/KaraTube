@@ -948,6 +948,42 @@ body.hide-pitch .pitch-visualizer-container {
   font-size: 14px;
 }
 
+/* 錄音指示。放在畫面左上角而不是跟其他徽章擠在右下：
+   它講的不是演出效果，而是「你現在正在被錄音」—— 那是一件要一眼看到的事。
+   紅點會呼吸（1.4 秒一次，遠低於光敏性癲癇的 3Hz 安全線）：
+   靜止的紅點在舞台畫面上會被當成裝飾。 */
+.recording-badge {
+  position: absolute;
+  top: 28px;
+  left: 40px;
+  z-index: 16;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ff5f6d;
+  border-left: 3px solid #ff5f6d;
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b3b;
+  box-shadow: 0 0 10px rgba(255, 59, 59, 0.9);
+  animation: recordingPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes recordingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
 /* 音訊面板裡的麥克風音量表。
    三段顏色不是裝飾：軟體幫不了「太遠」與「太近」，只有人能動，
    所以這兩種狀態要用顏色講出來，而不是只給一個看不出好壞的數字。 */

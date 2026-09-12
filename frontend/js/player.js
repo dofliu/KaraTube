@@ -85,6 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const micMeterText = document.getElementById("micMeterText");
   const micAgcBadge = document.getElementById("micAgcBadge");
   const micAgcBadgeText = document.getElementById("micAgcBadgeText");
+  const recordingBadge = document.getElementById("recordingBadge");
   const harmonyBadge = document.getElementById("harmonyBadge");
   const harmonyBadgeText = document.getElementById("harmonyBadgeText");
   const duetBoard = document.getElementById("duetBoard");
@@ -119,6 +120,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // 第二支麥克風的自動增益。跟 A 各自獨立 —— 兩個人的音量與距離不會一樣，
   // 共用一組增益的話等於用同一把尺量兩個人，音量差反而被放大。
   const micAgcB = new MicAutoGain({ enabled: true, targetDb: -18 });
+  // 錄唱回放：把這一次唱的錄下來。預設關著（設定頁開），
+  // 而且錄的是喇叭音量之前的混音（見 audio-effects.js 的 mixBus）。
+  const takeRecorder = new TakeRecorder(window.audioEngine);
   // 情境背景：沒抓到 MV（或抓到的其實是一張靜態圖）時的動態視覺。
   // 參數由設定頁決定，這裡先放預設值，收到 SETTINGS_UPDATE 再覆寫。
   const ambientStage = new AmbientStage(ambientCanvas, {
@@ -166,6 +170,16 @@ document.addEventListener("DOMContentLoaded", () => {
   let introCardEnabled = true;
   let settlementMs = 9000;
   let settlementEnabled = true;
+
+  // --- 錄唱回放的狀態 ---
+  // 預設關著，而且只有設定頁打開才會錄：錄音錄到的是包廂裡所有人的聲音。
+  let recordingEnabled = false;
+  let recordingMinSingMs = 10000;
+  // 這一輪「真的有人在唱」累積了多久。刻意用時間而不是幀數：
+  // 幀數要乘上更新率才是時間，而舞台在 30fps 的機器與 120fps 的螢幕上
+  // 同一首歌會差到四倍 —— 一邊留下來、一邊被當成沒人唱丟掉。
+  let takeVoicedMs = 0;
+  let lastVoicedFrameMs = 0;
 
   // 使用者設定的導唱音量（0 = 純伴奏）。自動 ducking 只在導唱真的有開的時候才有意義，
   // 所以要記住這個基準值來決定要不要跑那一段。
@@ -317,6 +331,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // 串音判定門檻：房間越小、喇叭越大聲，串音越嚴重，門檻就要調高
     if (s.duet_crosstalk_margin_db !== undefined) {
       duet.configure({ marginDb: s.duet_crosstalk_margin_db });
+    }
+    // 錄唱回放：關掉的當下就要停手並丟掉手上這一段 ——
+    // 使用者按下「不要錄」之後，這首歌剩下的部分還被錄著是不能接受的。
+    if (s.recording_enabled !== undefined) {
+      recordingEnabled = !!s.recording_enabled;
+      if (!recordingEnabled) cancelTake();
+      else if (isPlaying && currentSongMeta) startTake();
+      updateRecordingBadge();
+    }
+    if (s.recording_min_sing_seconds !== undefined) {
+      recordingMinSingMs = Math.round(s.recording_min_sing_seconds * 1000);
     }
     // 響度目標或開關改了，正在唱的這首要立刻跟上，不用等下一首
     if (currentSongId) applyLoudness(currentSongId);
@@ -937,6 +962,117 @@ document.addEventListener("DOMContentLoaded", () => {
       .map((s) => ({ label: s.label, accuracy: s.accuracy, note_frames: s.note_frames }));
   }
 
+  // --- 錄唱回放 ---
+  //
+  // 錄音的生命週期綁在「一次演唱」上，而不是「一首歌」：
+  //   開始播 → 開始錄；唱完（ended）→ 停下來，夠格就上傳；
+  //   被切歌 → 照樣結算上傳（唱了兩分鐘才被切掉，那兩分鐘一樣是一次演唱）；
+  //   按重唱 → 丟掉（評分也同時歸零，留著音檔會配上一份對不起來的成績）。
+
+  function updateRecordingBadge() {
+    if (!recordingBadge) return;
+    recordingBadge.style.display = takeRecorder.active ? "flex" : "none";
+  }
+
+  /** 開始錄這一次。功能沒開、瀏覽器不支援、沒有歌都直接不動作。 */
+  function startTake() {
+    if (!recordingEnabled || !currentSongMeta) return;
+    if (takeRecorder.active) return;
+    if (!takeRecorder.start() && takeRecorder.lastError) {
+      console.warn("[錄唱] 錄音開不起來：", takeRecorder.lastError);
+    }
+    updateRecordingBadge();
+  }
+
+  /** 丟掉手上這一段（重唱、關掉功能）。不上傳，也不留 Blob。 */
+  function cancelTake() {
+    takeRecorder.cancel();
+    takeVoicedMs = 0;
+    lastVoicedFrameMs = 0;
+    updateRecordingBadge();
+  }
+
+  /**
+   * 錄音要掛誰的名字。
+   *
+   * 對唱有兩位，單人則用點歌人 —— 那是包廂裡唯一知道的名字（可能不是
+   * 真正唱的人，所以清單上寫的是「誰點的」而不是斷言誰唱的）。
+   */
+  function takeSinger() {
+    if (duetActive) return [singerName("a"), singerName("b")].join(" & ");
+    return (currentSongMeta && currentSongMeta.requested_by) || "";
+  }
+
+  /**
+   * 停止錄音，夠格就上傳。呼叫端**不要 await** ——
+   * 結算畫面要立刻亮出來，不能等上傳幾 MB 的檔案。
+   */
+  async function finishTake(song, result) {
+    const singer = takeSinger();
+    const mode = duetActive ? "duet" : "solo";
+    const voicedMs = takeVoicedMs;
+    takeVoicedMs = 0;
+    lastVoicedFrameMs = 0;
+    const taken = await takeRecorder.stop();
+    updateRecordingBadge();
+    if (!taken || !song) return;
+
+    const verdict = window.TakeRules.shouldKeepTake({
+      enabled: recordingEnabled,
+      supported: true,          // 錄得出東西才會走到這裡
+      bytes: taken.blob.size,
+      voicedMs: voicedMs,
+      minSingMs: recordingMinSingMs,
+    });
+    if (!verdict.keep) {
+      console.log("[錄唱] 這一次不留：", verdict.reason);
+      return;
+    }
+    try {
+      await window.api.uploadRecording(taken.blob, {
+        song_id: song.song_id,
+        title: song.title || "",
+        artist: song.artist || "",
+        thumbnail: song.thumbnail || "",
+        singer: singer,
+        mode: mode,
+        duration_ms: taken.durationMs,
+        score: (result && result.score) || 0,
+        grade: (result && result.grade) || "",
+        accuracy: (result && result.accuracy) || 0,
+        mime: taken.mime,
+      });
+    } catch (e) {
+      // 上傳失敗只記在 console：包廂正在放下一首，這時候跳錯誤視窗
+      // 只會擋住畫面，而使用者當下也做不了任何事
+      console.warn("[錄唱] 上傳失敗:", e);
+    }
+  }
+
+  /**
+   * 上一首還在錄就把它結掉（被切歌、直接點下一首）。
+   *
+   * 用的是切歌當下的評分結果 —— 唱到一半被切掉的那一次沒有 `ended`，
+   * 但它一樣是一次演唱，錄音該留（夠不夠格由「唱了多久」那道門決定）。
+   */
+  function flushTake() {
+    if (!takeRecorder.active) return;
+    finishTake(currentSongMeta, pitchEngine.getFinalResult());
+  }
+
+  /**
+   * 累計「真的有人在唱」的時間。用兩幀之間的時間差而不是幀數，
+   * 30fps 的機器與 120fps 的螢幕才會得到同一個答案。
+   *
+   * 單幀差距夾在 100ms：分頁被切到背景時 requestAnimationFrame 會被降到
+   * 每秒一次甚至暫停，不夾的話那一大段空白會被整個算成「在唱」。
+   */
+  function updateTakeVoiced(sang, nowMs) {
+    const dt = lastVoicedFrameMs ? Math.min(100, nowMs - lastVoicedFrameMs) : 0;
+    lastVoicedFrameMs = nowMs;
+    if (sang && dt > 0) takeVoicedMs += dt;
+  }
+
   /** 送進 /api/scores 的成績單。段落點名只送標籤，長條圖是現場資訊不必入庫。 */
   function scorePayload(song, result) {
     return {
@@ -1535,6 +1671,8 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (!song) {
       hideSettlement();
       hideIntroCard();
+      // 佇列被清空／停止播放：還在錄的那一段照樣結掉（currentSongMeta 還在）
+      flushTake();
       currentSongId = null;
       currentSongMeta = null;
       titleEl.textContent = "KaraTube 伴唱系統";
@@ -1556,6 +1694,9 @@ document.addEventListener("DOMContentLoaded", () => {
   async function loadAndPlaySong(song) {
     // 切歌或下一首開始時，把還亮著的結算畫面收掉（不送 SONG_ENDED，佇列已前進）
     hideSettlement();
+    // 上一首可能還在錄（被切歌、或有人直接點了下一首）：先結掉再開新的。
+    // 這裡還是舊的 currentSongMeta，順序不能反。
+    flushTake();
     currentSongId = song.song_id;
     currentSongMeta = song;
     titleEl.textContent = song.title;
@@ -1613,6 +1754,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function playMedia() {
     window.audioEngine.initContext();
     outputLatency = window.audioEngine.getOutputLatency();
+    // 錄音跟著播放走（暫停再繼續不會把錄音切成兩段：已經在錄就不動作）
+    startTake();
     videoBg.play().catch(() => {});
     audioInst.play().catch((err) => {
       console.warn("Audio autoplay blocked by browser policy, awaiting user click:", err);
@@ -1629,6 +1772,9 @@ document.addEventListener("DOMContentLoaded", () => {
     audioInst.pause();
     audioVoc.pause();
     isPlaying = false;
+    // 歌暫停時包廂在講話，那不是這次演唱的一部分（也不該被錄進去）
+    takeRecorder.pause();
+    updateRecordingBadge();
   }
 
   function restartCurrentSong() {
@@ -1636,6 +1782,8 @@ document.addEventListener("DOMContentLoaded", () => {
     hideSettlement();
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
+    // 錄音同樣歸零：評分已經重來，留著剛剛那一段會配上一份對不起來的成績
+    cancelTake();
     resetDuet();
     resetGuideDuck();
     // 調性不用重估（還是同一首歌），但移調器裡的殘留樣本要清掉
@@ -1780,6 +1928,8 @@ document.addEventListener("DOMContentLoaded", () => {
       ? { hasNote: frame.hasNote, sang: frame.sang || frameB.sang, hit: frame.hit || frameB.hit }
       : frame;
     updateGuideDuck(guideFrame, nowMs);
+    // 錄唱回放的「唱了多久」吃同一幀的判定（對唱時兩支有一支在唱就算）
+    updateTakeVoiced(guideFrame.sang, nowMs);
     // 自動增益吃的是同一幀量到的麥克風原始電平（frame.rms），也不重複抓波形
     updateMicAgc(frame.rms, nowMs);
     // 和聲吃的是同一幀的導唱音符（frame.noteMidi）與「有沒有人在唱」（frame.sang）。
@@ -1810,6 +1960,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (duetActive && currentSongMeta) {
       const resultB = pitchEngineB.getFinalResult();
       const verdict = duet.verdict(result, resultB);
+      // 對唱的錄音是同一個檔案（兩支麥克風混在一起唱的那一次），
+      // 但分數欄位只有一個 —— 掛勝出者的，跟結算畫面上那個大分數一致。
+      finishTake(currentSongMeta, verdict.winner === "b" ? resultB : result);
       if (verdict.contested) {
         // 兩位都真的唱了才亮對戰成績單
         showDuetSettlement(currentSongMeta, result, resultB, verdict);
@@ -1826,6 +1979,10 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
     }
+
+    // 單人模式的錄音在這裡收尾（對唱在上面的分支已經收過了，
+    // 而 finishTake 停過一次之後再呼叫是安全的 no-op）
+    finishTake(currentSongMeta, result);
 
     if (result.sang && currentSongMeta) {
       // 有真的開口唱才亮結算畫面；純放歌（沒人唱）直接進下一首

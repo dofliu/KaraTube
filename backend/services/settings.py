@@ -119,6 +119,18 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
                          "choices": AMBIENT_THEME_CHOICES},
     "ambient_bg_brightness": {"type": "float", "default": 0.85, "min": 0.3, "max": 1.0},
 
+    # --- 錄唱回放 ---
+    # 預設關著，而且是這份設定裡唯一「不開就不會錄」的功能：錄音錄到的是
+    # 包廂裡所有人的聲音，預設打開等於替使用者決定要錄他們講的話。
+    # 上限是磁碟保險絲：錄音跟歌曲快取共用同一顆磁碟，沒有上限的話
+    # 最後失敗的會是「歌曲下載不下來」，沒有人會聯想到是錄音吃光的。
+    "recording_enabled": {"type": "bool", "default": False},
+    "recording_max_count": {"type": "int", "default": 50, "min": 1, "max": 500},
+    "recording_max_mb": {"type": "int", "default": 512, "min": 16, "max": 20000},
+    # 唱不到這麼久就不留。前奏放一半被切歌、麥克風擺著沒人唱的那種錄音
+    # 一樣佔配額，而且會把真正想找的那一次擠掉。
+    "recording_min_sing_seconds": {"type": "float", "default": 10.0, "min": 0.0, "max": 120.0},
+
     # --- 舞台演出 ---
     "intro_card_enabled": {"type": "bool", "default": True},
     "intro_card_seconds": {"type": "float", "default": 8.0, "min": 2.0, "max": 20.0},
@@ -258,6 +270,11 @@ class SystemSettings:
         gb = float(self.get("cache_limit_gb", 0.0) or 0.0)
         return int(gb * 1024 ** 3)
 
+    def recording_limit_bytes(self) -> int:
+        """錄音配額（bytes）。設定頁給的是 MB，這裡換算成 bytes。"""
+        mb = int(self.get("recording_max_mb", 512) or 0)
+        return mb * 1024 * 1024
+
     def stage_options(self) -> Dict[str, Any]:
         """舞台端要的演出設定（片頭卡、結算畫面）。"""
         data = self.all()
@@ -269,4 +286,8 @@ class SystemSettings:
             "ambient_bg_mode": data["ambient_bg_mode"],
             "ambient_bg_theme": data["ambient_bg_theme"],
             "ambient_bg_brightness": data["ambient_bg_brightness"],
+            "recording_enabled": data["recording_enabled"],
+            # 舞台端算的是毫秒（錄音長度用 performance.now() 量），
+            # 在這裡換算好，兩邊才不會各自乘一次 1000 而差一個數量級。
+            "recording_min_sing_ms": int(data["recording_min_sing_seconds"] * 1000),
         }

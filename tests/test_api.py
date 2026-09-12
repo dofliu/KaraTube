@@ -775,3 +775,111 @@ def test_trend_singer_query_separates_people(snapshot_history_and_scores):
     b = client.get("/api/scores/test_trend_singers/trend?singer=乙").json()["trend"]
     assert a["weak"]["label"] == "副歌 1"
     assert b["weak"]["label"] == "主歌 1"
+
+
+# --- 錄唱回放 ---
+
+@pytest.fixture()
+def clean_recordings(tmp_path, monkeypatch):
+    """
+    錄音庫換到 tmp_path，測試不會碰到本機真正的錄音。
+
+    `main.recordings` 是模組層級的單例，端點直接引用它，所以要換掉的是
+    那個名字本身（換 base_dir 不夠：索引已經在建構時讀進記憶體了）。
+    """
+    from backend.services.recordings import RecordingLibrary
+    monkeypatch.setattr(main, "recordings", RecordingLibrary(tmp_path / "recordings"))
+    yield main.recordings
+
+
+def upload(song_id="test_rec_song", body=b"fake-audio-bytes", **params):
+    query = {"song_id": song_id, "title": "錄音測試", "singer": "阿明",
+             "duration_ms": 123_000, "score": 90_000, "grade": "S", "accuracy": 0.8}
+    query.update(params)
+    return client.post("/api/recordings", params=query, content=body,
+                       headers={"content-type": "audio/webm;codecs=opus"})
+
+
+def test_recording_upload_list_play_delete(clean_recordings):
+    res = upload()
+    assert res.status_code == 200
+    rec = res.json()["recording"]
+    assert rec["song_id"] == "test_rec_song"
+    assert rec["mime"] == "audio/webm"       # codecs 參數要被剝掉才查得到副檔名
+    assert res.json()["stats"]["count"] == 1
+
+    listed = client.get("/api/recordings").json()
+    assert [e["id"] for e in listed["recordings"]] == [rec["id"]]
+
+    audio = client.get(f"/api/recordings/{rec['id']}/audio")
+    assert audio.status_code == 200
+    assert audio.content == b"fake-audio-bytes"
+    assert "attachment" not in audio.headers.get("content-disposition", "")
+
+    download = client.get(f"/api/recordings/{rec['id']}/audio?download=1")
+    assert "attachment" in download.headers["content-disposition"]
+    assert ".webm" in download.headers["content-disposition"]
+
+    assert client.delete(f"/api/recordings/{rec['id']}").status_code == 200
+    assert client.get("/api/recordings").json()["recordings"] == []
+
+
+def test_recording_upload_requires_song_id(clean_recordings):
+    assert client.post("/api/recordings", content=b"x").status_code == 422
+
+
+def test_recording_rejects_empty_body(clean_recordings):
+    assert upload(body=b"").status_code == 400
+
+
+def test_recording_audio_unknown_id_is_404_not_a_path_escape(clean_recordings):
+    upload()
+    assert client.get("/api/recordings/nope/audio").status_code == 404
+    # 路徑穿越要在 id 檢查那一關就死掉，不能讀到別的檔案
+    escaped = client.get("/api/recordings/..%2F..%2Fetc%2Fpasswd/audio")
+    assert escaped.status_code == 404
+    assert client.delete("/api/recordings/nope").status_code == 404
+    assert client.post("/api/recordings/nope/pin", json={}).status_code == 404
+
+
+def test_recording_pin_toggles_and_survives_clear(clean_recordings):
+    keep = upload(song_id="test_rec_keep").json()["recording"]
+    upload(song_id="test_rec_drop")
+
+    pinned = client.post(f"/api/recordings/{keep['id']}/pin", json={}).json()["recording"]
+    assert pinned["pinned"] is True
+
+    cleared = client.delete("/api/recordings").json()
+    assert cleared["removed"] == 1
+    assert [e["song_id"] for e in client.get("/api/recordings").json()["recordings"]] \
+        == ["test_rec_keep"]
+
+    # 要連保留的一起刪，得明確送 include_pinned=1
+    assert client.delete("/api/recordings?include_pinned=1").json()["removed"] == 1
+    assert client.get("/api/recordings").json()["recordings"] == []
+
+
+def test_recording_quota_from_settings_evicts_oldest(clean_recordings, restore_settings):
+    client.post("/api/settings", json={"recording_max_count": 2})
+    for i in range(3):
+        upload(song_id=f"test_rec_{i}")
+    listed = client.get("/api/recordings").json()
+    assert [e["song_id"] for e in listed["recordings"]] == ["test_rec_2", "test_rec_1"]
+    assert listed["stats"]["max_count"] == 2
+    assert listed["stats"]["remaining_count"] == 0
+
+
+def test_recording_list_reports_whether_the_feature_is_on(clean_recordings, restore_settings):
+    client.post("/api/settings", json={"recording_enabled": True})
+    assert client.get("/api/recordings").json()["enabled"] is True
+    client.post("/api/settings", json={"recording_enabled": False})
+    assert client.get("/api/recordings").json()["enabled"] is False
+
+
+def test_stage_options_carry_recording_switch(restore_settings):
+    client.post("/api/settings", json={"recording_enabled": True,
+                                       "recording_min_sing_seconds": 15})
+    stage = settings.stage_options()
+    assert stage["recording_enabled"] is True
+    # 舞台端算的是毫秒，換算要在後端做完（兩邊各乘一次就差一個數量級）
+    assert stage["recording_min_sing_ms"] == 15_000

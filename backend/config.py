@@ -10,6 +10,9 @@ CACHE_DIR = (Path(_cache_env) if os.path.isabs(_cache_env)
              else BASE_DIR / (_cache_env or "cache"))
 SONGS_DIR = CACHE_DIR / "songs"
 TEMP_DIR = CACHE_DIR / "temp"
+# 錄唱回放的音檔。跟歌曲快取放在同一個 CACHE_DIR 底下，
+# 容器部署時掛同一個 volume 就一起保住了（見 docs/DEPLOYMENT.md）。
+RECORDINGS_DIR = CACHE_DIR / "recordings"
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 # Ensure runtime directories exist

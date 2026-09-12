@@ -100,6 +100,13 @@
       <span id="harmonyBadgeText">和聲</span>
     </div>
 
+    <!-- 錄音指示：錄唱回放錄著的時候常駐。錄音在錄卻沒有任何畫面提示，
+         對包廂裡的人是不能接受的（他們的聲音正在被存起來）。 -->
+    <div id="recordingBadge" class="recording-badge" style="display: none;">
+      <span class="recording-dot"></span>
+      <span>錄音中</span>
+    </div>
+
     <!-- 導唱片頭卡：商用 KTV 的「演唱者：XXX」開場卡，前奏時亮 8 秒 -->
     <div id="introCard" class="intro-card">
       <div class="intro-kicker">♪ 接下來演唱</div>
@@ -228,6 +235,10 @@
   <script src="/js/ambient-stage.js"></script>
   <!-- 跨場次段落趨勢的呈現（純邏輯，點歌台也載同一支，兩邊才會講同一句話） -->
   <script src="/js/trend-view.js"></script>
+  <!-- 錄唱回放：take-rules.js 是判斷規則（純邏輯，有測試，點歌台也載同一支），
+       take-recorder.js 是真的去操作 MediaRecorder 的那一支，必須排在它後面。 -->
+  <script src="/js/take-rules.js"></script>
+  <script src="/js/take-recorder.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

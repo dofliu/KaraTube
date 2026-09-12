@@ -287,6 +287,130 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>`;
   }
 
+  /**
+   * 錄唱回放：把剛剛唱的那一次聽回來。
+   *
+   * 每一列一次演唱（同一首唱三次就有三列），就地播放、可下載、可標記保留。
+   * 「保留」是這一頁最重要的按鈕：配額滿了會從最舊的開始刪，
+   * 而唱得最好的那一次通常就是最舊的那一次。
+   */
+  async function loadRecordings() {
+    try {
+      const res = await window.api.getRecordings(100);
+      const list = res.recordings || [];
+      const rules = window.TakeRules;
+      libSummary.textContent = rules.quotaSummary(res.stats || {});
+
+      const warning = rules.quotaWarning(res.stats || {});
+      const warnHtml = warning
+        ? `<div class="rec-warning">⚠️ ${escapeHtml(warning)}</div>` : "";
+      // 功能沒開時清單一定是空的。不講的話使用者會以為錄音壞了 ——
+      // 而真正要做的事（去設定頁打開）在另一頁，不指路就找不到。
+      const offHtml = res.enabled === false
+        ? `<div class="rec-warning">🔇 錄唱回放目前是關閉的。到「⚙️ 系統設定」打開「錄唱回放」後，下一首唱的就會錄起來。</div>`
+        : "";
+
+      if (!list.length) {
+        searchResults.innerHTML =
+          `<div style="grid-column: 1/-1;">${offHtml}${warnHtml}</div>` +
+          `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">還沒有錄音<br>唱完一首（唱夠久）就會出現在這裡</div>`;
+        return;
+      }
+
+      const clearBtn = `<button class="btn btn-secondary" onclick="window.clearRecordings()">🗑️ 清空（保留標記的）</button>`;
+      searchResults.innerHTML =
+        `<div style="grid-column: 1/-1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">` +
+        `<span style="font-size: 16px; font-weight: 700; color: var(--accent-cyan);">🎙️ 錄唱回放</span>${clearBtn}</div>` +
+        `<div style="grid-column: 1/-1;">${offHtml}${warnHtml}</div>` +
+        list.map(renderRecordingCard).join("");
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">錄音清單讀取失敗</div>`;
+    }
+  }
+
+  function renderRecordingCard(rec) {
+    const rules = window.TakeRules;
+    const thumb = rec.thumbnail || `https://i.ytimg.com/vi/${rec.song_id}/mqdefault.jpg`;
+    const when = String(rec.created_at || "").replace("T", " ").slice(0, 16);
+    const pinIcon = rec.pinned ? "📌 已保留" : "📍 保留";
+    return `
+      <div class="rec-card${rec.pinned ? " is-pinned" : ""}">
+        <div class="rec-card-head">
+          <img class="rec-card-thumb" src="${thumb}" loading="lazy" onerror="this.style.visibility='hidden'">
+          <div class="rec-card-info">
+            <div class="rec-card-title" title="${escapeAttr(rec.title || rec.song_id)}">${escapeHtml(rec.title || rec.song_id)}</div>
+            <div class="rec-card-meta">${escapeHtml(rules.takeSubtitle(rec))}</div>
+            <div class="rec-card-when">${escapeHtml(when)}</div>
+          </div>
+        </div>
+        <audio class="rec-audio" controls preload="none" onloadedmetadata="window.fixRecDuration(this)"
+               src="${window.api.recordingAudioUrl(rec.id)}"></audio>
+        <div class="rec-card-actions">
+          <button class="btn btn-primary" onclick="window.addSong('${rec.song_id}', '${escapeAttr(rec.title)}', '${escapeAttr(rec.artist || "")}', '${thumb}', false)">🎤 再唱一次</button>
+          <a class="btn btn-secondary" href="${window.api.recordingAudioUrl(rec.id, true)}" download>⬇️ 下載</a>
+          <button class="btn btn-secondary" onclick="window.pinRecording('${rec.id}')">${pinIcon}</button>
+          <button class="btn btn-secondary" onclick="window.deleteRecording('${rec.id}')">🗑️ 刪除</button>
+        </div>
+      </div>`;
+  }
+
+  /**
+   * 讓錄音的進度條可以拖。
+   *
+   * MediaRecorder 產生的 webm 標頭裡**沒有 Duration** —— 它是串流容器，
+   * 開始錄的時候還不知道會錄多久。瀏覽器因此把 `audio.duration` 當成
+   * `Infinity`，進度條變成一條拖不動的線：想重聽副歌只能從頭放。
+   * （清單上的長度不受影響 —— 那是錄的時候量好存在伺服器的。）
+   *
+   * 業界通用的解法：先 seek 到一個不可能的時間點，瀏覽器為了回答
+   * 「到底有多長」會把整個檔案掃過一遍，`durationchange` 就會帶著真正的長度回來，
+   * 這時候再把播放位置放回 0。只做一次（dataset 記著），
+   * 而且只在真的要播的時候做（preload="none"）—— 一開分頁就掃五十個檔案，
+   * 使用者會看到一串轉圈圈卻不知道在等什麼。
+   */
+  window.fixRecDuration = (el) => {
+    if (!el || el.dataset.durationFixed || el.duration !== Infinity) return;
+    el.dataset.durationFixed = "1";
+    const onDurationChange = () => {
+      if (!Number.isFinite(el.duration)) return;
+      el.removeEventListener("durationchange", onDurationChange);
+      el.currentTime = 0;
+    };
+    el.addEventListener("durationchange", onDurationChange);
+    el.currentTime = 1e101;
+  };
+
+  window.pinRecording = async (recId) => {
+    try {
+      await window.api.pinRecording(recId);
+      loadRecordings();
+    } catch (e) { alert("保留狀態切換失敗: " + e.message); }
+  };
+
+  window.deleteRecording = async (recId) => {
+    if (!confirm("刪除這一次的錄音？刪掉就找不回來了。")) return;
+    try {
+      await window.api.deleteRecording(recId);
+      loadRecordings();
+    } catch (e) { alert("錄音刪除失敗: " + e.message); }
+  };
+
+  window.clearRecordings = async () => {
+    if (!confirm("清空錄音？標記保留（📌）的那幾筆會留下來。")) return;
+    try {
+      const res = await window.api.clearRecordings(false);
+      loadRecordings();
+      if (!res.removed) alert("沒有可清除的錄音（標記保留的不會被清掉）");
+    } catch (e) { alert("錄音清空失敗: " + e.message); }
+  };
+
+  // 舞台錄好一首就廣播過來。正在看這一頁時自動長出來 ——
+  // 唱完走回點歌台按重新整理才看得到，會被當成「沒錄到」。
+  window.api.on("RECORDING_SAVED", () => {
+    const active = document.querySelector(".lib-tab.active");
+    if (active && active.dataset.lib === "recordings") loadRecordings();
+  });
+
   // 快取管理：看每首歌吃多少磁碟、刪除不唱的歌、重新處理壞掉的歌
   async function loadCacheManager() {
     try {
@@ -696,6 +820,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
     else if (which === "trends") loadTrends();
+    else if (which === "recordings") loadRecordings();
     else if (which === "cache") loadCacheManager();
     else if (which === "batch") loadBatch();
     else loadCachedRecommendations();
@@ -1586,6 +1711,10 @@ document.addEventListener("DOMContentLoaded", () => {
       },
     },
     ambient_bg_brightness: { label: "背景亮度上限", hint: "字幕看不清就調低", percent: true },
+    recording_enabled: { label: "錄唱回放", hint: "把每一次演唱錄起來" },
+    recording_max_count: { label: "最多保存幾首", unit: " 首", step: 1 },
+    recording_max_mb: { label: "錄音配額", unit: " MB", step: 16 },
+    recording_min_sing_seconds: { label: "唱不到幾秒就不留", unit: " 秒", step: 1 },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -1653,6 +1782,15 @@ document.addEventListener("DOMContentLoaded", () => {
             "「自動」主題會依歌曲固定挑一個 —— 同一首歌每次都是同一個背景。" +
             "背景的亮度變化有限速，不會閃；覺得跟字幕搶就把亮度上限調低。",
       keys: ["ambient_bg_mode", "ambient_bg_theme", "ambient_bg_brightness"],
+    },
+    {
+      title: "🎙️ 錄唱回放",
+      hint: "把每一次演唱錄下來（伴奏＋麥克風的混音），唱完在「🎙️ 錄唱回放」分頁聽回來。" +
+            "預設關閉 —— 打開等於包廂裡的聲音會被存進伺服器，這件事該由人決定。" +
+            "錄音跟歌曲快取共用磁碟，所以有兩道上限；超過時從最舊、沒有標記保留（📌）" +
+            "的那一筆開始刪。唱太短的（前奏就被切歌、沒人開口）不留，免得把想留的擠掉。",
+      keys: ["recording_enabled", "recording_max_count", "recording_max_mb",
+             "recording_min_sing_seconds"],
     },
     {
       title: "🖥️ 舞台演出",

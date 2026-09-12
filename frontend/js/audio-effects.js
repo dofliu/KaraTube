@@ -70,6 +70,27 @@ class AudioEngine {
     return this.musicAnalyser;
   }
 
+  /**
+   * 錄唱回放要錄的那一條串流（伴奏＋導唱＋麥克風＋效果＋罐頭音效）。
+   *
+   * 接在 mixBus 上，也就是**喇叭音量之前**：錄的是這首歌唱成什麼樣子，
+   * 不是包廂當下開多大聲。
+   *
+   * MediaStreamDestination 只建一次並留著重複用。每首歌建一個新的會在
+   * AudioContext 裡累積節點（Web Audio 的節點只要還有連線就不會被回收），
+   * 唱一整晚之後 mixBus 身上會掛著幾十個沒人讀的目的節點，每一個都在跑重採樣。
+   */
+  getRecordingStream() {
+    this.initContext();
+    if (!this.mixBus) return null;
+    if (!this.recordDest) {
+      if (typeof this.ctx.createMediaStreamDestination !== "function") return null;
+      this.recordDest = this.ctx.createMediaStreamDestination();
+      this.mixBus.connect(this.recordDest);
+    }
+    return this.recordDest.stream;
+  }
+
   initContext() {
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -80,12 +101,22 @@ class AudioEngine {
       this.masterGain.gain.value = 1.0;
       this.masterGain.connect(this.ctx.destination);
 
+      // 全部聲音（伴奏＋導唱＋麥克風＋效果＋罐頭音效）先匯到這裡，再進 masterGain。
+      // 錄唱回放錄的是這一點，而**不是** masterGain 之後：
+      // masterGain 是喇叭音量，有人把喇叭轉小（接電話、勸酒）錄下來的就跟著變小，
+      // 甚至靜音 —— 那一次就沒了。錄音要的是「這首歌唱成什麼樣子」，
+      // 跟包廂當下開多大聲是兩件事。
+      this.mixBus = this.ctx.createGain();
+      this.mixBus.gain.value = 1.0;
+      this.mixBus.connect(this.masterGain);
+      this.recordDest = null;
+
       // 自動音量平衡（EBU R128）的每曲增益。
-      // 只掛在伴奏＋人聲這條路徑上 —— 麥克風與罐頭音效直接接 masterGain，
+      // 只掛在伴奏＋人聲這條路徑上 —— 麥克風與罐頭音效直接接 mixBus，
       // 所以換一首歌調整音量平衡時，唱歌的人不會忽然覺得自己的聲音變大變小。
       this.normGain = this.ctx.createGain();
       this.normGain.gain.value = 1.0;
-      this.normGain.connect(this.masterGain);
+      this.normGain.connect(this.mixBus);
       this.normalizationDb = 0;
 
       // Instrumental & Vocal tracks gain
@@ -234,7 +265,7 @@ class AudioEngine {
     this.reverbGain = this.ctx.createGain();
     this.reverbGain.gain.value = 0.0;   // 實際值由 setMicReverb 決定
     this.reverbNode.connect(this.reverbGain);
-    this.reverbGain.connect(this.masterGain);
+    this.reverbGain.connect(this.mixBus);
 
     // --- KTV 回音 (Echo) ---
     // 回授量與輸出音量必須是兩個獨立的節點。
@@ -259,7 +290,7 @@ class AudioEngine {
     this.echoDamp.connect(this.echoFeedbackGain);
     this.echoFeedbackGain.connect(this.delayNode);   // 回授迴路
     this.delayNode.connect(this.echoOutGain);
-    this.echoOutGain.connect(this.masterGain);       // 輸出
+    this.echoOutGain.connect(this.mixBus);           // 輸出
 
     // 舊名稱保留，避免其他地方誤用時整個爆掉
     this.delayGain = this.echoOutGain;
@@ -331,7 +362,7 @@ class AudioEngine {
       this.micLimiter.connect(this.micGain);
 
       this.micGain.connect(this.monitorGain);
-      this.monitorGain.connect(this.masterGain); // Direct vocal
+      this.monitorGain.connect(this.mixBus); // Direct vocal
       this.monitorGain.connect(this.reverbNode); // Reverb send
       this.monitorGain.connect(this.delayNode);  // Echo send
 
@@ -851,7 +882,7 @@ class AudioEngine {
       filter.connect(gain);
       gain.gain.setValueAtTime(0.8, this.ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 2.0);
-      gain.connect(this.masterGain);
+      gain.connect(this.mixBus);
       noise.start();
     } else if (name === "boo") {
       // Boo sound (low frequency descending groan)
@@ -861,7 +892,7 @@ class AudioEngine {
       gain.gain.setValueAtTime(0.6, this.ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 1.5);
       osc.connect(gain);
-      gain.connect(this.masterGain);
+      gain.connect(this.mixBus);
       osc.start();
       osc.stop(this.ctx.currentTime + 1.5);
     }

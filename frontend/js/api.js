@@ -98,6 +98,63 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // --- 錄唱回放 ---
+
+  /**
+   * 上傳一次演唱的錄音。
+   *
+   * 音檔是 **raw body**、metadata 走 query string —— 不用 multipart 是為了
+   * 後端不必多裝一個 `python-multipart`，而這裡要送的就只有「一個檔案 + 幾個欄位」。
+   * Content-Type 直接寫錄音的 mime，後端照它決定副檔名（webm / m4a）。
+   */
+  async uploadRecording(blob, meta) {
+    const params = new URLSearchParams();
+    Object.entries(meta || {}).forEach(([key, value]) => {
+      if (key === "mime" || value === undefined || value === null) return;
+      params.set(key, String(value));
+    });
+    const res = await fetch(`${this.baseUrl}/api/recordings?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': (meta && meta.mime) || blob.type || 'audio/webm' },
+      body: blob
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `錄音上傳失敗 (${res.status})`);
+    }
+    return await res.json();
+  }
+
+  async getRecordings(limit = 100) {
+    const res = await fetch(`${this.baseUrl}/api/recordings?limit=${limit}`);
+    return await res.json();
+  }
+
+  recordingAudioUrl(recId, download = false) {
+    return `${this.baseUrl}/api/recordings/${recId}/audio${download ? "?download=1" : ""}`;
+  }
+
+  async pinRecording(recId, pinned) {
+    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}/pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pinned === undefined ? {} : { pinned })
+    });
+    return await res.json();
+  }
+
+  async deleteRecording(recId) {
+    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}`, { method: 'DELETE' });
+    return await res.json();
+  }
+
+  async clearRecordings(includePinned = false) {
+    const res = await fetch(
+      `${this.baseUrl}/api/recordings${includePinned ? "?include_pinned=1" : ""}`,
+      { method: 'DELETE' });
+    return await res.json();
+  }
+
   async getScoreTrends(limit = 20) {
     const res = await fetch(`${this.baseUrl}/api/scores/trends?limit=${limit}`);
     return await res.json();

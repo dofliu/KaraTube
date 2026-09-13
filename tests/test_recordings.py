@@ -15,7 +15,9 @@ import pytest
 from backend.services.recordings import (
     DEFAULT_MAX_BYTES,
     HARD_MAX_UPLOAD_BYTES,
+    MP3_CACHE_MIN_BYTES,
     RecordingLibrary,
+    mp3_cache_limit,
     normalize_mime,
     suffix_for_mime,
 )
@@ -241,3 +243,174 @@ def test_clear_keeps_pinned_by_default(library):
 def test_default_quota_constants_are_sane():
     # 預設配額若比單檔硬上限還小，第一次錄音就會被自己的預設值拒收
     assert DEFAULT_MAX_BYTES > HARD_MAX_UPLOAD_BYTES
+
+
+# --- MP3 轉檔快取 ---
+#
+# 轉檔本身在 transcoder.py（有自己那一支測試），這裡測的是**帳**：
+# 轉好的檔案記在哪、什麼時候被丟掉、以及最重要的一條 ——
+# 它永遠不可以擠掉任何一次演唱。演唱刪了就沒有，MP3 再轉一次就有。
+
+def fake_mp3(library, rec_id: str, size: int = 4096):
+    """假裝 transcoder 已經把檔案寫好了（這一層不在乎它是怎麼來的）。"""
+    target = library.mp3_target_for(rec_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"\x00" * size)
+    return target
+
+
+def test_mp3_target_is_derived_from_the_server_side_id(library):
+    rec = library.save(take(), meta())["recording"]
+    target = library.mp3_target_for(rec["id"])
+    assert target.name == f"{rec['id']}.mp3"
+    assert target.parent == library.mp3_dir
+    # 查無此筆就沒有目標路徑 —— 不然它會變成一個「任意檔名寫檔」的入口
+    assert library.mp3_target_for("20260101-010101-abcdef") is None
+    assert library.mp3_target_for("../evil") is None
+
+
+def test_registered_mp3_shows_up_in_stats_but_not_in_the_recording_quota(library):
+    rec = library.save(take(1000), meta())["recording"]
+    fake_mp3(library, rec["id"], 5000)
+    library.register_mp3(rec["id"], max_bytes=10 * 1024 * 1024)
+
+    stats = library.stats(50, 1024 * 1024)
+    assert stats["mp3_count"] == 1
+    assert stats["mp3_bytes"] == 5000
+    # 關鍵：錄音配額的用量沒有因為有人按了下載而變大
+    assert stats["total_bytes"] == 1000
+
+
+def test_mp3_cache_never_evicts_a_recording(library):
+    """按一下「MP3」就把最舊的那一次演唱擠掉，是使用者無法挽回的事。"""
+    old = library.save(take(1000), meta("old"))["recording"]
+    new = library.save(take(1000), meta("new"))["recording"]
+    fake_mp3(library, new["id"], 1024 * 1024)
+    # 配額（2000 bytes）比這份 MP3 小得多，但錄音一個都不能少
+    library.register_mp3(new["id"], max_bytes=2 * 1024 * 1024)
+    assert {e["id"] for e in library.list_all()} == {old["id"], new["id"]}
+
+
+def test_mp3_cache_drops_the_least_recently_used_first(library):
+    """LRU 而不是「最舊的錄音」：三個月前的老歌每週有人下載，它才該留著。"""
+    recs = [library.save(take(100), meta(f"s{i}"))["recording"] for i in range(3)]
+    for rec in recs:
+        fake_mp3(library, rec["id"], 1000)
+        library.register_mp3(rec["id"], max_bytes=10_000)
+
+    # 第一筆剛剛被用到，第二筆是最久沒碰的那一個
+    library.touch_mp3(recs[0]["id"])
+
+    fresh = library.save(take(100), meta("s3"))["recording"]
+    fake_mp3(library, fresh["id"], 1000)
+    library.register_mp3(fresh["id"], max_bytes=3500)   # 只放得下三份
+
+    alive = {e["id"] for e in library.list_all() if e.get("mp3_file")}
+    assert recs[1]["id"] not in alive
+    assert recs[0]["id"] in alive and fresh["id"] in alive
+    assert not (library.mp3_dir / f"{recs[1]['id']}.mp3").exists()
+
+
+def test_just_transcoded_file_is_not_its_own_eviction_victim(library):
+    """單一份就比快取上限還大時，不能把剛轉好的那一份當場刪掉再回報成功。"""
+    rec = library.save(take(100), meta())["recording"]
+    fake_mp3(library, rec["id"], 9000)
+    library.register_mp3(rec["id"], max_bytes=1000)
+    assert library.mp3_path_for(rec["id"]) is not None
+
+
+def test_deleting_a_recording_takes_its_mp3_with_it(library):
+    rec = library.save(take(), meta())["recording"]
+    path = fake_mp3(library, rec["id"])
+    library.register_mp3(rec["id"], max_bytes=10_000)
+
+    library.delete(rec["id"])
+    # 留著的話是一個清單上看不到、配額算不到、只有磁碟知道的檔案
+    assert not path.exists()
+
+
+def test_quota_eviction_also_cleans_up_the_mp3(library):
+    old = library.save(take(1000), meta("old"))["recording"]
+    path = fake_mp3(library, old["id"])
+    library.register_mp3(old["id"], max_bytes=10_000)
+
+    library.save(take(1000), meta("new"), max_count=1)
+    assert library.get(old["id"]) is None
+    assert not path.exists()
+
+
+def test_clearing_the_mp3_cache_keeps_every_recording(library):
+    rec = library.save(take(), meta())["recording"]
+    fake_mp3(library, rec["id"], 2048)
+    library.register_mp3(rec["id"], max_bytes=10_000)
+
+    result = library.clear_mp3_cache()
+    assert result["removed"] == 1
+    assert result["freed_bytes"] == 2048
+    assert library.mp3_path_for(rec["id"]) is None
+    assert len(library.list_all()) == 1          # 錄音一個都沒動
+
+
+def test_orphan_mp3_files_are_cleaned_up_on_reload(library):
+    """轉到一半斷電、或那筆錄音早就被刪掉，留下的 MP3 沒有人會再認領。"""
+    rec = library.save(take(), meta())["recording"]
+    fake_mp3(library, rec["id"])
+    library.register_mp3(rec["id"], max_bytes=10_000)
+    orphan = library.mp3_dir / "20250101-010101-aaaaaa.mp3"
+    orphan.write_bytes(b"\x00" * 10)
+
+    reopened = RecordingLibrary(library.base_dir)
+    assert not orphan.exists()
+    assert reopened.mp3_path_for(rec["id"]) is not None
+
+
+def test_missing_mp3_file_just_clears_the_flag(library):
+    """有人手動把 mp3 資料夾清掉：那筆錄音要好好的，只是下次按 MP3 會重轉。"""
+    rec = library.save(take(), meta())["recording"]
+    path = fake_mp3(library, rec["id"])
+    library.register_mp3(rec["id"], max_bytes=10_000)
+    path.unlink()
+
+    reopened = RecordingLibrary(library.base_dir)
+    assert reopened.get(rec["id"]) is not None
+    assert reopened.mp3_path_for(rec["id"]) is None
+    assert reopened.stats(50, DEFAULT_MAX_BYTES)["mp3_count"] == 0
+
+
+def test_mp3_folder_is_not_mistaken_for_an_orphan_recording(library):
+    """
+    `_reconcile()` 會把錄音資料夾裡「不在索引上」的檔案刪掉。
+    MP3 放在子資料夾正是為了閃開這一刀 —— 這條測試把它釘住。
+    """
+    rec = library.save(take(), meta())["recording"]
+    fake_mp3(library, rec["id"])
+    library.register_mp3(rec["id"], max_bytes=10_000)
+    RecordingLibrary(library.base_dir)
+    assert (library.mp3_dir / f"{rec['id']}.mp3").exists()
+
+
+def test_mp3_cache_limit_follows_the_recording_quota():
+    # 小機器把錄音上限調到 64 MB 時，快取不該還自顧自佔 256 MB
+    assert mp3_cache_limit(1024 * 1024 * 1024) == 256 * 1024 * 1024
+    assert mp3_cache_limit(0) > 0                      # 不限額時給保守的固定值
+    assert mp3_cache_limit(16 * 1024 * 1024) == MP3_CACHE_MIN_BYTES
+
+
+def test_lru_order_survives_a_restart(library):
+    """
+    序號在重開機後要接著跑。重設成 0 的話，剛轉好的那一份會跟開機前的
+    舊檔案並列最小值，快取一滿第一個被刪的就是它。
+    """
+    recs = [library.save(take(100), meta(f"s{i}"))["recording"] for i in range(2)]
+    for rec in recs:
+        fake_mp3(library, rec["id"], 1000)
+        library.register_mp3(rec["id"], max_bytes=10_000)
+
+    reopened = RecordingLibrary(library.base_dir)
+    fresh = reopened.save(take(100), meta("s2"))["recording"]
+    fake_mp3(reopened, fresh["id"], 1000)
+    reopened.register_mp3(fresh["id"], max_bytes=2500)   # 只放得下兩份
+
+    alive = {e["id"] for e in reopened.list_all() if e.get("mp3_file")}
+    assert fresh["id"] in alive          # 剛轉好的留著
+    assert recs[0]["id"] not in alive    # 被丟的是開機前最久沒用的那一份

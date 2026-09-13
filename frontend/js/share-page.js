@@ -68,6 +68,58 @@
     if (left > 0) timer = setInterval(tick, 30000);
   }
 
+  /**
+   * 「下載 MP3」那顆。
+   *
+   * 伺服器轉不出來（沒有 ffmpeg）時 `mp3_url` 是 null，整顆按鈕就不出現 ——
+   * 拿到連結的人不是這台機器的管理員，給他一顆按下去會壞的按鈕沒有意義。
+   *
+   * 不用 `<a download>` 的理由跟點歌台那邊一樣：第一次按的時候伺服器真的
+   * 要跑一次 ffmpeg，那幾秒鐘 `<a>` 看起來就是沒反應，而這一頁的使用者
+   * 正站在停車場用行動網路，他會直接以為連結壞了。
+   */
+  function setupMp3(url) {
+    const btn = el("shareMp3");
+    if (!btn || !url) return;
+    btn.hidden = false;
+    const label = btn.textContent;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "⏳ 轉檔中…";
+      let objectUrl = "";
+      try {
+        const res = await fetch(url);
+        if (!res.ok) {
+          let detail = "";
+          try {
+            detail = (await res.json()).detail || "";
+          } catch (e) { /* 不是 JSON，用下面那句通用的 */ }
+          throw new Error(detail || "MP3 轉檔失敗，請稍後再試");
+        }
+        const blob = await res.blob();
+        const name = (window.TakeRules
+          && window.TakeRules.filenameFromDisposition(res.headers.get("content-disposition")))
+          || "karatube.mp3";
+        objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } catch (e) {
+        // 這一頁沒有 toast，訊息直接寫在按鈕下面那一行（倒數那一行旁邊）
+        const line = el("shareDownloads");
+        line.textContent = e.message;
+        line.hidden = false;
+      } finally {
+        if (objectUrl) setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    });
+  }
+
   function render(data) {
     const rec = data.recording || {};
     const share = data.share || {};
@@ -92,6 +144,7 @@
     audio.addEventListener("loadedmetadata", () => fixShareDuration(audio));
 
     el("shareDownload").href = data.download_url;
+    setupMp3(data.mp3_url);
 
     if (share.downloads_left !== null && share.downloads_left !== undefined) {
       el("shareDownloads").textContent = `還可以下載 ${share.downloads_left} 次`;

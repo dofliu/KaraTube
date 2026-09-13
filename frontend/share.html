@@ -22,6 +22,9 @@
       <audio id="shareAudio" class="share-audio" controls preload="metadata"></audio>
 
       <a id="shareDownload" class="share-btn" download>⬇️ 下載這一次</a>
+      <!-- MP3 是「帶回去放」用的那顆：車上的 USB、舊手機、傳給家人。
+           轉不出來（機器上沒有 ffmpeg）時整顆不出現，而不是按下去才失敗。 -->
+      <button id="shareMp3" class="share-btn share-btn-secondary" hidden>🎧 下載 MP3（車機／舊手機）</button>
 
       <div id="shareExpiry" class="share-expiry"></div>
       <div id="shareDownloads" class="share-expiry" hidden></div>

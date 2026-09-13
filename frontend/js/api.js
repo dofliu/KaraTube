@@ -130,8 +130,23 @@ class KaraTubeAPI {
     return await res.json();
   }
 
-  recordingAudioUrl(recId, download = false) {
-    return `${this.baseUrl}/api/recordings/${recId}/audio${download ? "?download=1" : ""}`;
+  recordingAudioUrl(recId, download = false, format = "") {
+    const q = [];
+    if (download) q.push("download=1");
+    if (format) q.push(`format=${encodeURIComponent(format)}`);
+    return `${this.baseUrl}/api/recordings/${recId}/audio${q.length ? `?${q.join("&")}` : ""}`;
+  }
+
+  /** 把轉好的 MP3 全部丟掉。錄音一個都不會動（MP3 隨時可以重轉）。 */
+  async clearMp3Cache() {
+    const res = await fetch(`${this.baseUrl}/api/recordings/mp3`, { method: 'DELETE' });
+    return await res.json();
+  }
+
+  /** 重新偵測 ffmpeg（裝好之後不用重開伺服器）。 */
+  async recheckMp3Support() {
+    const res = await fetch(`${this.baseUrl}/api/recordings/mp3/recheck`, { method: 'POST' });
+    return await res.json();
   }
 
   async pinRecording(recId, pinned) {

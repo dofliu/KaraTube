@@ -4,6 +4,7 @@
 重的模型都是延遲載入，所以整個 app 可以直接 import。
 """
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -876,6 +877,117 @@ def test_recording_list_reports_whether_the_feature_is_on(clean_recordings, rest
     assert client.get("/api/recordings").json()["enabled"] is False
 
 
+# --- 錄音轉 MP3 ---
+#
+# 這一段測的是端點的行為，不是 ffmpeg 的行為：`fake_ffmpeg` 把
+# KARATUBE_FFMPEG 指到一支假的 ffmpeg，所以有沒有真的裝 ffmpeg 都跑得過。
+
+@pytest.fixture()
+def fake_ffmpeg(tmp_path, monkeypatch):
+    from backend.services.transcoder import reset_probe_cache
+    from tests.fake_ffmpeg import write_fake_ffmpeg
+    binary = write_fake_ffmpeg(tmp_path / "ffmpeg")
+    monkeypatch.setenv("KARATUBE_FFMPEG", str(binary))
+    reset_probe_cache()     # 探測結果是模組層級的快取
+    yield binary
+    reset_probe_cache()
+
+
+@pytest.fixture()
+def no_ffmpeg(tmp_path, monkeypatch):
+    from backend.services.transcoder import reset_probe_cache
+    monkeypatch.setenv("KARATUBE_FFMPEG", str(tmp_path / "definitely-not-ffmpeg"))
+    reset_probe_cache()
+    yield
+    reset_probe_cache()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="假 ffmpeg 用的是 POSIX shell script")
+def test_recording_mp3_download_transcodes_once_then_serves_the_cache(
+        clean_recordings, restore_settings, fake_ffmpeg):
+    rec = upload().json()["recording"]
+
+    res = client.get(f"/api/recordings/{rec['id']}/audio?download=1&format=mp3")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "audio/mpeg"
+    # 車機看的是副檔名，webm 的檔名配 mp3 的內容一樣打不開
+    assert ".mp3" in res.headers["content-disposition"]
+    assert res.content.startswith(b"ID3")
+
+    listed = client.get("/api/recordings").json()
+    assert listed["stats"]["mp3_count"] == 1
+    # MP3 是額外的快取，不該讓錄音配額的用量憑空長大
+    assert listed["stats"]["total_bytes"] == len(b"fake-audio-bytes")
+
+    # 第二次直接吃快取：假 ffmpeg 換成一支只會失敗的，回應仍然要正常
+    from tests.fake_ffmpeg import write_fake_ffmpeg
+    write_fake_ffmpeg(fake_ffmpeg, "exit 1")
+    again = client.get(f"/api/recordings/{rec['id']}/audio?format=mp3")
+    assert again.status_code == 200
+    assert again.content.startswith(b"ID3")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="假 ffmpeg 用的是 POSIX shell script")
+def test_recording_mp3_cache_is_dropped_with_the_recording(
+        clean_recordings, restore_settings, fake_ffmpeg):
+    rec = upload().json()["recording"]
+    client.get(f"/api/recordings/{rec['id']}/audio?format=mp3")
+    mp3_path = main.recordings.mp3_path_for(rec["id"])
+    assert mp3_path is not None
+
+    client.delete(f"/api/recordings/{rec['id']}")
+    assert not mp3_path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="假 ffmpeg 用的是 POSIX shell script")
+def test_clearing_mp3_cache_keeps_the_recordings(
+        clean_recordings, restore_settings, fake_ffmpeg):
+    rec = upload().json()["recording"]
+    client.get(f"/api/recordings/{rec['id']}/audio?format=mp3")
+
+    cleared = client.delete("/api/recordings/mp3").json()
+    assert cleared["removed"] == 1
+    assert cleared["stats"]["mp3_count"] == 0
+    # 錄音一個都沒少（清的是可以重轉的東西）
+    assert len(client.get("/api/recordings").json()["recordings"]) == 1
+    assert client.get(f"/api/recordings/{rec['id']}/audio").status_code == 200
+
+
+def test_recording_mp3_says_why_when_ffmpeg_is_missing(
+        clean_recordings, restore_settings, no_ffmpeg):
+    rec = upload().json()["recording"]
+    listed = client.get("/api/recordings").json()
+    assert listed["mp3"]["available"] is False
+    assert listed["mp3"]["reason"] == "not_installed"
+
+    res = client.get(f"/api/recordings/{rec['id']}/audio?format=mp3")
+    # 503 而不是 500：裝好 ffmpeg 之後同一個網址就會成功，原始錄音一直都在
+    assert res.status_code == 503
+    assert "ffmpeg" in res.json()["detail"]
+    # 原始檔案照樣拿得到 —— 轉不了 MP3 不該讓那一次演唱也跟著拿不到
+    assert client.get(f"/api/recordings/{rec['id']}/audio").status_code == 200
+
+
+@pytest.mark.skipif(os.name == "nt", reason="假 ffmpeg 用的是 POSIX shell script")
+def test_recording_mp3_can_be_switched_off_in_settings(
+        clean_recordings, restore_settings, fake_ffmpeg):
+    rec = upload().json()["recording"]
+    client.post("/api/settings", json={"recording_mp3_enabled": False})
+
+    listed = client.get("/api/recordings").json()
+    assert listed["mp3"]["available"] is False
+    # 「設定關掉」與「機器沒有 ffmpeg」要分得出來：使用者要做的事不一樣
+    assert listed["mp3"]["reason"] == "disabled"
+    assert client.get(f"/api/recordings/{rec['id']}/audio?format=mp3").status_code == 503
+
+
+def test_mp3_recheck_endpoint_reprobes(clean_recordings, restore_settings, no_ffmpeg):
+    assert client.get("/api/recordings").json()["mp3"]["available"] is False
+    res = client.post("/api/recordings/mp3/recheck")
+    assert res.status_code == 200
+    assert res.json()["mp3"]["reason"] == "not_installed"
+
+
 def test_stage_options_carry_recording_switch(restore_settings):
     client.post("/api/settings", json={"recording_enabled": True,
                                        "recording_min_sing_seconds": 15})
@@ -921,6 +1033,45 @@ def test_share_link_plays_and_downloads(clean_recordings, clean_shares):
 
     qr = client.get(f"/api/share/{share['token']}/qr.png")
     assert qr.status_code == 200 and qr.headers["content-type"] == "image/png"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="假 ffmpeg 用的是 POSIX shell script")
+def test_shared_link_offers_mp3_for_car_stereos(clean_recordings, clean_shares,
+                                                restore_settings, fake_ffmpeg):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"]).json()["share"]["token"]
+
+    meta = client.get(f"/api/share/{token}").json()
+    assert meta["mp3_url"]
+
+    res = client.get(meta["mp3_url"])
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "audio/mpeg"
+    assert ".mp3" in res.headers["content-disposition"]
+    assert res.content.startswith(b"ID3")
+
+
+def test_shared_link_hides_mp3_when_the_machine_cannot_transcode(
+        clean_recordings, clean_shares, restore_settings, no_ffmpeg):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"]).json()["share"]["token"]
+    # 拿到連結的人不是這台機器的管理員 —— 給他一顆按下去會壞的按鈕沒有意義
+    assert client.get(f"/api/share/{token}").json()["mp3_url"] is None
+
+
+def test_failed_mp3_does_not_burn_a_download_credit(clean_recordings, clean_shares,
+                                                    restore_settings, no_ffmpeg):
+    """
+    「下載幾次就失效」的連結上，一次沒成功的轉檔不可以扣掉次數 ——
+    那等於這個連結被一個沒有拿到檔案的動作燒掉了。
+    """
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"], max_downloads=1).json()["share"]["token"]
+
+    assert client.get(f"/api/share/{token}/audio?download=1&format=mp3").status_code == 503
+    assert client.get(f"/api/share/{token}").json()["share"]["downloads_left"] == 1
+    # 次數還在，原始檔案照樣下載得到
+    assert client.get(f"/api/share/{token}/audio?download=1").status_code == 200
 
 
 def test_share_page_is_served_for_scanned_links(clean_recordings, clean_shares):

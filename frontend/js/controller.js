@@ -339,7 +339,13 @@ document.addEventListener("DOMContentLoaded", () => {
         `<div style="grid-column: 1/-1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">` +
         `<span style="font-size: 16px; font-weight: 700; color: var(--accent-cyan);">🎙️ 錄唱回放</span>${clearBtn}${clearMp3Btn}</div>` +
         `<div style="grid-column: 1/-1;">${offHtml}${warnHtml}${mp3Html}</div>` +
+        `<div id="nightSessions" class="night-sessions" style="grid-column: 1/-1;"></div>` +
         list.map(renderRecordingCard).join("");
+
+      // 整晚打包是收場時的那句「今天晚上的通通給我一份」。
+      // 清單先長出來、場次晚一步補進去（多一次請求，但那一次很便宜）：
+      // 打包是加分項，問不到場次不該讓錄音清單也跟著不見。
+      loadNightSessions();
     } catch (e) {
       searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">錄音清單讀取失敗</div>`;
     }
@@ -372,6 +378,101 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       </div>`;
   }
+
+  /**
+   * 整晚打包：把一整場包成一個 zip 帶走。
+   *
+   * 分享連結解決的是「一個人帶走自己那一首」，這裡解決的是收場時的
+   * 另一句話 —— 一首一首按下載是二十三次另存新檔，而且存出來散在
+   * 資料夾裡分不出誰是誰、哪一首在前面（zip 裡的檔名有序號與時間）。
+   *
+   * 畫面上只長最近的幾場：更早以前的通常已經被配額清掉了，
+   * 列一串點下去只會拿到「這一場已經不在了」的場次沒有意義。
+   */
+  const NIGHT_SESSIONS_SHOWN = 3;
+  // 最後一次問到的場次狀態。按下去之前要先看有沒有人正在打包（同時只做一份）。
+  let nightSessions = { sessions: [], busy: false };
+
+  async function loadNightSessions() {
+    const box = document.getElementById("nightSessions");
+    if (!box) return;
+    try {
+      nightSessions = await window.api.getRecordingSessions();
+    } catch (e) {
+      box.innerHTML = "";     // 問不到就整條不長，不要留一行錯誤訊息在清單上面
+      return;
+    }
+    const view = window.NightExport;
+    const sessions = (nightSessions.sessions || []).slice(0, NIGHT_SESSIONS_SHOWN);
+    if (!view || !sessions.length) { box.innerHTML = ""; return; }
+
+    const busy = view.busyNote(nightSessions.busy);
+    box.innerHTML =
+      `<div class="night-title">📦 整晚打包（一個 zip 帶走一整場）</div>` +
+      (busy ? `<div class="rec-warning">⏳ ${escapeHtml(busy)}</div>` : "") +
+      sessions.map(renderNightSession).join("");
+  }
+
+  function renderNightSession(session) {
+    const view = window.NightExport;
+    const key = escapeAttr(session.key);
+    // 「只要某個人的」：一桌八個人，不是每個人都想把另外七個人的版本帶走
+    const options = view.singerChoices(session)
+      .map((c) => `<option value="${escapeAttr(c.value)}">${escapeHtml(c.label)}</option>`)
+      .join("");
+    return `
+      <div class="night-row">
+        <div class="night-info">
+          <div class="night-when">${escapeHtml(view.sessionLabel(session))}</div>
+          <div class="night-meta">${escapeHtml(view.sessionSummary(session))}</div>
+        </div>
+        <select class="night-singer" id="nightSinger-${key}" title="只打包某一位唱的">${options}</select>
+        <button class="btn btn-primary" onclick="window.downloadNight('${key}')"
+                title="${escapeAttr(view.downloadHint(session))}">⬇️ 打包下載</button>
+      </div>`;
+  }
+
+  /**
+   * 按下打包。
+   *
+   * 刻意用瀏覽器自己的下載（`<a download>`）而不是 fetch 成 blob：
+   * 一包可能三百 MB，fetch 會把整包先讀進瀏覽器記憶體，手機上直接當掉。
+   *
+   * 按之前先重問一次場次：同時只打一包（那條網路正是舞台在用的），
+   * 有人正在打的話當場說一聲，而不是讓瀏覽器下載回一個裝著錯誤訊息的檔案。
+   * 兩次之間仍有極短的空窗（別台裝置同一秒按下去），那種情況下拿到的是
+   * 一個很小的檔案 —— 重按一次就好，所以不值得為它把下載改成 fetch。
+   */
+  window.downloadNight = async (key) => {
+    try {
+      nightSessions = await window.api.getRecordingSessions();
+    } catch (e) { /* 問不到就照按，真的忙的話伺服器會回 429 */ }
+    if (nightSessions.busy) {
+      alert(window.NightExport.busyNote(true));
+      loadNightSessions();
+      return;
+    }
+    const picker = document.getElementById(`nightSinger-${key}`);
+    const singer = picker ? picker.value : "";
+    const session = (nightSessions.sessions || []).find((s) => s.key === key);
+    if (!session) {
+      alert("這一場已經不在了（可能被配額清掉），請重新整理清單");
+      loadRecordings();
+      return;
+    }
+    showNotification(`📦 開始打包 ${window.NightExport.downloadHint(session)}`);
+    const a = document.createElement("a");
+    a.href = window.api.sessionZipUrl(key, singer);
+    a.rel = "noopener";
+    // 刻意**不設** download：設了的話瀏覽器會拿網址的最後一段當檔名，
+    // 存出來是一個叫「zip」的無副檔名檔案。伺服器的 Content-Disposition
+    // 已經寫好「KaraTube 20260913 23首.zip」了。
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // 打包期間那個位子是佔著的，畫面上要看得出來（下一個人按了會被擋）
+    setTimeout(loadNightSessions, 1500);
+  };
 
   /**
    * 讓錄音的進度條可以拖。
@@ -1883,6 +1984,8 @@ document.addEventListener("DOMContentLoaded", () => {
     recording_share_enabled: { label: "允許分享錄音", hint: "產生有時效的連結／QR" },
     recording_share_ttl_hours: { label: "連結有效時間", unit: " 小時", step: 1 },
     recording_share_max_downloads: { label: "下載幾次就失效", unit: " 次", step: 1, hint: "0 = 不限" },
+    recording_session_gap_hours: { label: "相隔幾小時算換一場", unit: " 小時", step: 1,
+                                   hint: "整晚打包用的：跨午夜的一晚要算同一場" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -1981,6 +2084,15 @@ document.addEventListener("DOMContentLoaded", () => {
             "要讓人帶回家聽，請設 KARATUBE_PUBLIC_HOST 指到對外位址。",
       keys: ["recording_share_enabled", "recording_share_ttl_hours",
              "recording_share_max_downloads"],
+    },
+    {
+      title: "📦 整晚打包",
+      hint: "收場時的那句「今天晚上的通通給我一份」：錄唱回放最上面那一條可以把" +
+            "一整場包成一個 zip（也可以只要某一位唱的）。一場不是照日曆日期算的 —— " +
+            "包廂的一場常常是「九點唱到凌晨兩點半」，照日期切會把它剖成兩半。" +
+            "這裡調的是「相隔幾小時算換了一場」：調小會把中間休息很久的一晚切成兩場，" +
+            "調大則會把下午那一輪跟晚上那一輪算成同一場。",
+      keys: ["recording_session_gap_hours"],
     },
     {
       title: "🖥️ 舞台演出",

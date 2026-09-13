@@ -6,12 +6,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
+from urllib.parse import quote
 
 from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException,
                      Request)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import Response, FileResponse
+from fastapi.responses import Response, FileResponse, StreamingResponse
 import qrcode
 
 from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, RECORDINGS_DIR, PUBLIC_HOST,
@@ -28,6 +29,9 @@ from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
+from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
+                                           find_session, group_sessions, iter_session_zip,
+                                           zip_filename)
 from backend.services.recordings import (HARD_MAX_UPLOAD_BYTES, RecordingLibrary,
                                          mp3_cache_limit, suffix_for_mime)
 from backend.services.share_links import ShareLinkStore, clamp_max_downloads, clamp_ttl_hours
@@ -88,6 +92,9 @@ share_links = ShareLinkStore(CACHE_DIR / "recording_shares.json")
 # 「只轉一個」是刻意的 —— 那顆 CPU 正在放歌、算音準、跑下一首的人聲分離，
 # 一桌人同時掃 QR 下載也不該讓舞台卡住。
 mp3_gate = TranscodeGate(max_concurrent=1)
+# 整晚打包（一個 zip 帶走一整場）同時只做一份：一包是幾百 MB，而那條網路
+# 正是舞台端串影片與 WebSocket 在走的。第二個人等一下就好，舞台卡住不行。
+night_gate = ExportGate()
 # 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
 library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
 
@@ -818,6 +825,110 @@ async def recheck_mp3_support():
     """
     reset_probe_cache()
     return {"status": "success", "mp3": await _mp3_capability_async()}
+
+
+# --- 整晚打包下載 ---
+#
+# 分享連結是「一個人帶走自己那一首」，這一段是收場時的另一句話：
+# 「今天晚上的通通給我一份」。一首一首按下載是二十三次另存新檔，
+# 而且存出來散在資料夾裡分不出誰是誰、哪一首在前面。
+#
+# 這一段只在**點歌台**（包廂內網）出得來，刻意不掛在分享 token 底下：
+# 一個 zip 是整場所有人的聲音，那不是掃 QR 的人該拿得到的東西。
+
+def _session_gap_hours() -> float:
+    return float(settings.get("recording_session_gap_hours", DEFAULT_GAP_HOURS)
+                 or DEFAULT_GAP_HOURS)
+
+
+def _sessions() -> List[Dict[str, Any]]:
+    """目前所有場次（最近的排最前面）。`entries` 還留著，端點回應前要拿掉。"""
+    # limit=0 是「全部」：打包要的是整場，被 100 筆的預設值截掉會少歌。
+    return group_sessions(reversed(recordings.list_all(limit=0)), _session_gap_hours())
+
+
+def _session_public(session: Dict[str, Any]) -> Dict[str, Any]:
+    view = {k: v for k, v in session.items() if k != "entries"}
+    view["zip_url"] = f"/api/recordings/sessions/{session['key']}/zip"
+    return view
+
+
+def _content_disposition(filename: str) -> str:
+    """
+    中文檔名的 `Content-Disposition`。
+
+    兩種寫法都給：`filename*=UTF-8''…`（RFC 5987，現代瀏覽器認這個）
+    加上一個把非 ASCII 換成底線的退化版 —— 只給前者的話，少數舊瀏覽器
+    會存成一個叫 `zip` 的無副檔名檔案。
+    """
+    ascii_name = "".join(c if 32 <= ord(c) < 127 and c != '"' else "_" for c in filename)
+    return (f"attachment; filename=\"{ascii_name}\"; "
+            f"filename*=UTF-8''{quote(filename, safe='')}")
+
+
+@app.get("/api/recordings/sessions")
+async def list_recording_sessions():
+    """
+    有哪幾場可以打包。一場 = 連續唱的那一段（相隔超過設定的小時數就算換一場）。
+
+    刻意**不照日曆日期切**：包廂的一場是「九點唱到凌晨兩點半」，
+    照日期切會把它切成兩半，而且唱到最嗨的後半會被標成「隔天」。
+    """
+    return {
+        "sessions": [_session_public(s) for s in _sessions()],
+        "gap_hours": _session_gap_hours(),
+        # 打包中的話畫面上先講一聲，不要讓使用者按下去才看到 429
+        "busy": night_gate.busy,
+    }
+
+
+@app.get("/api/recordings/sessions/{key}/zip")
+async def download_session_zip(key: str, singer: str = Query("")):
+    """
+    一整場包成一個 zip，**邊包邊送**。
+
+    沒有先在磁碟上生一份再送，理由很實際：一場 200 MB 的話那就要另外佔
+    200 MB，而錄音配額存在的理由正是「這顆磁碟會被塞爆」——
+    打包下載不該是那個把磁碟塞爆的人。
+
+    也因此沒有 `Content-Length`：精確長度要讀完才知道，而先算一次再串流的話，
+    中間只要有一筆被配額擠掉，送出的位元組就對不上宣告的長度，瀏覽器會把
+    整包當成下載失敗。清單端點已經先報過預估大小了。
+    """
+    session = find_session(_sessions(), key)
+    if session is None:
+        raise HTTPException(status_code=404, detail="找不到這一場（可能已經被清掉了）")
+    entries = filter_by_singer(session, singer)
+    if not entries:
+        raise HTTPException(status_code=404, detail="這一場裡沒有符合的錄音")
+
+    token = night_gate.acquire()
+    if not token:
+        # 429 而不是 503：這是「現在有人在打包」，等一下再按同一個網址就會成功
+        raise HTTPException(status_code=429, detail="正在打包另一份，請等它下載完再試")
+
+    view = {**session, "count": len(entries)}
+
+    def stream():
+        try:
+            # 資料夾跟著錄音庫走（而不是直接用 RECORDINGS_DIR 常數）：
+            # 錄音庫是模組層級的單例，換掉它的測試也要能測到真正的打包路徑。
+            yield from iter_session_zip(recordings.base_dir, entries, view, singer)
+        finally:
+            # 使用者中途取消（關分頁、按停止）時 generator 會被關掉，
+            # 這裡一樣會跑到 —— 位子要還，不然下一個人會被擋到租約過期。
+            night_gate.release(token)
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": _content_disposition(zip_filename(view, singer)),
+            # 這是一次性的打包結果，內容會隨著錄音被刪而變 —— 不要讓中間的
+            # 代理或瀏覽器把它留著當快取再送一次。
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # --- 錄音分享（一次性連結 / QR）---

@@ -138,6 +138,13 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "recording_mp3_enabled": {"type": "bool", "default": True},
     "recording_mp3_bitrate": {"type": "int", "default": 192, "min": 96, "max": 320},
 
+    # --- 整晚打包下載 ---
+    # 一場 = 連續唱的那一段。相隔超過這個小時數就算換了一場 ——
+    # 刻意不照日曆日期切：包廂的一場是「九點唱到凌晨兩點半」，照日期切會把
+    # 它剖成兩半，而且唱到最嗨的後半會被標成「隔天」。
+    # 6 小時的理由：一場再久也就五、六個小時，而下一桌跟上一桌之間一定有清場。
+    "recording_session_gap_hours": {"type": "int", "default": 6, "min": 1, "max": 24},
+
     # --- 錄音分享 ---
     # 分享連結不需要登入就打得開（掃 QR 的人不會先登入），所以時效是唯一的
     # 安全邊界：預設 24 小時，上限 30 天，沒有「永不過期」這個選項 ——

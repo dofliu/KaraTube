@@ -276,6 +276,29 @@ docker compose up -d --build
 
 **Q：處理歌曲一直失敗，log 出現 `ffmpeg not found`。**
 FFmpeg 沒裝或不在 PATH。Docker 映像已內建，直接安裝的話請看[第 3 節](#3-直接裝在主機上)。
+ffmpeg 不在標準路徑上時（Windows 手動安裝、自己編的版本），
+可以用環境變數 `KARATUBE_FFMPEG` 直接指到執行檔。
+
+**Q：錄唱回放那一列沒有「🎧 MP3」按鈕。**
+兩種可能，清單上方會直接寫是哪一種：
+
+- 設定頁把「錄音轉 MP3」關掉了 → ⚙️ 系統設定 → 🎧 錄音轉 MP3 打開即可。
+- 這台機器上沒有 ffmpeg，或那個 ffmpeg **沒有 libmp3lame**
+  （有些發行版為了授權把 MP3 編碼器拆出去）。確認方式：
+
+  ```bash
+  ffmpeg -hide_banner -encoders | grep libmp3lame
+  ```
+
+  沒有輸出就是缺編碼器，請改裝完整版（Ubuntu/Debian 的 `ffmpeg` 套件、
+  macOS 的 `brew install ffmpeg` 都有）。裝好之後不必重開伺服器 ——
+  在設定頁按重新偵測，或 `curl -X POST http://localhost:8080/api/recordings/mp3/recheck`。
+
+**Q：MP3 快取會不會把磁碟吃光？**
+不會。它的上限是錄音配額的 1/4（**額外**佔用，所以總量最多是錄音配額的 1.25 倍），
+滿了從最久沒用到的那一份開始刪，而且**永遠不會刪到錄音本身**。
+要立刻收回空間就在錄唱回放分頁按「🧹 清除 MP3 快取」，或
+`curl -X DELETE http://localhost:8080/api/recordings/mp3`。
 
 **Q：舞台端沒有聲音，或按了播放沒反應。**
 瀏覽器的自動播放限制。舞台畫面點一下（會有「點擊開始」提示）即可解鎖音訊。

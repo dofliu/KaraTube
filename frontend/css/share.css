@@ -94,6 +94,21 @@ body {
 
 .share-btn:active { transform: translateY(1px); }
 
+/* MP3 是第二顆按鈕：想原封不動帶走的人按上面那顆，
+   要放進車機／傳給別人的人按這顆。用外框而不是滿版色塊，
+   免得兩顆一樣搶眼時反而要想一下「我該按哪一個」。 */
+.share-btn-secondary {
+  width: 100%;
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid rgba(0, 229, 255, 0.55);
+  color: var(--share-text, #e8f6ff);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.share-btn-secondary[disabled] { opacity: 0.6; cursor: progress; }
+
 .share-expiry {
   margin-top: 12px;
   font-size: 13px;

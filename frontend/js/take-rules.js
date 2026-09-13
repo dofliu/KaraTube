@@ -144,11 +144,63 @@ function takeSubtitle(entry) {
   return bits.join("・");
 }
 
+/**
+ * 從 `Content-Disposition` 取出伺服器指定的檔名。
+ *
+ * MP3 是用 fetch 拿回來再自己觸發下載的（要先顯示「轉檔中」），
+ * 所以檔名得自己從標頭挖 —— 沒挖到的話使用者的下載資料夾裡會出現一個
+ * 叫做 `audio` 或一串亂碼的檔案，而那正是他準備丟進車上 USB 的東西。
+ *
+ * `filename*=UTF-8''...`（RFC 5987，中文歌名走這條）優先於 `filename="..."`：
+ * 兩個都在的時候，後者通常是伺服器為舊瀏覽器準備的退化版本。
+ */
+function filenameFromDisposition(header) {
+  const text = String(header || "");
+  const star = text.match(/filename\*\s*=\s*[^']*'[^']*'([^;]+)/i);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch (e) { /* 壞掉的 percent-encoding：往下試沒有星號的那一個 */ }
+  }
+  const plain = text.match(/filename\s*=\s*"([^"]*)"/i) || text.match(/filename\s*=\s*([^;]+)/i);
+  return plain ? plain[1].trim() : "";
+}
+
+/**
+ * MP3 快取用量的一句話。沒有任何一份轉好的檔案時回空字串 ——
+ * 「0 首・0 B」這種行只是讓畫面多一行沒有資訊的字。
+ */
+function mp3CacheSummary(stats) {
+  const s = stats || {};
+  const count = Number(s.mp3_count) || 0;
+  if (count <= 0) return "";
+  const bytes = Number(s.mp3_bytes) || 0;
+  const max = Number(s.mp3_max_bytes) || 0;
+  const size = max > 0
+    ? `${formatTakeSize(bytes)} / ${formatTakeSize(max)}`
+    : formatTakeSize(bytes);
+  return `MP3 快取 ${count} 首・${size}（另外佔的空間，刪掉可以重轉）`;
+}
+
+/**
+ * 轉不了 MP3 時要講的那句話。
+ *
+ * 分兩種講法是因為使用者要做的事完全不同：設定頁關掉了是「去打開它」，
+ * 機器上沒有 ffmpeg 是「去裝一個」。回空字串代表「可以轉」，畫面不必說話。
+ */
+function mp3UnavailableNote(cap) {
+  const c = cap || {};
+  if (c.available) return "";
+  if (c.reason === "disabled") return "「錄音轉 MP3」在設定頁是關著的。";
+  return `${c.message || "這台機器沒辦法轉 MP3"}。車機與舊播放器多半只認 MP3，建議補上。`;
+}
+
 if (typeof window !== "undefined") {
   window.TakeRules = {
     TAKE_MIME_CANDIDATES, TAKE_BITS_PER_SECOND,
     pickTakeMime, shouldKeepTake, formatTakeDuration, formatTakeSize,
     quotaSummary, quotaWarning, takeSubtitle,
+    filenameFromDisposition, mp3CacheSummary, mp3UnavailableNote,
   };
 }
 
@@ -157,5 +209,6 @@ if (typeof module !== "undefined" && module.exports) {
     TAKE_MIME_CANDIDATES, TAKE_BITS_PER_SECOND,
     pickTakeMime, shouldKeepTake, formatTakeDuration, formatTakeSize,
     quotaSummary, quotaWarning, takeSubtitle,
+    filenameFromDisposition, mp3CacheSummary, mp3UnavailableNote,
   };
 }

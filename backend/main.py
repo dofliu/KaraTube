@@ -4,6 +4,7 @@ import json
 import socket
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException,
@@ -28,8 +29,10 @@ from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
 from backend.services.recordings import (HARD_MAX_UPLOAD_BYTES, RecordingLibrary,
-                                         suffix_for_mime)
+                                         mp3_cache_limit, suffix_for_mime)
 from backend.services.share_links import ShareLinkStore, clamp_max_downloads, clamp_ttl_hours
+from backend.services.transcoder import (TranscodeGate, clamp_bitrate, probe_ffmpeg,
+                                         reset_probe_cache, transcode_to_mp3)
 from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
 from backend.version import __version__, version_info
 
@@ -81,6 +84,10 @@ recordings = RecordingLibrary(RECORDINGS_DIR)
 # 分享連結的索引刻意放在 cache/ 而不是錄音資料夾裡：RecordingLibrary 會把
 # 錄音資料夾裡「不在索引上」的檔案當成孤兒檔刪掉，放進去會在下次開機時消失。
 share_links = ShareLinkStore(CACHE_DIR / "recording_shares.json")
+# MP3 轉檔的兩道關卡：同一筆同時只轉一次、整台機器同時只轉一個。
+# 「只轉一個」是刻意的 —— 那顆 CPU 正在放歌、算音準、跑下一首的人聲分離，
+# 一桌人同時掃 QR 下載也不該讓舞台卡住。
+mp3_gate = TranscodeGate(max_concurrent=1)
 # 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
 library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
 
@@ -575,7 +582,7 @@ def _recording_quota() -> Dict[str, int]:
     }
 
 
-def _recording_download_name(entry: Dict[str, Any]) -> str:
+def _recording_download_name(entry: Dict[str, Any], suffix: str = "") -> str:
     """
     下載回去的檔名：`20260913-2130 歌名 - 演唱者.webm`。
 
@@ -586,7 +593,112 @@ def _recording_download_name(entry: Dict[str, Any]) -> str:
     parts = [p for p in (entry.get("title", ""), entry.get("singer", "")) if p]
     stem = f"{stamp} {' - '.join(parts)}".strip() or str(entry.get("id", "recording"))
     safe = "".join("_" if c in '\\/:*?"<>|' else c for c in stem)[:120]
-    return f"{safe}{suffix_for_mime(entry.get('mime', ''))}"
+    return f"{safe}{suffix or suffix_for_mime(entry.get('mime', ''))}"
+
+
+# --- 錄音轉 MP3 ---
+#
+# 錄音是瀏覽器的 MediaRecorder 錄的（webm/Opus 或 mp4/AAC），在包廂裡播沒問題，
+# 但錄音真正的去處是車機的 USB、長輩的舊手機、傳過去給對方直接點開 ——
+# 那些地方只認 MP3。分享連結解決「怎麼傳給我」，這一段解決「傳過去打不打得開」。
+
+def _mp3_capability() -> Dict[str, Any]:
+    """
+    這台機器現在能不能轉 MP3。前端拿這個決定按鈕要不要出現。
+
+    「能不能」有兩種不能：設定頁關掉了（使用者的決定），
+    以及 ffmpeg 不在／沒有 libmp3lame（機器的狀況）。兩種要分開講，
+    不然管理員會去裝一個他其實已經裝好的東西。
+    """
+    if not settings.get("recording_mp3_enabled", True):
+        return {"available": False, "reason": "disabled",
+                "message": "設定頁把「錄音轉 MP3」關掉了"}
+    cap = probe_ffmpeg()
+    return {"available": bool(cap.get("available")), "reason": cap.get("reason", ""),
+            "message": cap.get("message", "")}
+
+
+async def _mp3_capability_async() -> Dict[str, Any]:
+    """
+    給 async 端點用的版本。
+
+    探測結果幾乎都是快取命中（微秒等級），但**第一次**是真的去開一個子行程，
+    而且卡住的 ffmpeg 會讓它等到逾時 —— 那段時間整台伺服器的 WebSocket
+    都會停住。清單與分享頁的資料都會經過這裡，所以一律丟到執行緒裡問。
+    """
+    return await asyncio.to_thread(_mp3_capability)
+
+
+def _ensure_recording_mp3(rec_id: str) -> Dict[str, Any]:
+    """
+    確保這一筆有一份轉好的 MP3，回傳 `{"status": ..., "path": Path}`。
+
+    **會阻塞**（裡面是 ffmpeg 子行程），所以呼叫端一律走 `asyncio.to_thread`：
+    直接在 async 端點裡跑的話，轉檔那十幾秒整台伺服器的 WebSocket 都會停住 ——
+    症狀是「有人按了下載，舞台上的歌詞就卡住了」。
+    """
+    entry = recordings.get(rec_id)
+    if entry is None:
+        return {"status": "missing", "message": "找不到這筆錄音"}
+
+    ready = recordings.mp3_path_for(rec_id)
+    if ready is not None:
+        recordings.touch_mp3(rec_id)
+        return {"status": "ready", "path": ready, "entry": entry}
+
+    cap = _mp3_capability()
+    if not cap["available"]:
+        return {"status": "unavailable", **cap}
+
+    def work() -> Dict[str, Any]:
+        # 排在後面的那一個進來時通常已經有人轉好了，直接用 ——
+        # 再轉一次不只白做工，還會蓋掉一個正在被下載的檔案。
+        already = recordings.mp3_path_for(rec_id)
+        if already is not None:
+            recordings.touch_mp3(rec_id)
+            return {"status": "ready", "path": already, "entry": entry}
+
+        src = recordings.path_for(rec_id)
+        dst = recordings.mp3_target_for(rec_id)
+        if src is None or dst is None:
+            return {"status": "missing", "message": "找不到這筆錄音"}
+
+        result = transcode_to_mp3(
+            src, dst,
+            bitrate_kbps=clamp_bitrate(settings.get("recording_mp3_bitrate", 192)),
+            tags={
+                "title": entry.get("title", ""),
+                # 車機螢幕上「演唱者」比原唱有意義 —— 這是他自己唱的那一次
+                "artist": entry.get("singer") or entry.get("artist", ""),
+                "album": "KaraTube",
+                "date": str(entry.get("created_at", ""))[:10],
+            },
+        )
+        if result.get("status") != "ok":
+            return {"status": "failed", **result}
+
+        recordings.register_mp3(rec_id, mp3_cache_limit(_recording_quota()["max_bytes"]))
+        path = recordings.mp3_path_for(rec_id)
+        if path is None:
+            # 轉好了卻立刻被快取上限擠掉：只會發生在「單一份比整個快取還大」，
+            # 這時候照實說，不要回一個指向空氣的路徑。
+            return {"status": "failed", "message": "MP3 轉好了但放不進快取，請調高錄音配額"}
+        return {"status": "ready", "path": path, "entry": entry}
+
+    return mp3_gate.run(rec_id, work)
+
+
+async def _mp3_path_or_error(rec_id: str) -> Path:
+    """轉好的 MP3 路徑，拿不到就丟對應的 HTTP 錯誤。"""
+    result = await asyncio.to_thread(_ensure_recording_mp3, rec_id)
+    status = result.get("status")
+    if status == "ready":
+        return result["path"]
+    if status == "missing":
+        raise HTTPException(status_code=404, detail=result.get("message", "找不到這筆錄音"))
+    # 轉不出來全部是 503（暫時性）而不是 500：ffmpeg 裝好、設定打開、
+    # 或是等前面那一個轉完，同一個網址就會成功。原始錄音一直都還在。
+    raise HTTPException(status_code=503, detail=result.get("message", "MP3 轉檔失敗"))
 
 
 def _prune_share_links() -> int:
@@ -611,6 +723,9 @@ async def list_recordings(limit: int = Query(100, ge=1, le=500),
         "stats": recordings.stats(**quota),
         "enabled": bool(settings.get("recording_enabled", False)),
         "share_enabled": bool(settings.get("recording_share_enabled", True)),
+        # 這台機器能不能轉 MP3。前端照這個決定按鈕出不出現 ——
+        # 讓使用者按下去才知道機器上沒有 ffmpeg，是最差的講法。
+        "mp3": await _mp3_capability_async(),
     }
 
 
@@ -659,17 +774,50 @@ async def upload_recording(request: Request,
 
 
 @app.get("/api/recordings/{rec_id}/audio")
-async def get_recording_audio(rec_id: str, download: int = Query(0, ge=0, le=1)):
-    """錄音檔本體。`download=1` 才給 Content-Disposition，否則就地播放。"""
+async def get_recording_audio(rec_id: str, download: int = Query(0, ge=0, le=1),
+                              format: str = Query("")):
+    """
+    錄音檔本體。`download=1` 才給 Content-Disposition，否則就地播放。
+
+    `format=mp3` 轉一份 MP3 再給（第一次會等幾秒，之後是秒回）——
+    車機與舊播放器不吃 webm，而錄音的去處多半就是那些地方。
+    """
     entry = recordings.get(rec_id)
     path = recordings.path_for(rec_id)
     if entry is None or path is None:
         raise HTTPException(status_code=404, detail="找不到這筆錄音")
+    if str(format).lower() == "mp3":
+        return FileResponse(
+            await _mp3_path_or_error(rec_id),
+            media_type="audio/mpeg",
+            filename=_recording_download_name(entry, ".mp3") if download else None,
+        )
     return FileResponse(
         path,
         media_type=entry.get("mime") or "application/octet-stream",
         filename=_recording_download_name(entry) if download else None,
     )
+
+
+@app.delete("/api/recordings/mp3")
+async def clear_mp3_cache():
+    """
+    把轉好的 MP3 全部丟掉。錄音一個都不會動 ——
+    這裡刪的是「可以重算出來的東西」，所以這顆按鈕不需要二次確認。
+    """
+    result = recordings.clear_mp3_cache()
+    return {"status": "success", **result,
+            "stats": recordings.stats(**_recording_quota())}
+
+
+@app.post("/api/recordings/mp3/recheck")
+async def recheck_mp3_support():
+    """
+    重新偵測 ffmpeg。管理員照著畫面上那句話把 ffmpeg 裝好之後，
+    按這裡就好，不必重開整台伺服器。
+    """
+    reset_probe_cache()
+    return {"status": "success", "mp3": await _mp3_capability_async()}
 
 
 # --- 錄音分享（一次性連結 / QR）---
@@ -805,27 +953,40 @@ async def get_shared_recording(token: str):
         },
         "audio_url": f"/api/share/{token}/audio",
         "download_url": f"/api/share/{token}/audio?download=1",
+        # 拿到連結的人多半是要把這一次放進車上的 USB 或傳給家人，
+        # 所以 MP3 那顆按鈕在分享頁比在後台更重要。轉不了就給 null，
+        # 讓那一頁乾脆不要長出一顆按下去會壞的按鈕。
+        "mp3_url": (f"/api/share/{token}/audio?format=mp3&download=1"
+                    if (await _mp3_capability_async())["available"] else None),
     }
 
 
 @app.get("/api/share/{token}/audio")
-async def get_shared_audio(token: str, download: int = Query(0, ge=0, le=1)):
+async def get_shared_audio(token: str, download: int = Query(0, ge=0, le=1),
+                           format: str = Query("")):
     """
-    分享出去的那一段聲音。
+    分享出去的那一段聲音。`format=mp3` 給轉好的 MP3。
 
     只有 `download=1` 才記次數：播放一次不是一個請求（拖進度條會發 Range、
     Safari 會為同一個檔案再要一次），照請求數扣的話使用者拖一下就沒了。
+
+    次數是**在拿到檔案之後**才記的：轉檔失敗卻扣掉一次下載，
+    等於這個連結被一個沒成功的動作燒掉了。
     """
     share, entry = _resolve_share(token)
     path = recordings.path_for(share["recording_id"])
     if path is None:
         raise HTTPException(status_code=410, detail=SHARE_DEAD_MESSAGE["gone"])
+    suffix = ""
+    if str(format).lower() == "mp3":
+        path = await _mp3_path_or_error(share["recording_id"])
+        suffix = ".mp3"
     if download:
         share_links.note_download(token)
     return FileResponse(
         path,
-        media_type=entry.get("mime") or "application/octet-stream",
-        filename=_recording_download_name(entry) if download else None,
+        media_type="audio/mpeg" if suffix else (entry.get("mime") or "application/octet-stream"),
+        filename=_recording_download_name(entry, suffix) if download else None,
     )
 
 

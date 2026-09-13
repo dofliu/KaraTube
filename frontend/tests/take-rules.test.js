@@ -17,6 +17,9 @@ const {
   quotaSummary,
   quotaWarning,
   takeSubtitle,
+  filenameFromDisposition,
+  mp3CacheSummary,
+  mp3UnavailableNote,
 } = require("../js/take-rules.js");
 
 // --- 容器挑選 ---
@@ -162,4 +165,60 @@ test("沒有名字、沒有分數時不留下空欄位", () => {
 test("對唱的錄音要標出來（同一個檔案裡有兩個人）", () => {
   const line = takeSubtitle({ singer: "A 麥 & B 麥", mode: "duet", bytes: 1024 });
   assert.match(line, /對唱/);
+});
+
+
+// --- MP3 轉檔 ---
+//
+// MP3 是 fetch 回來再自己觸發下載的（第一次要等伺服器真的轉一次），
+// 所以檔名得自己從標頭挖。挖錯的後果不是報錯，是使用者的下載資料夾裡
+// 多一個叫 `audio` 的檔案 —— 而那正是他要丟進車上 USB 的東西。
+
+test("中文歌名走 RFC 5987 的 filename*", () => {
+  const header = "attachment; filename*=utf-8''20260913-2130%20%E6%B5%B7%E9%97%8A%E5%A4%A9%E7%A9%BA.mp3";
+  assert.equal(filenameFromDisposition(header), "20260913-2130 海闊天空.mp3");
+});
+
+test("兩個都在時以 filename* 為準（另一個是給舊瀏覽器的退化版）", () => {
+  const header = `attachment; filename="fallback.mp3"; filename*=utf-8''real%20name.mp3`;
+  assert.equal(filenameFromDisposition(header), "real name.mp3");
+});
+
+test("只有普通 filename 時照樣挖得到", () => {
+  assert.equal(filenameFromDisposition('attachment; filename="take.mp3"'), "take.mp3");
+  assert.equal(filenameFromDisposition("attachment; filename=take.mp3"), "take.mp3");
+});
+
+test("壞掉的 percent-encoding 退回另一個寫法，而不是丟例外", () => {
+  const header = `attachment; filename="ok.mp3"; filename*=utf-8''%E4%B8`;
+  assert.equal(filenameFromDisposition(header), "ok.mp3");
+});
+
+test("沒有標頭就回空字串（呼叫端自己取一個退路檔名）", () => {
+  assert.equal(filenameFromDisposition(null), "");
+  assert.equal(filenameFromDisposition("inline"), "");
+});
+
+test("MP3 快取那一行講得出「另外佔的空間」", () => {
+  const line = mp3CacheSummary({ mp3_count: 3, mp3_bytes: 6 * 1024 * 1024,
+                                 mp3_max_bytes: 128 * 1024 * 1024 });
+  assert.match(line, /3 首/);
+  assert.match(line, /6\.0 MB \/ 128\.0 MB/);
+});
+
+test("一份都沒轉過時整行不出現（0 首・0 B 是沒有資訊的一行）", () => {
+  assert.equal(mp3CacheSummary({ mp3_count: 0, mp3_bytes: 0 }), "");
+  assert.equal(mp3CacheSummary(null), "");
+});
+
+test("轉不了 MP3：設定關掉與機器沒有 ffmpeg 要講不同的話", () => {
+  assert.match(mp3UnavailableNote({ available: false, reason: "disabled" }), /設定頁/);
+  const missing = mp3UnavailableNote({
+    available: false, reason: "not_installed", message: "這台機器上找不到 ffmpeg" });
+  assert.match(missing, /ffmpeg/);
+  assert.match(missing, /車機/);       // 要講出「為什麼這件事重要」
+});
+
+test("轉得了就不要說話", () => {
+  assert.equal(mp3UnavailableNote({ available: true }), "");
 });

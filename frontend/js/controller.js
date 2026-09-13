@@ -294,16 +294,28 @@ document.addEventListener("DOMContentLoaded", () => {
    * 「保留」是這一頁最重要的按鈕：配額滿了會從最舊的開始刪，
    * 而唱得最好的那一次通常就是最舊的那一次。
    */
+  // 這台機器能不能把錄音轉成 MP3（ffmpeg 在不在、設定頁有沒有開）。
+  // 記在這裡是因為每一張卡片都要問一次，而答案整頁都一樣。
+  let mp3Support = { available: false, reason: "", message: "" };
+
   async function loadRecordings() {
     try {
       const res = await window.api.getRecordings(100);
       const list = res.recordings || [];
       const rules = window.TakeRules;
-      libSummary.textContent = rules.quotaSummary(res.stats || {});
+      mp3Support = res.mp3 || mp3Support;
+      const cacheLine = rules.mp3CacheSummary(res.stats || {});
+      libSummary.textContent = [rules.quotaSummary(res.stats || {}), cacheLine]
+        .filter(Boolean).join("　");
 
       const warning = rules.quotaWarning(res.stats || {});
       const warnHtml = warning
         ? `<div class="rec-warning">⚠️ ${escapeHtml(warning)}</div>` : "";
+      // 轉不了 MP3 的時候講一次就好（不是每張卡片都講）。
+      // 這一行是說給管理員聽的：客人拿回去的檔案打不開，原因在這裡。
+      const mp3Note = rules.mp3UnavailableNote(mp3Support);
+      const mp3Html = (mp3Note && list.length)
+        ? `<div class="rec-warning">🎧 ${escapeHtml(mp3Note)}</div>` : "";
       // 功能沒開時清單一定是空的。不講的話使用者會以為錄音壞了 ——
       // 而真正要做的事（去設定頁打開）在另一頁，不指路就找不到。
       const offHtml = res.enabled === false
@@ -318,10 +330,15 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const clearBtn = `<button class="btn btn-secondary" onclick="window.clearRecordings()">🗑️ 清空（保留標記的）</button>`;
+      // MP3 快取的清除鈕只在真的有快取時出現 —— 沒有東西可以清的按鈕
+      // 只會讓人按一下然後看到「沒有可清除的」。
+      const clearMp3Btn = cacheLine
+        ? `<button class="btn btn-secondary" onclick="window.clearMp3Cache()" title="只刪掉轉好的 MP3，錄音不會動（下次按 MP3 會重轉一份）">🧹 清除 MP3 快取</button>`
+        : "";
       searchResults.innerHTML =
         `<div style="grid-column: 1/-1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">` +
-        `<span style="font-size: 16px; font-weight: 700; color: var(--accent-cyan);">🎙️ 錄唱回放</span>${clearBtn}</div>` +
-        `<div style="grid-column: 1/-1;">${offHtml}${warnHtml}</div>` +
+        `<span style="font-size: 16px; font-weight: 700; color: var(--accent-cyan);">🎙️ 錄唱回放</span>${clearBtn}${clearMp3Btn}</div>` +
+        `<div style="grid-column: 1/-1;">${offHtml}${warnHtml}${mp3Html}</div>` +
         list.map(renderRecordingCard).join("");
     } catch (e) {
       searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">錄音清單讀取失敗</div>`;
@@ -348,6 +365,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="rec-card-actions">
           <button class="btn btn-primary" onclick="window.addSong('${rec.song_id}', '${escapeAttr(rec.title)}', '${escapeAttr(rec.artist || "")}', '${thumb}', false)">🎤 再唱一次</button>
           <a class="btn btn-secondary" href="${window.api.recordingAudioUrl(rec.id, true)}" download>⬇️ 下載</a>
+          ${mp3Support.available ? `<button class="btn btn-secondary" onclick="window.downloadRecordingMp3('${rec.id}', this)" title="轉成 MP3 再下載（車機、舊手機、傳給別人用）">🎧 MP3</button>` : ""}
           <button class="btn btn-secondary" onclick="window.shareRecording('${rec.id}')" title="產生有時效的連結與 QR，讓唱的人自己把這一次帶走">🔗 分享</button>
           <button class="btn btn-secondary" onclick="window.pinRecording('${rec.id}')">${pinIcon}</button>
           <button class="btn btn-secondary" onclick="window.deleteRecording('${rec.id}')">🗑️ 刪除</button>
@@ -496,6 +514,57 @@ document.addEventListener("DOMContentLoaded", () => {
       loadRecordings();
       if (!res.removed) alert("沒有可清除的錄音（標記保留的不會被清掉）");
     } catch (e) { alert("錄音清空失敗: " + e.message); }
+  };
+
+  /**
+   * 轉成 MP3 再下載。
+   *
+   * 刻意不用 `<a download>` 直接指過去：第一次按的時候伺服器要真的跑一次
+   * ffmpeg（一首歌幾秒鐘），而 `<a>` 在那幾秒裡**看起來完全沒反應** ——
+   * 使用者的下一個動作一定是再按一次，然後再一次。所以這裡自己 fetch，
+   * 按鈕當場變成「轉檔中…」並鎖起來，失敗也講得出是為什麼。
+   *
+   * 檔名從 Content-Disposition 挖（伺服器那邊已經把歌名與演唱者組好了）：
+   * 挖不到就退成 `<id>.mp3`，至少不會是一串沒有副檔名的亂碼。
+   */
+  window.downloadRecordingMp3 = async (recId, btn) => {
+    const original = btn ? btn.innerHTML : "";
+    if (btn) { btn.disabled = true; btn.innerHTML = "⏳ 轉檔中…"; }
+    let url = "";
+    try {
+      const res = await fetch(window.api.recordingAudioUrl(recId, true, "mp3"));
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.detail || `MP3 轉檔失敗 (${res.status})`);
+      }
+      const blob = await res.blob();
+      const name = window.TakeRules.filenameFromDisposition(
+        res.headers.get("content-disposition")) || `${recId}.mp3`;
+      url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showNotification("🎧 MP3 已下載");
+      loadRecordings();   // 快取用量變了，順手把那一行更新
+    } catch (e) {
+      alert("MP3 下載失敗: " + e.message);
+    } finally {
+      // blob URL 不收的話，一個晚上下載十首就有十份檔案留在記憶體裡。
+      // 延遲一拍再收：有些瀏覽器是在 click 之後才真的去讀那個 URL。
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 60000);
+      if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    }
+  };
+
+  window.clearMp3Cache = async () => {
+    try {
+      const res = await window.api.clearMp3Cache();
+      showNotification(res.removed ? `🧹 已清除 ${res.removed} 份 MP3` : "沒有可清除的 MP3");
+      loadRecordings();
+    } catch (e) { alert("MP3 快取清除失敗: " + e.message); }
   };
 
   // 舞台錄好一首就廣播過來。正在看這一頁時自動長出來 ——
@@ -1809,6 +1878,8 @@ document.addEventListener("DOMContentLoaded", () => {
     recording_max_count: { label: "最多保存幾首", unit: " 首", step: 1 },
     recording_max_mb: { label: "錄音配額", unit: " MB", step: 16 },
     recording_min_sing_seconds: { label: "唱不到幾秒就不留", unit: " 秒", step: 1 },
+    recording_mp3_enabled: { label: "錄音轉 MP3", hint: "車機／舊播放器只認 MP3；按下去才轉，轉好的留著當快取" },
+    recording_mp3_bitrate: { label: "MP3 位元率", unit: " kbps", step: 32, hint: "192 以上聽不出差別，只是檔案變大" },
     recording_share_enabled: { label: "允許分享錄音", hint: "產生有時效的連結／QR" },
     recording_share_ttl_hours: { label: "連結有效時間", unit: " 小時", step: 1 },
     recording_share_max_downloads: { label: "下載幾次就失效", unit: " 次", step: 1, hint: "0 = 不限" },
@@ -1888,6 +1959,17 @@ document.addEventListener("DOMContentLoaded", () => {
             "的那一筆開始刪。唱太短的（前奏就被切歌、沒人開口）不留，免得把想留的擠掉。",
       keys: ["recording_enabled", "recording_max_count", "recording_max_mb",
              "recording_min_sing_seconds"],
+    },
+    {
+      title: "🎧 錄音轉 MP3",
+      hint: "錄音是瀏覽器錄的 webm／mp4，在包廂裡播沒問題，但車機的 USB、" +
+            "長輩的舊手機、傳過去給對方直接點開 —— 那些地方多半只認 MP3。" +
+            "打開之後每一列會多一顆「🎧 MP3」，按下去才轉（不是錄完就轉，" +
+            "那會跟正在放歌的 CPU 搶資源），轉好的留著當快取，第二次是秒回。" +
+            "這份快取是可以丟的東西：它有自己的上限（錄音配額的 1/4，額外佔用），" +
+            "滿了從最久沒用的那一份開始刪，永遠不會擠掉任何一次演唱。" +
+            "需要機器上有 ffmpeg（含 libmp3lame），沒有的話清單上會直接說。",
+      keys: ["recording_mp3_enabled", "recording_mp3_bitrate"],
     },
     {
       title: "🔗 錄音分享",

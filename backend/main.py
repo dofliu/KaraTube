@@ -4,7 +4,7 @@ import json
 import socket
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException,
                      Request)
@@ -29,6 +29,7 @@ from backend.services.song_history import SongHistory
 from backend.services.score_history import ScoreHistory
 from backend.services.recordings import (HARD_MAX_UPLOAD_BYTES, RecordingLibrary,
                                          suffix_for_mime)
+from backend.services.share_links import ShareLinkStore, clamp_max_downloads, clamp_ttl_hours
 from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
 from backend.version import __version__, version_info
 
@@ -77,6 +78,9 @@ favorites = Favorites(CACHE_DIR / "favorites.json")
 song_history = SongHistory(CACHE_DIR / "song_history.json")
 score_history = ScoreHistory(CACHE_DIR / "score_history.json")
 recordings = RecordingLibrary(RECORDINGS_DIR)
+# 分享連結的索引刻意放在 cache/ 而不是錄音資料夾裡：RecordingLibrary 會把
+# 錄音資料夾裡「不在索引上」的檔案當成孤兒檔刪掉，放進去會在下次開機時消失。
+share_links = ShareLinkStore(CACHE_DIR / "recording_shares.json")
 # 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
 library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
 
@@ -585,16 +589,28 @@ def _recording_download_name(entry: Dict[str, Any]) -> str:
     return f"{safe}{suffix_for_mime(entry.get('mime', ''))}"
 
 
+def _prune_share_links() -> int:
+    """
+    把「錄音已經不在了」的分享連結收掉。
+
+    配額把一筆錄音擠掉是**無聲**發生的（沒有人按刪除），所以刪除時撤銷
+    不夠用；清單與上傳這兩條會經過的路上順手做一次，索引就不會無限長大。
+    """
+    return share_links.prune(e["id"] for e in recordings.list_all(limit=0))
+
+
 @app.get("/api/recordings")
 async def list_recordings(limit: int = Query(100, ge=1, le=500),
                           song_id: str = Query(""),
                           singer: str = Query("")):
     """錄唱回放清單：最近錄的排最前面，附配額用量。"""
     quota = _recording_quota()
+    _prune_share_links()
     return {
         "recordings": recordings.list_all(limit, song_id=song_id, singer=singer),
         "stats": recordings.stats(**quota),
         "enabled": bool(settings.get("recording_enabled", False)),
+        "share_enabled": bool(settings.get("recording_share_enabled", True)),
     }
 
 
@@ -656,6 +672,190 @@ async def get_recording_audio(rec_id: str, download: int = Query(0, ge=0, le=1))
     )
 
 
+# --- 錄音分享（一次性連結 / QR）---
+#
+# 「傳給我」是唱完之後的下一句話。這一段讓當事人自己把那一次帶走：
+# 產一個有時效的連結與 QR，掃了就能聽、能下載，時間到自動失效。
+#
+# 分享頁是**不需要任何身分**就能打開的（掃 QR 的人不會先去登入），
+# 所以這一段的每一個端點都只認 token，而且只交出 token 指到的那一筆：
+# 錄音 id、檔案路徑、其他錄音的存在與否，一概不從這裡外流。
+
+# 連結失效的四種原因，每一種要講的話不一樣 ——
+# 全部回「無效」的話，使用者不知道該不該叫人重發一個。
+SHARE_DEAD_MESSAGE = {
+    "not_found": "這個分享連結不存在（可能是網址少了幾個字）",
+    "revoked": "這個分享連結已經被撤銷了",
+    "expired": "這個分享連結已經過期了，請原點歌的人重新分享",
+    "exhausted": "這個分享連結的下載次數已經用完了",
+    "gone": "這一次的錄音已經不在包廂那台機器上了（被刪除或配額清掉）",
+}
+
+
+def _share_defaults() -> Dict[str, int]:
+    return {
+        "ttl_hours": clamp_ttl_hours(settings.get("recording_share_ttl_hours", 24)),
+        "max_downloads": clamp_max_downloads(settings.get("recording_share_max_downloads", 0)),
+    }
+
+
+def _share_view(share: Dict[str, Any]) -> Dict[str, Any]:
+    """一筆分享連結加上「要給人的網址」。網址在伺服器組，前端不猜主機位址。"""
+    base = public_base_url()
+    return {
+        **share,
+        "url": f"{base}/share/{share['token']}",
+        "qr_url": f"/api/share/{share['token']}/qr.png",
+    }
+
+
+def _resolve_share(token: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    token → (分享連結, 錄音)。任何一關不過就丟 HTTPException。
+
+    錄音存在與否要**每次重查**：配額把那一筆擠掉是無聲發生的（沒有人按刪除），
+    只靠刪除時撤銷的話，舊連結會活到過期為止卻打不出任何東西。
+    """
+    share, reason = share_links.resolve(token)
+    if share is None:
+        # 404 只留給「這個 token 從來不存在」；曾經有效而現在不給看的，
+        # 是 410 Gone —— 前端才分得出「網址打錯」與「時間到了」。
+        status = 404 if reason == "not_found" else 410
+        raise HTTPException(status_code=status,
+                            detail=SHARE_DEAD_MESSAGE.get(reason, "這個分享連結無法使用"))
+    entry = recordings.get(share["recording_id"])
+    if entry is None:
+        share_links.revoke(token, reason="gone")
+        raise HTTPException(status_code=410, detail=SHARE_DEAD_MESSAGE["gone"])
+    return share, entry
+
+
+@app.post("/api/recordings/{rec_id}/share")
+async def share_recording(rec_id: str, payload: Dict[str, Any] = Body(default={})):
+    """
+    給這一筆錄音一個分享連結。已經有還有效的連結就沿用同一個 ——
+    每按一次分享就讓上一個 QR 失效，是掃過的人無法理解的行為。
+    真的要換一個（發錯人了）送 `new: true`，舊的會一起撤銷。
+    """
+    if not settings.get("recording_share_enabled", True):
+        raise HTTPException(status_code=403, detail="錄音分享在系統設定裡是關閉的")
+    if recordings.get(rec_id) is None:
+        raise HTTPException(status_code=404, detail="找不到這筆錄音")
+
+    defaults = _share_defaults()
+    fresh = bool(payload.get("new"))
+    if fresh:
+        share_links.revoke_for_recording(rec_id)
+    share = share_links.create(
+        rec_id,
+        ttl_hours=payload.get("ttl_hours", defaults["ttl_hours"]),
+        max_downloads=payload.get("max_downloads", defaults["max_downloads"]),
+        reuse=not fresh,
+    )
+    return {"status": "success", "share": _share_view(share)}
+
+
+@app.get("/api/recordings/{rec_id}/shares")
+async def list_recording_shares(rec_id: str):
+    """這筆錄音發出去過的連結（含已失效的，畫面要說得出為什麼打不開）。"""
+    if recordings.get(rec_id) is None:
+        raise HTTPException(status_code=404, detail="找不到這筆錄音")
+    return {
+        "shares": [_share_view(s) for s in share_links.list_for(rec_id)],
+        "defaults": _share_defaults(),
+        "enabled": bool(settings.get("recording_share_enabled", True)),
+    }
+
+
+@app.delete("/api/share/{token}")
+async def revoke_share(token: str):
+    """撤銷一個連結。送出去才後悔的那種，按下去要立刻打不開。"""
+    if not share_links.revoke(token):
+        raise HTTPException(status_code=404, detail="找不到這個分享連結")
+    return {"status": "success"}
+
+
+@app.get("/api/share/{token}")
+async def get_shared_recording(token: str):
+    """
+    分享頁要的資料。只給這一筆看得到的欄位 ——
+    song_id 之類的內部識別、檔案路徑、其他錄音的存在與否都不從這裡出去。
+    """
+    share, entry = _resolve_share(token)
+    share_links.note_view(token)
+    return {
+        "status": "success",
+        "recording": {
+            "title": entry.get("title") or "這一次的演唱",
+            "artist": entry.get("artist", ""),
+            "singer": entry.get("singer", ""),
+            "thumbnail": entry.get("thumbnail", ""),
+            "mode": entry.get("mode", "solo"),
+            "duration_ms": entry.get("duration_ms", 0),
+            "score": entry.get("score", 0),
+            "grade": entry.get("grade", ""),
+            "accuracy": entry.get("accuracy", 0.0),
+            "created_at": entry.get("created_at", ""),
+            "mime": entry.get("mime", ""),
+        },
+        "share": {
+            "expires_at": share.get("expires_at", ""),
+            "expires_in_seconds": share.get("expires_in_seconds", 0),
+            "downloads_left": share.get("downloads_left"),
+        },
+        "audio_url": f"/api/share/{token}/audio",
+        "download_url": f"/api/share/{token}/audio?download=1",
+    }
+
+
+@app.get("/api/share/{token}/audio")
+async def get_shared_audio(token: str, download: int = Query(0, ge=0, le=1)):
+    """
+    分享出去的那一段聲音。
+
+    只有 `download=1` 才記次數：播放一次不是一個請求（拖進度條會發 Range、
+    Safari 會為同一個檔案再要一次），照請求數扣的話使用者拖一下就沒了。
+    """
+    share, entry = _resolve_share(token)
+    path = recordings.path_for(share["recording_id"])
+    if path is None:
+        raise HTTPException(status_code=410, detail=SHARE_DEAD_MESSAGE["gone"])
+    if download:
+        share_links.note_download(token)
+    return FileResponse(
+        path,
+        media_type=entry.get("mime") or "application/octet-stream",
+        filename=_recording_download_name(entry) if download else None,
+    )
+
+
+@app.get("/api/share/{token}/qr.png")
+async def get_share_qrcode(token: str):
+    """分享連結的 QR。手機掃一下就帶走，不用在群組裡貼一串亂碼網址。"""
+    _resolve_share(token)
+    qr = qrcode.QRCode(version=None, box_size=8, border=2)
+    qr.add_data(f"{public_base_url()}/share/{token}")
+    qr.make(fit=True)
+    buf = io.BytesIO()
+    qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
+@app.get("/share/{token}")
+async def share_page(token: str):
+    """
+    掃 QR 進來的那一頁。
+
+    這裡回的是**靜態檔**，資料由頁面自己打 `/api/share/{token}` 拿 ——
+    歌名與演唱者是從 YouTube 抓回來的字串，直接嵌進 HTML 就等於把
+    別人取的標題當程式碼跑。交給前端用 textContent 塞，這個洞就不存在。
+    """
+    page = FRONTEND_DIR / "share.html"
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail="分享頁不存在")
+    return FileResponse(page, media_type="text/html")
+
+
 @app.post("/api/recordings/{rec_id}/pin")
 async def pin_recording(rec_id: str, payload: Dict[str, Any] = Body(default={})):
     """標記保留（配額滿了也不會被自動清掉）。沒給 pinned 就當成切換。"""
@@ -671,6 +871,9 @@ async def pin_recording(rec_id: str, payload: Dict[str, Any] = Body(default={}))
 async def delete_recording(rec_id: str):
     if not recordings.delete(rec_id):
         raise HTTPException(status_code=404, detail="找不到這筆錄音")
+    # 錄音刪了，已經發出去的連結要立刻打不開 —— 留著只會讓掃過 QR 的人
+    # 在幾天後看到一個轉不動的播放器，而不是一句「這一次已經不在了」。
+    share_links.revoke_for_recording(rec_id, reason="gone")
     return {"status": "success", "stats": recordings.stats(**_recording_quota())}
 
 
@@ -678,6 +881,7 @@ async def delete_recording(rec_id: str):
 async def clear_recordings(include_pinned: int = Query(0, ge=0, le=1)):
     """清空錄音。預設保留「標記保留」的那幾筆，要全刪得明確送 include_pinned=1。"""
     removed = recordings.clear(keep_pinned=not include_pinned)
+    _prune_share_links()
     return {"status": "success", "removed": removed,
             "stats": recordings.stats(**_recording_quota())}
 

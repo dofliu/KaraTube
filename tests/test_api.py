@@ -988,6 +988,114 @@ def test_mp3_recheck_endpoint_reprobes(clean_recordings, restore_settings, no_ff
     assert res.json()["mp3"]["reason"] == "not_installed"
 
 
+# --- 整晚打包下載 ---
+#
+# 「今天晚上的通通給我一份」是收場時的那句話。一首一首按下載是二十三次
+# 另存新檔，而且存出來散在資料夾裡分不出誰是誰、哪一首在前面。
+
+def zip_from(res):
+    import io
+    import zipfile
+    return zipfile.ZipFile(io.BytesIO(res.content))
+
+
+def test_session_list_groups_tonight_into_one_session(clean_recordings):
+    for i in range(3):
+        upload(song_id=f"test_sess_{i}", singer="阿明" if i < 2 else "小美")
+    res = client.get("/api/recordings/sessions").json()
+    assert len(res["sessions"]) == 1
+
+    session = res["sessions"][0]
+    assert session["count"] == 3
+    assert session["songs"] == 3
+    assert session["singers"] == ["小美", "阿明"] or session["singers"] == ["阿明", "小美"]
+    assert session["bytes"] == 3 * len(b"fake-audio-bytes")
+    # 網址由伺服器組好，前端不自己拼 key
+    assert session["zip_url"].endswith("/zip")
+    # 清單裡不該外流內部的 entries（錄音檔名、路徑）
+    assert "entries" not in session
+    assert res["busy"] is False
+
+
+def test_session_zip_downloads_every_take_with_a_manifest(clean_recordings):
+    for i in range(2):
+        upload(song_id=f"test_zip_{i}", title=f"歌{i}")
+    key = client.get("/api/recordings/sessions").json()["sessions"][0]["key"]
+
+    res = client.get(f"/api/recordings/sessions/{key}/zip")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/zip"
+    # 中文檔名走 RFC 5987，另外附一個 ASCII 退化版給舊瀏覽器
+    disposition = res.headers["content-disposition"]
+    assert "filename*=UTF-8''" in disposition and 'filename="' in disposition
+    # 邊包邊送就算不出精確長度，宣告一個猜的長度會讓瀏覽器把整包當成下載失敗
+    assert "content-length" not in {k.lower() for k in res.headers}
+
+    zf = zip_from(res)
+    assert zf.testzip() is None
+    names = zf.namelist()
+    assert len(names) == 3                      # 兩首 + 曲目清單
+    assert names[-1] == "曲目.txt"
+    assert names[0].startswith("01 ")           # 序號在前面才排得出今晚的順序
+    assert zf.read(names[0]) == b"fake-audio-bytes"
+
+
+def test_session_zip_can_pack_just_one_singers_takes(clean_recordings):
+    upload(song_id="test_zip_a", singer="阿明")
+    upload(song_id="test_zip_b", singer="小美")
+    key = client.get("/api/recordings/sessions").json()["sessions"][0]["key"]
+
+    res = client.get(f"/api/recordings/sessions/{key}/zip", params={"singer": "阿明"})
+    assert res.status_code == 200
+    zf = zip_from(res)
+    assert len([n for n in zf.namelist() if n != "曲目.txt"]) == 1
+    assert "只有 阿明 唱的" in zf.read("曲目.txt").decode("utf-8")
+
+    # 那一場裡沒有這個人：404 而不是一個只有清單的空 zip
+    empty = client.get(f"/api/recordings/sessions/{key}/zip", params={"singer": "沒這個人"})
+    assert empty.status_code == 404
+
+
+def test_session_zip_unknown_key_is_404(clean_recordings):
+    upload()
+    assert client.get("/api/recordings/sessions/20991231-2359/zip").status_code == 404
+    # key 是拼進路徑的字串，穿越要在查表那一關就死掉
+    assert client.get("/api/recordings/sessions/..%2F..%2Fetc/zip").status_code == 404
+
+
+def test_only_one_night_can_be_packed_at_a_time(clean_recordings):
+    """
+    一包是幾百 MB，而那條網路正是舞台端串影片與 WebSocket 在走的。
+    第二個人等一下就好（429：等一下再按同一個網址就會成功）。
+    """
+    upload()
+    key = client.get("/api/recordings/sessions").json()["sessions"][0]["key"]
+    token = main.night_gate.acquire()
+    try:
+        res = client.get(f"/api/recordings/sessions/{key}/zip")
+        assert res.status_code == 429
+        assert client.get("/api/recordings/sessions").json()["busy"] is True
+    finally:
+        main.night_gate.release(token)
+    # 位子還回去之後同一個網址就會成功
+    assert client.get(f"/api/recordings/sessions/{key}/zip").status_code == 200
+
+
+def test_packing_releases_the_slot_for_the_next_one(clean_recordings):
+    upload()
+    key = client.get("/api/recordings/sessions").json()["sessions"][0]["key"]
+    assert client.get(f"/api/recordings/sessions/{key}/zip").status_code == 200
+    assert main.night_gate.busy is False
+    assert client.get(f"/api/recordings/sessions/{key}/zip").status_code == 200
+
+
+def test_session_gap_setting_changes_how_nights_are_split(clean_recordings, restore_settings):
+    """設定頁調小空檔門檻，同一批錄音就會被切成更多場（用來驗設定真的有接上）。"""
+    upload()
+    client.post("/api/settings", json={"recording_session_gap_hours": 1})
+    assert client.get("/api/recordings/sessions").json()["gap_hours"] == 1
+
+
 def test_stage_options_carry_recording_switch(restore_settings):
     client.post("/api/settings", json={"recording_enabled": True,
                                        "recording_min_sing_seconds": 15})

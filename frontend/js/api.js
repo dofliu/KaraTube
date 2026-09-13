@@ -137,6 +137,27 @@ class KaraTubeAPI {
     return `${this.baseUrl}/api/recordings/${recId}/audio${q.length ? `?${q.join("&")}` : ""}`;
   }
 
+  /**
+   * 有哪幾場可以整晚打包。一場 = 連續唱的那一段（相隔太久就算換一場），
+   * 所以跨午夜的那一晚是一場，不是兩場。
+   */
+  async getRecordingSessions() {
+    const res = await fetch(`${this.baseUrl}/api/recordings/sessions`);
+    if (!res.ok) throw new Error(`場次讀取失敗 (${res.status})`);
+    return await res.json();
+  }
+
+  /**
+   * 一整場的 zip 網址。`singer` 只要那個人的那幾首。
+   *
+   * 刻意只回網址而不是自己 fetch：一包可能三百 MB，用 fetch 拿回來會先
+   * 整包住進瀏覽器的記憶體，手機上直接當掉。交給瀏覽器的下載管理員處理。
+   */
+  sessionZipUrl(key, singer = "") {
+    const q = singer ? `?singer=${encodeURIComponent(singer)}` : "";
+    return `${this.baseUrl}/api/recordings/sessions/${encodeURIComponent(key)}/zip${q}`;
+  }
+
   /** 把轉好的 MP3 全部丟掉。錄音一個都不會動（MP3 隨時可以重轉）。 */
   async clearMp3Cache() {
     const res = await fetch(`${this.baseUrl}/api/recordings/mp3`, { method: 'DELETE' });

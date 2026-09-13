@@ -64,7 +64,7 @@ function topLevelDecls(file) {
   return { bindings, functions };
 }
 
-for (const page of ["player.html", "index.html"]) {
+for (const page of ["player.html", "index.html", "share.html"]) {
   test(`${page}：同名的 const/class 會讓後載入的整支不執行`, () => {
     const files = scriptsOf(page);
     assert.ok(files.length >= 2, `${page} 應該載入多支 JS，實際 ${files.length} 支`);

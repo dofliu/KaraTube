@@ -1,0 +1,115 @@
+/*
+ * 分享頁的樣式。
+ *
+ * 刻意不沿用 style.css：那一份是點歌台的（滿版格線、側欄、彈窗），
+ * 分享頁只有一張卡片，而且幾乎一定是在手機上打開的 —— 為了一張卡片
+ * 載入 1500 行後台樣式，在行動網路上就是白畫面多兩秒。
+ */
+:root {
+  --share-bg: #0b0e17;
+  --share-card: #151a28;
+  --share-line: #263149;
+  --share-text: #eaf0ff;
+  --share-muted: #8b97b4;
+  --share-accent: #00e5ff;
+  --share-warn: #ffb547;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(1200px 600px at 50% -10%, #1b2440 0%, var(--share-bg) 60%);
+  color: var(--share-text);
+  font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+
+.share-wrap { width: 100%; max-width: 480px; }
+
+.share-brand {
+  text-align: center;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--share-accent);
+  margin-bottom: 14px;
+}
+
+.share-card {
+  background: var(--share-card);
+  border: 1px solid var(--share-line);
+  border-radius: 18px;
+  padding: 22px 20px 18px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.share-thumb {
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 12px;
+  margin-bottom: 14px;
+}
+
+.share-title {
+  font-size: 21px;
+  font-weight: 800;
+  margin: 0 0 6px;
+  line-height: 1.35;
+  /* 歌名可能很長（YouTube 標題常常塞滿各種括號），兩行截斷 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.share-meta { font-size: 13px; color: var(--share-muted); }
+
+.share-score {
+  margin-top: 10px;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--share-accent);
+}
+
+.share-audio { width: 100%; margin: 18px 0 14px; }
+
+.share-btn {
+  display: block;
+  padding: 12px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #00e5ff, #7b5cff);
+  color: #06121c;
+  font-weight: 800;
+  font-size: 15px;
+  text-decoration: none;
+}
+
+.share-btn:active { transform: translateY(1px); }
+
+.share-expiry {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--share-muted);
+}
+
+/* 一小時內過期時換成暖色。同一句話、不同顏色 —— 要讓人現在就按下載 */
+.share-expiry.is-urgent { color: var(--share-warn); font-weight: 700; }
+
+.share-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--share-muted);
+}
+
+.share-card-error { padding: 34px 22px; }
+.share-error-icon { font-size: 40px; margin-bottom: 10px; }
+.share-error-text { font-size: 15px; font-weight: 700; line-height: 1.6; }

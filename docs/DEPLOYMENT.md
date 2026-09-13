@@ -150,7 +150,7 @@ sudo journalctl -u karatube -f
 |---|---|---|
 | `KARATUBE_HOST` | `0.0.0.0` | 伺服器監聽位址 |
 | `KARATUBE_PORT` | `8080` | 伺服器監聽 port |
-| `KARATUBE_PUBLIC_HOST` | 自動偵測 | **對外公告**的位址（QR code 與「手機點歌」網址用）。容器或反向代理後面務必設定 |
+| `KARATUBE_PUBLIC_HOST` | 自動偵測 | **對外公告**的位址（QR code、「手機點歌」與**錄音分享連結**的網址用）。容器或反向代理後面務必設定 |
 | `KARATUBE_PUBLIC_PORT` | 同 `KARATUBE_PORT` | 對外公告的 port。走反向代理時填 80 / 443（會自動省略不寫進網址） |
 | `KARATUBE_CACHE_DIR` | `./cache` | 曲庫與所有紀錄的位置。容器裡是 `/data` |
 | `KARATUBE_OPEN_BROWSER` | 非容器才開 | `0` 不自動開瀏覽器，`1` 強制開 |
@@ -288,6 +288,20 @@ FFmpeg 沒裝或不在 PATH。Docker 映像已內建，直接安裝的話請看[
 **Q：容器裡的 QR code 掃了連不上。**
 容器自動偵測到的是 bridge 網段（172.17.x.x）。設 `KARATUBE_PUBLIC_HOST` 為
 這台主機在區網裡的 IP。
+
+**Q：錄音分享連結傳出去之後對方打不開。**
+先看那個人**是不是還在同一個網路裡**。分享連結指的是這台機器的網址
+（`KARATUBE_PUBLIC_HOST` 沒設時就是區網 IP），離開包廂的 Wi-Fi 就連不到 ——
+分享頁遇到這種情況會直接說「連不上包廂的那台機器」。
+要讓人帶回家聽，得先讓這台機器在外面連得到（固定的對外網址 + 反向代理），
+並把 `KARATUBE_PUBLIC_HOST` / `KARATUBE_PUBLIC_PORT` 設成那組位址。
+
+做這件事之前請先想清楚：分享連結**不需要登入**就打得開，
+把機器開到公開網路上等於讓任何拿到網址的人都能點歌、切歌、看整個曲庫 ——
+這套系統沒有帳號系統，它的安全模型一直是「跑在一個你信任的區網裡」。
+比較保險的做法是請當事人在包廂裡就先按下載，或只把對外網址開給 VPN。
+真的要對外開放時，時效（預設 24 小時）與「下載幾次就失效」要調得更緊，
+並記得連結可以隨時撤銷。
 
 **Q：`docker compose up` 卡在 `pip install` 很久。**
 在裝 PyTorch（幾 GB）。這是一次性的，之後有 layer cache。

@@ -130,6 +130,14 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 唱不到這麼久就不留。前奏放一半被切歌、麥克風擺著沒人唱的那種錄音
     # 一樣佔配額，而且會把真正想找的那一次擠掉。
     "recording_min_sing_seconds": {"type": "float", "default": 10.0, "min": 0.0, "max": 120.0},
+    # --- 錄音分享 ---
+    # 分享連結不需要登入就打得開（掃 QR 的人不會先登入），所以時效是唯一的
+    # 安全邊界：預設 24 小時，上限 30 天，沒有「永不過期」這個選項 ——
+    # 錄到的是包廂裡所有人的聲音，一個永遠有效的公開連結事後收不回來。
+    "recording_share_enabled": {"type": "bool", "default": True},
+    "recording_share_ttl_hours": {"type": "int", "default": 24, "min": 1, "max": 720},
+    # 下載幾次就失效。0 = 不限（時效還是在）。只算明確的下載，不算播放。
+    "recording_share_max_downloads": {"type": "int", "default": 0, "min": 0, "max": 999},
 
     # --- 舞台演出 ---
     "intro_card_enabled": {"type": "bool", "default": True},

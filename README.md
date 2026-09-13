@@ -334,6 +334,26 @@
    - 切歌照樣留（唱了兩分鐘才被切掉，那兩分鐘一樣是一次演唱）、
      重唱直接丟（評分已歸零，留著會配上一份對不起來的成績）。
 
+28. **🔗 錄音分享 (Share Links)**
+   - 唱完那一句「傳給我」在這裡結案：在錄音那一列按 **🔗 分享**，
+     產生**有時效**的連結與 QR，當事人用自己的手機掃走，
+     在獨立的分享頁（`/share/<token>`）播放或下載。
+   - **不是「開啟一次就作廢」的一次性連結**：播一個音檔不是一次請求
+     （拖進度條的 Range、Safari 的第二次請求），第一個請求就燒掉連結的話，
+     壞掉的是當事人自己的播放。所以「一次性」在這裡是**時效性**：
+     預設 24 小時自動失效、隨時可撤銷，另可設「下載幾次就失效」
+     （**只算明確的下載**，播放不算）。
+   - **沒有「永不過期」**（上限 30 天）：錄到的是包廂裡所有人的聲音，
+     一個永遠有效又不需要登入的公開連結，事後想收也收不回來。
+   - **連結跟著錄音一起死**：錄音被刪除或被配額無聲擠掉時，
+     舊連結立刻打不開，而且講的是「這一次的錄音已經不在了」而不是
+     「連結不存在」—— 後者會被理解成網址打錯，於是他會一直重掃。
+     失效的四種原因（過期／撤銷／次數用完／錄音不在了）分開講。
+   - 分享頁是獨立的一頁，只載入自己那一份樣式（手機上的行動網路），
+     歌名與演唱者一律 `textContent` 塞入（那是 YouTube 抓回來的字串）。
+   - 連結指向這台機器的網址，**預設只在同一個網路裡打得開**；
+     要讓人帶回家聽，設 `KARATUBE_PUBLIC_HOST` 指到對外位址。
+
 ---
 
 ## 🚀 快速啟動
@@ -404,6 +424,7 @@ KaraTube/
 │       ├── score_history.py     # 評分歷史與個人最佳（唱畢結算，含每場段落命中率）
 │       ├── section_trends.py    # 跨場次段落趨勢（一向強在哪一段，純函式）
 │       ├── recordings.py       # 錄唱回放的落地與生命週期（配額、保留、索引對帳）
+│       ├── share_links.py      # 錄音分享連結（時效、撤銷、下載次數、與錄音連動）
 │       ├── library.py           # 曲庫分類（語言/歌手判定）、新歌榜、推薦歌單
 │       ├── settings.py          # 系統設定（預設調音、導唱淡出、情境背景、快取與錄音上限、排程時段、模型選擇）
 │       ├── batch_scheduler.py    # 排程預處理（半夜整批跑歌，有人唱歌就讓開）
@@ -413,9 +434,11 @@ KaraTube/
 ├── frontend/
 │   ├── index.html               # 點歌控制台 & 手機遙控端
 │   ├── player.html              # KTV 舞台演唱全螢幕
+│   ├── share.html               # 錄音分享頁（掃 QR 進來的那一頁，獨立不載後台樣式）
 │   ├── css/
 │   │   ├── style.css            # 霓虹 KTV 主題樣式
-│   │   └── karaoke.css          # KTV 雙行走字特效、音準條樣式
+│   │   ├── karaoke.css          # KTV 雙行走字特效、音準條樣式
+│   │   └── share.css            # 分享頁樣式（只有一張卡片，給手機看的）
 │   ├── js/
 │       ├── api.js               # REST & WebSocket 客戶端
 │       ├── controller.js        # 點歌台邏輯
@@ -434,6 +457,8 @@ KaraTube/
 │       ├── trend-view.js        # 跨場次段落趨勢的呈現（舞台與點歌台共用同一支）
 │       ├── take-rules.js        # 錄唱回放的判斷規則（要不要留、配額提醒，兩端共用）
 │       ├── take-recorder.js     # 錄唱回放的 MediaRecorder 狀態機（錄、暫停、收尾）
+│       ├── share-view.js        # 分享頁的說法（倒數、失效原因，純函式，兩端共用）
+│       ├── share-page.js        # 分享頁的畫面接線（只認網址裡的 token）
 │       └── audio-effects.js     # Web Audio 混音、升降 Key、殘響 DSP
 │   └── tests/
 │       ├── section-scorer.test.js  # 段落評分單元測試（node --test）
@@ -446,6 +471,7 @@ KaraTube/
 │       ├── batch-view.test.js      # 排程預處理顯示邏輯單元測試（node --test）
 │       ├── trend-view.test.js      # 跨場次趨勢呈現單元測試（node --test）
 │       ├── take-rules.test.js      # 錄唱回放判斷規則單元測試（node --test）
+│       ├── share-view.test.js      # 分享頁顯示邏輯單元測試（node --test）
 │       └── script-scope.test.js    # 同頁腳本的全域名稱衝突檢查（node --test）
 │
 ├── tests/                       # 後端單元與 API 測試（pytest）
@@ -468,12 +494,12 @@ KaraTube/
 ## 🧪 測試與 CI
 
 ```bash
-# 後端（357 條）
+# 後端（394 條）
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ruff check .
 
-# 前端純邏輯（213 條，用 Node 內建測試執行器，不需要 npm install）
+# 前端純邏輯（228 條，用 Node 內建測試執行器，不需要 npm install）
 node --test "frontend/tests/*.test.js"
 ```
 
@@ -769,6 +795,42 @@ AudioContext 裡累積節點（只要還連著就不會被回收），唱一整�
 相關 API：`GET /api/recordings`、`POST /api/recordings`（音檔走 raw body、
 metadata 走 query string）、`GET /api/recordings/{id}/audio`（支援 Range）、
 `POST /api/recordings/{id}/pin`、`DELETE /api/recordings/{id}`、`DELETE /api/recordings`。
+
+---
+
+## 🔗 錄音分享連結是怎麼運作的
+
+`backend/services/share_links.py` 管的是「誰能拿到哪一筆、拿到什麼時候為止」，
+錄音檔本身仍由 `recordings.py` 管。三個關鍵決定：
+
+**「一次性」是時效性，不是「開啟一次就作廢」。**
+照字面實作（第一個請求就把 token 燒掉）壞掉的是當事人自己的播放：
+`<audio>` 拖進度條會發 Range 請求、Safari 會對同一個檔案再發一次、
+手機切回前景也可能重連 —— 使用者看到的是歌播到一半死掉，重整還救不回來。
+所以連結是**有時效**的（預設 24 小時、上限 30 天、隨時可撤銷），
+「下載幾次就失效」則只算明確的下載（`download=1`），播放一律不算。
+
+**沒有「永不過期」。** 錄到的是包廂裡所有人的聲音，一個永遠有效、
+不需要登入的公開連結是事後想收也收不回來的東西。少一個選項換這個上限。
+
+**失效分四種原因講，而且「錄音不在了」不是「連結不存在」。**
+錄音被配額擠掉時沒有人按過任何按鈕，所以 `prune()` 對帳時不把那些連結整筆刪掉
+（會變成「連結不存在」＝ 被理解成網址打錯，於是他一直重掃），
+而是標成 `gone` 留七天（`TOMBSTONE_DAYS`），讓他看得到那句話。
+
+| 端點 | 用途 |
+|------|------|
+| `POST /api/recordings/{id}/share` | 產生或**沿用**連結（`{"new": true}` 才換新的） |
+| `GET /api/recordings/{id}/shares` | 這筆錄音發出去過的連結（含已失效與原因） |
+| `DELETE /api/share/{token}` | 撤銷 |
+| `GET /api/share/{token}` | 分享頁要的資料（只有這一筆看得到的欄位） |
+| `GET /api/share/{token}/audio` | 音檔（`?download=1` 才算次數） |
+| `GET /api/share/{token}/qr.png` | 這個連結的 QR |
+| `GET /share/{token}` | 分享頁本身（靜態檔，資料由頁面自己去拿） |
+
+分享索引放 `cache/recording_shares.json` 而**不是**錄音資料夾裡：
+`RecordingLibrary._reconcile()` 會把錄音資料夾裡不在索引上的檔案當成孤兒檔刪掉，
+放進去會在下次開機時無聲消失（所有已發出去的連結一起死）。
 
 ---
 

@@ -883,3 +883,149 @@ def test_stage_options_carry_recording_switch(restore_settings):
     assert stage["recording_enabled"] is True
     # 舞台端算的是毫秒，換算要在後端做完（兩邊各乘一次就差一個數量級）
     assert stage["recording_min_sing_ms"] == 15_000
+
+
+# --- 錄音分享（一次性連結 / QR）---
+
+@pytest.fixture()
+def clean_shares(tmp_path, monkeypatch):
+    """分享索引換到 tmp_path。跟錄音庫一樣是模組層級單例，要換掉名字本身。"""
+    from backend.services.share_links import ShareLinkStore
+    monkeypatch.setattr(main, "share_links", ShareLinkStore(tmp_path / "shares.json"))
+    yield main.share_links
+
+
+def share_of(rec_id, **body):
+    return client.post(f"/api/recordings/{rec_id}/share", json=body)
+
+
+def test_share_link_plays_and_downloads(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+
+    share = share_of(rec["id"]).json()["share"]
+    assert share["url"].endswith(f"/share/{share['token']}")
+    assert share["expires_in_seconds"] > 0
+
+    meta = client.get(f"/api/share/{share['token']}").json()
+    assert meta["recording"]["title"] == "錄音測試"
+    assert meta["recording"]["singer"] == "阿明"
+    # 內部識別碼不從公開端點外流（分享頁不需要，外流只是多給一個把手）
+    assert "song_id" not in meta["recording"]
+    assert "recording_id" not in meta["share"]
+
+    audio = client.get(f"/api/share/{share['token']}/audio")
+    assert audio.status_code == 200 and audio.content == b"fake-audio-bytes"
+
+    download = client.get(f"/api/share/{share['token']}/audio?download=1")
+    assert "attachment" in download.headers["content-disposition"]
+
+    qr = client.get(f"/api/share/{share['token']}/qr.png")
+    assert qr.status_code == 200 and qr.headers["content-type"] == "image/png"
+
+
+def test_share_page_is_served_for_scanned_links(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"]).json()["share"]["token"]
+    page = client.get(f"/share/{token}")
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    # 靜態檔：歌名等等由頁面自己打 API 拿，不嵌進 HTML（那等於把別人取的標題當程式碼跑）
+    assert "share-page.js" in page.text
+    assert "錄音測試" not in page.text
+
+
+def test_sharing_twice_keeps_the_same_qr(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+    first = share_of(rec["id"]).json()["share"]["token"]
+    assert share_of(rec["id"]).json()["share"]["token"] == first
+
+    # 明確要新的才換（順便撤銷舊的：發錯人時舊連結必須立刻死掉）
+    second = share_of(rec["id"], new=True).json()["share"]["token"]
+    assert second != first
+    assert client.get(f"/api/share/{first}").status_code == 410
+
+
+def test_revoked_share_is_gone_immediately(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"]).json()["share"]["token"]
+
+    assert client.delete(f"/api/share/{token}").status_code == 200
+    dead = client.get(f"/api/share/{token}")
+    # 410 而不是 404：曾經有效而現在收回，前端才分得出「網址打錯」與「已失效」
+    assert dead.status_code == 410
+    assert "撤銷" in dead.json()["detail"]
+    assert client.get(f"/api/share/{token}/audio").status_code == 410
+
+
+def test_download_cap_counts_downloads_not_plays(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"], max_downloads=1).json()["share"]["token"]
+
+    # 播放（含拖進度條）不扣額度，否則使用者拖一下就把自己鎖在外面
+    for _ in range(3):
+        assert client.get(f"/api/share/{token}/audio").status_code == 200
+    assert client.get(f"/api/share/{token}/audio?download=1").status_code == 200
+
+    assert client.get(f"/api/share/{token}/audio").status_code == 410
+    assert "次數" in client.get(f"/api/share/{token}").json()["detail"]
+
+
+def test_share_dies_with_its_recording(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"]).json()["share"]["token"]
+
+    client.delete(f"/api/recordings/{rec['id']}")
+    gone = client.get(f"/api/share/{token}")
+    assert gone.status_code == 410
+    assert "不在" in gone.json()["detail"]
+
+
+def test_share_dies_when_quota_evicts_the_recording(clean_recordings, clean_shares,
+                                                    restore_settings):
+    client.post("/api/settings", json={"recording_max_count": 1})
+    first = upload(song_id="test_share_evicted").json()["recording"]
+    token = share_of(first["id"]).json()["share"]["token"]
+
+    # 配額擠掉那一筆是無聲發生的（沒有人按刪除），連結還是要打不開
+    upload(song_id="test_share_newer")
+    assert client.get(f"/api/share/{token}").status_code == 410
+
+
+def test_bad_tokens_are_404_and_never_reach_the_filesystem(clean_recordings, clean_shares):
+    upload()
+    assert client.get("/api/share/nope").status_code == 404
+    assert client.get("/api/share/..%2F..%2Fetc%2Fpasswd").status_code == 404
+    assert client.get("/api/share/nope/audio").status_code == 404
+    assert client.delete("/api/share/nope").status_code == 404
+
+
+def test_share_can_be_turned_off(clean_recordings, clean_shares, restore_settings):
+    rec = upload().json()["recording"]
+    client.post("/api/settings", json={"recording_share_enabled": False})
+    assert share_of(rec["id"]).status_code == 403
+    client.post("/api/settings", json={"recording_share_enabled": True})
+    assert share_of(rec["id"]).status_code == 200
+
+
+def test_share_ttl_comes_from_settings(clean_recordings, clean_shares, restore_settings):
+    client.post("/api/settings", json={"recording_share_ttl_hours": 2})
+    rec = upload().json()["recording"]
+    share = share_of(rec["id"]).json()["share"]
+    assert share["ttl_hours"] == 2
+    assert 1 * 3600 < share["expires_in_seconds"] <= 2 * 3600
+
+
+def test_share_of_unknown_recording_is_404(clean_recordings, clean_shares):
+    assert share_of("nope").status_code == 404
+    assert client.get("/api/recordings/nope/shares").status_code == 404
+
+
+def test_share_list_shows_dead_links_with_a_reason(clean_recordings, clean_shares):
+    rec = upload().json()["recording"]
+    token = share_of(rec["id"]).json()["share"]["token"]
+    client.delete(f"/api/share/{token}")
+
+    shares = client.get(f"/api/recordings/{rec['id']}/shares").json()["shares"]
+    # 失效的連結要留在清單上一段時間：畫面要說得出「為什麼那個 QR 打不開」
+    assert [s["status"] for s in shares] == ["revoked"]
+    assert shares[0]["active"] is False

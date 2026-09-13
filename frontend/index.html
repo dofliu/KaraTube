@@ -388,6 +388,25 @@
     </div>
   </div>
 
+  <!-- 錄音分享：有時效的連結與 QR，唱的人自己把那一次帶走 -->
+  <div id="shareModal" class="modal-overlay">
+    <div class="modal-content">
+      <h3 style="font-size: 20px; font-weight: 800; color: #fff;">🔗 分享這一次</h3>
+      <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">
+        讓唱的人用手機掃走。連結有時效，時間到自動失效；<br>
+        <strong>只在包廂這台機器所在的網路裡打得開</strong>（要給外面的人請先設定對外網址）。
+      </p>
+      <img id="shareQrImg" class="qr-code-img" alt="分享連結 QR Code">
+      <div id="shareLinkText" style="font-size: 12px; color: var(--accent-cyan); font-family: monospace; word-break: break-all; user-select: all;"></div>
+      <div id="shareHint" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;"></div>
+      <div style="display: flex; gap: 8px; margin-top: 16px;">
+        <button class="btn btn-primary" style="flex: 1;" onclick="window.copyShareLink()">📋 複製連結</button>
+        <button class="btn btn-secondary" onclick="window.revokeShareLink()" title="已經掃過的人會立刻打不開">🚫 撤銷</button>
+        <button class="btn btn-secondary" onclick="window.closeShareModal()">關閉</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/js/api.js"></script>
   <!-- 排程分頁的純顯示邏輯（有單元測試），要在 controller 之前載入 -->
   <script src="/js/batch-view.js"></script>
@@ -397,6 +416,9 @@
   <!-- 錄唱回放的判斷與格式化規則（純邏輯，舞台端載的是同一支）：
        「這一次為什麼沒留下來」在兩個畫面上必須是同一套說法。 -->
   <script src="/js/take-rules.js"></script>
+  <!-- 分享連結的說法（「還有幾小時就過期」等）。分享頁載的是同一支：
+       同一個連結在後台與客人手機上必須講出同一句話。 -->
+  <script src="/js/share-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

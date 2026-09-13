@@ -348,6 +348,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="rec-card-actions">
           <button class="btn btn-primary" onclick="window.addSong('${rec.song_id}', '${escapeAttr(rec.title)}', '${escapeAttr(rec.artist || "")}', '${thumb}', false)">🎤 再唱一次</button>
           <a class="btn btn-secondary" href="${window.api.recordingAudioUrl(rec.id, true)}" download>⬇️ 下載</a>
+          <button class="btn btn-secondary" onclick="window.shareRecording('${rec.id}')" title="產生有時效的連結與 QR，讓唱的人自己把這一次帶走">🔗 分享</button>
           <button class="btn btn-secondary" onclick="window.pinRecording('${rec.id}')">${pinIcon}</button>
           <button class="btn btn-secondary" onclick="window.deleteRecording('${rec.id}')">🗑️ 刪除</button>
         </div>
@@ -379,6 +380,99 @@ document.addEventListener("DOMContentLoaded", () => {
     el.addEventListener("durationchange", onDurationChange);
     el.currentTime = 1e101;
   };
+
+  /**
+   * 分享這一次：產（或沿用）一個有時效的連結，把 QR 亮出來讓人掃走。
+   *
+   * 唱完那一句「傳給我」在這裡結案。刻意**沿用**已經有效的連結：
+   * 每按一次分享就換一個新的，等於讓剛剛掃過的人手上那一張 QR 失效。
+   */
+  // 目前亮在畫面上的那一個連結（複製與撤銷都對著它）
+  let currentShare = null;
+
+  window.shareRecording = async (recId) => {
+    const modal = document.getElementById("shareModal");
+    const linkBox = document.getElementById("shareLinkText");
+    const qrImg = document.getElementById("shareQrImg");
+    const hint = document.getElementById("shareHint");
+    modal.classList.add("open");
+    linkBox.textContent = "產生中…";
+    qrImg.removeAttribute("src");
+    hint.textContent = "";
+    try {
+      const res = await window.api.shareRecording(recId);
+      const share = res.share || {};
+      currentShare = share;
+      linkBox.textContent = share.url || "";
+      qrImg.src = share.qr_url;
+      hint.textContent = window.ShareView
+        ? `${window.ShareView.expiryPhrase(share.expires_in_seconds)}・只在這個網路裡打得開`
+        : "";
+    } catch (e) {
+      linkBox.textContent = "";
+      hint.textContent = e.message;
+      currentShare = null;
+    }
+  };
+
+  /**
+   * 複製連結。
+   *
+   * `navigator.clipboard` 在**非 HTTPS** 的頁面上不存在 —— 而這套系統正是
+   * 用 http://192.168.x.x 開的，所以那條路平常就走不通。真正會用到的是
+   * 後面那條 execCommand 的老路；兩條都不行時要明講「請長按複製」，
+   * 按了沒反應會被當成系統壞了。
+   */
+  window.copyShareLink = async () => {
+    const url = currentShare && currentShare.url;
+    const hint = document.getElementById("shareHint");
+    if (!url) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+        hint.textContent = "已複製連結 ✅";
+        return;
+      }
+    } catch (e) { /* 落到下面的老方法 */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      hint.textContent = ok ? "已複製連結 ✅" : "複製不成功，請長按上面的網址自行複製";
+    } catch (e) {
+      hint.textContent = "複製不成功，請長按上面的網址自行複製";
+    }
+  };
+
+  window.revokeShareLink = async () => {
+    if (!currentShare || !currentShare.token) return;
+    if (!confirm("撤銷這個分享連結？已經掃過 QR 的人會立刻打不開。")) return;
+    try {
+      await window.api.revokeShare(currentShare.token);
+      document.getElementById("shareLinkText").textContent = "（已撤銷）";
+      document.getElementById("shareQrImg").removeAttribute("src");
+      document.getElementById("shareHint").textContent = "已撤銷，再按一次分享會產生新的連結";
+      currentShare = null;
+    } catch (e) { alert("撤銷失敗: " + e.message); }
+  };
+
+  window.closeShareModal = () => {
+    document.getElementById("shareModal").classList.remove("open");
+  };
+
+  // 點背景關閉，跟系統設定／QR 那兩個彈窗一樣 ——
+  // 同一個畫面上三個彈窗，其中一個關不掉會被當成當機。
+  const shareModalEl = document.getElementById("shareModal");
+  if (shareModalEl) {
+    shareModalEl.addEventListener("click", (e) => {
+      if (e.target === shareModalEl) window.closeShareModal();
+    });
+  }
 
   window.pinRecording = async (recId) => {
     try {
@@ -1715,6 +1809,9 @@ document.addEventListener("DOMContentLoaded", () => {
     recording_max_count: { label: "最多保存幾首", unit: " 首", step: 1 },
     recording_max_mb: { label: "錄音配額", unit: " MB", step: 16 },
     recording_min_sing_seconds: { label: "唱不到幾秒就不留", unit: " 秒", step: 1 },
+    recording_share_enabled: { label: "允許分享錄音", hint: "產生有時效的連結／QR" },
+    recording_share_ttl_hours: { label: "連結有效時間", unit: " 小時", step: 1 },
+    recording_share_max_downloads: { label: "下載幾次就失效", unit: " 次", step: 1, hint: "0 = 不限" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -1791,6 +1888,17 @@ document.addEventListener("DOMContentLoaded", () => {
             "的那一筆開始刪。唱太短的（前奏就被切歌、沒人開口）不留，免得把想留的擠掉。",
       keys: ["recording_enabled", "recording_max_count", "recording_max_mb",
              "recording_min_sing_seconds"],
+    },
+    {
+      title: "🔗 錄音分享",
+      hint: "唱完那一句「傳給我」：在錄唱回放的每一列按「🔗 分享」產生連結與 QR，" +
+            "掃了就能聽、能下載。連結不需要登入就打得開，所以時效是唯一的安全邊界 —— " +
+            "預設 24 小時、最長 30 天，沒有「永不過期」。送錯人可以隨時撤銷。" +
+            "「下載幾次就失效」只算真的按下載，不算播放（拖進度條會多發好幾個請求）。" +
+            "連結指向的是這台機器的網址，所以預設只在同一個網路裡打得開；" +
+            "要讓人帶回家聽，請設 KARATUBE_PUBLIC_HOST 指到對外位址。",
+      keys: ["recording_share_enabled", "recording_share_ttl_hours",
+             "recording_share_max_downloads"],
     },
     {
       title: "🖥️ 舞台演出",

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 分享頁是給客人看的一次性頁面，不該被搜尋引擎收錄 -->
+  <meta name="robots" content="noindex, nofollow">
+  <title>分享的演唱 ・ KaraTube</title>
+  <link rel="stylesheet" href="/css/share.css">
+</head>
+<body>
+  <main class="share-wrap">
+    <div class="share-brand">🎤 KaraTube</div>
+
+    <!-- 資料進來之前兩塊都藏著：先畫一張空卡片再填字，在手機上會閃一下 -->
+    <section id="shareCard" class="share-card" hidden>
+      <img id="shareThumb" class="share-thumb" alt="" hidden>
+      <h1 id="shareTitle" class="share-title"></h1>
+      <div id="shareMeta" class="share-meta"></div>
+      <div id="shareScore" class="share-score" hidden></div>
+
+      <audio id="shareAudio" class="share-audio" controls preload="metadata"></audio>
+
+      <a id="shareDownload" class="share-btn" download>⬇️ 下載這一次</a>
+
+      <div id="shareExpiry" class="share-expiry"></div>
+      <div id="shareDownloads" class="share-expiry" hidden></div>
+      <p class="share-note">
+        這個連結有時效，過期後就打不開了。想留著的話請先下載。
+      </p>
+    </section>
+
+    <section id="shareError" class="share-card share-card-error" hidden>
+      <div class="share-error-icon">🔇</div>
+      <div id="shareErrorText" class="share-error-text"></div>
+      <p class="share-note">
+        分享連結只在包廂那台機器所在的網路裡（或設定過對外網址時）打得開。
+      </p>
+    </section>
+  </main>
+
+  <!-- 時間格式沿用錄唱回放那一套，所以 take-rules.js 要先載入 -->
+  <script src="/js/take-rules.js"></script>
+  <script src="/js/share-view.js"></script>
+  <script src="/js/share-page.js"></script>
+</body>
+</html>

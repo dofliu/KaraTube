@@ -155,6 +155,39 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  /**
+   * 產一個分享連結（有時效）。已經有還有效的就沿用同一個，
+   * `newLink=true` 才換新的（順便撤銷舊的）—— 每按一次就讓上一個 QR 失效，
+   * 對已經掃過的人來說是莫名其妙的壞掉。
+   */
+  async shareRecording(recId, { ttlHours, maxDownloads, newLink = false } = {}) {
+    const body = { new: newLink };
+    if (ttlHours !== undefined) body.ttl_hours = ttlHours;
+    if (maxDownloads !== undefined) body.max_downloads = maxDownloads;
+    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `分享連結產生失敗 (${res.status})`);
+    }
+    return await res.json();
+  }
+
+  async getRecordingShares(recId) {
+    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}/shares`);
+    return await res.json();
+  }
+
+  async revokeShare(token) {
+    const res = await fetch(`${this.baseUrl}/api/share/${encodeURIComponent(token)}`,
+                            { method: 'DELETE' });
+    if (!res.ok) throw new Error(`撤銷失敗 (${res.status})`);
+    return await res.json();
+  }
+
   async getScoreTrends(limit = 20) {
     const res = await fetch(`${this.baseUrl}/api/scores/trends?limit=${limit}`);
     return await res.json();

@@ -618,6 +618,17 @@ def _mp3_capability() -> Dict[str, Any]:
             "message": cap.get("message", "")}
 
 
+async def _mp3_capability_async() -> Dict[str, Any]:
+    """
+    給 async 端點用的版本。
+
+    探測結果幾乎都是快取命中（微秒等級），但**第一次**是真的去開一個子行程，
+    而且卡住的 ffmpeg 會讓它等到逾時 —— 那段時間整台伺服器的 WebSocket
+    都會停住。清單與分享頁的資料都會經過這裡，所以一律丟到執行緒裡問。
+    """
+    return await asyncio.to_thread(_mp3_capability)
+
+
 def _ensure_recording_mp3(rec_id: str) -> Dict[str, Any]:
     """
     確保這一筆有一份轉好的 MP3，回傳 `{"status": ..., "path": Path}`。
@@ -714,7 +725,7 @@ async def list_recordings(limit: int = Query(100, ge=1, le=500),
         "share_enabled": bool(settings.get("recording_share_enabled", True)),
         # 這台機器能不能轉 MP3。前端照這個決定按鈕出不出現 ——
         # 讓使用者按下去才知道機器上沒有 ffmpeg，是最差的講法。
-        "mp3": _mp3_capability(),
+        "mp3": await _mp3_capability_async(),
     }
 
 
@@ -806,7 +817,7 @@ async def recheck_mp3_support():
     按這裡就好，不必重開整台伺服器。
     """
     reset_probe_cache()
-    return {"status": "success", "mp3": _mp3_capability()}
+    return {"status": "success", "mp3": await _mp3_capability_async()}
 
 
 # --- 錄音分享（一次性連結 / QR）---
@@ -946,7 +957,7 @@ async def get_shared_recording(token: str):
         # 所以 MP3 那顆按鈕在分享頁比在後台更重要。轉不了就給 null，
         # 讓那一頁乾脆不要長出一顆按下去會壞的按鈕。
         "mp3_url": (f"/api/share/{token}/audio?format=mp3&download=1"
-                    if _mp3_capability()["available"] else None),
+                    if (await _mp3_capability_async())["available"] else None),
     }
 
 

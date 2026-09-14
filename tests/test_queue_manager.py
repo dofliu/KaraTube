@@ -476,3 +476,160 @@ def test_has_video_flag_travels_with_the_song(tmp_path):
         assert pending["has_video"] is False
 
     asyncio.run(scenario())
+
+
+# --- 公平輪唱（排麥輪序）---
+
+def rotation_manager(tmp_path, count=8):
+    """準備一批已快取的歌，讓每一次點歌都是秒進佇列（不必等假流水線）。"""
+    ids = [f"rot{n:08d}" for n in range(count)]
+    manager, _ = make_manager(tmp_path, cached_ids=ids)
+    return manager, ids
+
+
+def queue_singers(manager):
+    return [item["requested_by"] for item in manager.queue]
+
+
+def test_rotation_is_off_by_default(tmp_path):
+    """預設是先到先唱 —— 沒講好就改動排序規則，使用者只會覺得佇列自己亂跳。"""
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        assert manager.get_full_state()["rotation_enabled"] is False
+        await manager.add_song(ids[0], requested_by="小明")   # 直接上台
+        await manager.add_song(ids[1], requested_by="小明")
+        await manager.add_song(ids[2], requested_by="小明")
+        await manager.add_song(ids[3], requested_by="小美")
+        assert queue_singers(manager) == ["小明", "小明", "小美"]
+
+    asyncio.run(scenario())
+
+
+def test_rotation_puts_new_singer_before_second_round(tmp_path):
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        await manager.add_song(ids[0], requested_by="小明")   # 直接上台（第 1 輪）
+        await manager.add_song(ids[1], requested_by="小明")   # 他的第 2 輪
+        await manager.add_song(ids[2], requested_by="小明")   # 他的第 3 輪
+        await manager.add_song(ids[3], requested_by="小美")   # 她的第 1 輪 → 插到最前面
+        await manager.add_song(ids[4], requested_by="阿華")   # 他的第 1 輪 → 小美後面
+        assert queue_singers(manager) == ["小美", "阿華", "小明", "小明"]
+
+    asyncio.run(scenario())
+
+
+def test_rotation_counts_songs_already_sung(tmp_path):
+    """唱完一首再點，不能排到還沒唱過的人前面。"""
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台並唱完
+        await manager.add_song(ids[1], requested_by="小美")
+        await manager.add_song(ids[2], requested_by="小明")   # 他的第 2 輪
+        assert queue_singers(manager) == ["小美", "小明"]
+
+    asyncio.run(scenario())
+
+
+def test_rotation_never_jumps_ahead_of_priority(tmp_path):
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        await manager.add_song(ids[0], requested_by="小明")               # 上台
+        await manager.add_song(ids[1], requested_by="小明")
+        await manager.add_song(ids[2], requested_by="小明", priority=True)  # 插播
+        await manager.add_song(ids[3], requested_by="小美")
+        # 插播那首仍然是下一首；小美排在它後面、小明的第 2 輪前面
+        assert manager.queue[0]["song_id"] == ids[2]
+        assert manager.queue[0]["priority"] is True
+        assert queue_singers(manager) == ["小明", "小美", "小明"]
+
+    asyncio.run(scenario())
+
+
+def test_rotation_treats_everyone_unnamed_as_plain_fifo(tmp_path):
+    """沒人取暱稱時，開著輪唱的行為與沒開一模一樣（不會有人覺得佇列在亂跳）。"""
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        for song_id in ids[:4]:
+            await manager.add_song(song_id)
+        assert [item["song_id"] for item in manager.queue] == ids[1:4]
+
+    asyncio.run(scenario())
+
+
+def test_rotation_state_reports_rounds_and_people(tmp_path):
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台（已唱 1 首）
+        await manager.add_song(ids[1], requested_by="小明")
+        await manager.add_song(ids[2], requested_by="小美")
+        state = manager.get_full_state()
+        rounds = state["rotation"]["rounds"]
+        assert rounds[manager.queue[0]["queue_id"]] == 1      # 小美的第 1 輪
+        assert rounds[manager.queue[1]["queue_id"]] == 2      # 小明的第 2 輪
+        people = {s["name"]: s for s in state["rotation"]["singers"]}
+        assert people["小明"]["sung"] == 1 and people["小明"]["pending"] == 1
+        assert state["rotation"]["named_count"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_placement_tells_the_requester_where_the_song_landed(tmp_path):
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        await manager.add_song(ids[1], requested_by="小明")
+        item = await manager.add_song(ids[2], requested_by="小美")
+        placement = manager.placement_of(item["queue_id"])
+        assert placement["enabled"] is True
+        assert placement["position"] == 1 and placement["round"] == 1
+        assert placement["ahead_of"] == 1                     # 插到一首歌前面
+
+        # 已經上台的歌不在佇列裡，回報 None 而不是硬湊一個位置
+        gone = manager.placement_of("no-such-queue-id")
+        assert gone["position"] is None and gone["ahead_of"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_reset_rotation_clears_counts_but_not_the_queue(tmp_path):
+    """
+    歸零的是「誰唱過幾首」，不是佇列 —— 已經排好的順序是大家看著排出來的。
+    """
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"rotation_enabled": True})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        await manager.add_song(ids[1], requested_by="小美")
+        before = [item["queue_id"] for item in manager.queue]
+        summary = await manager.reset_rotation()
+        assert manager.rotation.counts() == {}
+        assert [item["queue_id"] for item in manager.queue] == before
+        assert all(s["sung"] == 0 for s in summary["singers"])
+
+    asyncio.run(scenario())
+
+
+def test_session_gap_comes_from_settings(tmp_path):
+    """輪序與整晚打包共用同一個「一場」的定義。"""
+    class FakeSettings:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self, key, fallback=None):
+            return self.value if key == "recording_session_gap_hours" else fallback
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        assert manager.session_gap_hours() == 6.0     # 沒有設定物件時的預設
+        manager.settings = FakeSettings(9)
+        assert manager.session_gap_hours() == 9.0
+        manager.settings = FakeSettings("壞掉的值")
+        assert manager.session_gap_hours() == 6.0
+
+    asyncio.run(scenario())

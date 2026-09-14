@@ -6,6 +6,7 @@ from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
 from backend.services.song_history import SongHistory
+from backend.services import rotation as rotation_rules
 # 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
 from backend.services.settings import HARMONY_STYLE_CHOICES
 
@@ -83,6 +84,12 @@ class QueueManager:
         self.loop_enabled: bool = False
         self.loop_start: Optional[float] = None
         self.loop_end: Optional[float] = None
+        # 公平輪唱（排麥輪序）：新點的歌照「這是誰的第幾首」插進佇列，
+        # 讓一個人連點五首時其他人不必等完那五首。預設關著 ——
+        # 開著會讓點的歌排到自己預期以外的位置，那是要先講好的規則，
+        # 不是機器替包廂決定的事（見 backend/services/rotation.py 的設計說明）。
+        self.rotation_enabled: bool = False
+        self.rotation = rotation_rules.RotationTracker()
 
     def set_broadcast_callback(self, cb: Callable):
         self.broadcast_cb = cb
@@ -121,7 +128,12 @@ class QueueManager:
             "show_pitch": self.show_pitch,
             "loop_enabled": self.loop_enabled,
             "loop_start": self.loop_start,
-            "loop_end": self.loop_end
+            "loop_end": self.loop_end,
+            "rotation_enabled": self.rotation_enabled,
+            # 輪次是算出來的（見 rotation.compute_rounds），所以每次廣播都重算一次，
+            # 而不是寫在 queue item 上 —— 有人被刪、有人唱完，剩下的輪次全都要跟著變。
+            "rotation": rotation_rules.rotation_summary(
+                self.queue, self.rotation.counts(), self.rotation.names()),
         }
 
     async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "",
@@ -166,10 +178,18 @@ class QueueManager:
             "status_text": "Queued" if status == "PENDING" else "Ready (Cached)",
             # 多人包廂：這首是誰點的。長度截 24 字，防手機端惡搞塞爆佇列版面。
             "requested_by": str(requested_by or "").strip()[:24],
+            # 插播的歌。輪唱要認得它才不會插到它前面（現場按下去的決定
+            # 不該被機器的規則推翻），拖曳排序之後也還認得出來。
+            "priority": bool(priority),
         }
 
         if priority:
             self.queue.insert(0, queue_item)
+        elif self.rotation_enabled:
+            # 公平輪唱：照「這是他的第幾首」找位置，而不是一律排到最後
+            index, _round = rotation_rules.plan_insert_index(
+                self.queue, self.rotation.counts(), queue_item["requested_by"])
+            self.queue.insert(index, queue_item)
         else:
             self.queue.append(queue_item)
 
@@ -245,6 +265,9 @@ class QueueManager:
             # 上一首圈起來的練唱區間對這一首沒有意義，換人上台就歸零
             self.clear_loop()
             self.is_playing = True
+            # 輪序也是「真的上台」才算一首 —— 排進佇列又被刪掉的不該佔掉他的輪次。
+            # 被切歌的算（麥克風確實輪到他手上了），這一點跟點唱排行一致。
+            self.rotation.record_play(next_item, gap_hours=self.session_gap_hours())
             # 真正上台才計入點唱排行與已唱歷史，排進佇列又被移除的不算
             if self.play_stats:
                 self.play_stats.record_play(next_item)
@@ -306,6 +329,50 @@ class QueueManager:
         if (self.loop_start is None or self.loop_end is None
                 or self.loop_end - self.loop_start < MIN_LOOP_SECONDS):
             self.loop_enabled = False
+
+    def session_gap_hours(self) -> float:
+        """
+        相隔幾小時算換了一場。與整晚打包共用同一個設定欄位 ——
+        系統裡「一場」只能有一個定義，兩個各自可調的話會出現
+        「打包說這是同一場、輪序說換了一場」這種自己打自己臉的畫面。
+        """
+        if not self.settings:
+            return rotation_rules.DEFAULT_SESSION_GAP_HOURS
+        try:
+            return float(self.settings.get("recording_session_gap_hours",
+                                           rotation_rules.DEFAULT_SESSION_GAP_HOURS))
+        except (TypeError, ValueError):
+            return rotation_rules.DEFAULT_SESSION_GAP_HOURS
+
+    def placement_of(self, queue_id: str) -> Dict[str, Any]:
+        """
+        剛點的那一首排在哪、是第幾輪。點歌台拿它講出「排在第 3 位（第 2 輪）」。
+
+        刻意是「事後從現在的佇列讀出來」而不是點歌當下回報的固定值：
+        兩支手機同時點歌時，先算好的位置在回應送出去之前就已經不對了。
+        """
+        rounds = rotation_rules.compute_rounds(self.queue, self.rotation.counts())
+        for index, item in enumerate(self.queue):
+            if item.get("queue_id") == queue_id:
+                return {
+                    "enabled": self.rotation_enabled,
+                    "index": index,
+                    "position": index + 1,
+                    "round": rounds[index],
+                    # 插到幾首歌前面。0 = 排在最後面（等於沒開輪唱的行為）
+                    "ahead_of": len(self.queue) - 1 - index,
+                    "queue_length": len(self.queue),
+                }
+        # 找不到＝已經上台了（快取歌會在 add_song 裡直接開播）
+        return {"enabled": self.rotation_enabled, "index": None, "position": None,
+                "round": None, "ahead_of": 0, "queue_length": len(self.queue)}
+
+    async def reset_rotation(self) -> Dict[str, Any]:
+        """把今晚的輪序歸零（換一批客人、或是大家講好重新排）。"""
+        self.rotation.reset()
+        await self.broadcast_state()
+        return rotation_rules.rotation_summary(
+            self.queue, self.rotation.counts(), self.rotation.names())
 
     def is_song_in_use(self, song_id: str) -> bool:
         """歌曲正在演唱或還在佇列裡。使用中的快取不能刪，刪了舞台會直接斷片。"""
@@ -411,6 +478,10 @@ class QueueManager:
             self.show_pitch = bool(params["show_pitch"])
         if "is_playing" in params:
             self.is_playing = bool(params["is_playing"])
+        # 公平輪唱的開關是共享狀態：一支手機打開，包廂裡每一台都看得到規則變了
+        # （只有「大家都知道」的排序規則才不會變成吵架的來源）。
+        if "rotation_enabled" in params:
+            self.rotation_enabled = bool(params["rotation_enabled"])
         # 練唱 A-B 循環：三個欄位可以分開送（先設 A、再設 B、最後才開循環）
         if "loop_start" in params:
             self.loop_start = coerce_position(params["loop_start"])

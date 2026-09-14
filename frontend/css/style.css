@@ -1040,6 +1040,75 @@ input[type="range"] {
   white-space: nowrap;
 }
 
+/* --- 公平輪唱（排麥輪序） --- */
+
+.rotation-toggle {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+/* 開著的時候要一眼看得出來：這是一條會改變排序的規則，
+   不能讓人以為自己還在先到先唱。 */
+.rotation-toggle.on {
+  color: #0b1020;
+  background: var(--accent-cyan);
+  border-color: transparent;
+}
+
+.rotation-bar {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.25);
+}
+
+.rotation-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rotation-line {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  /* 人多的時候讓它換行而不是被切掉 —— 「還有誰沒唱到」是這一行的重點 */
+  word-break: break-word;
+}
+
+.rotation-reset {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.rotation-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--accent-yellow);
+}
+
+/* 佇列上的「第 N 輪」小標。跟「誰點的」是同一組資訊，所以擺在一起，
+   顏色分開（一個是身分、一個是順序）。 */
+.queue-round {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  background: rgba(34, 211, 238, 0.12);
+  padding: 1px 8px;
+  border-radius: 10px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 /* --- 練唱模式（A-B 循環） --- */
 
 /* 進度條改成可點擊跳轉。position: relative 是 A-B 區間標記定位的基準 */

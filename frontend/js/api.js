@@ -403,6 +403,13 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // 公平輪唱：輪序歸零（換一批客人時用）。開關本身走 updateControl，
+  // 因為它是共享狀態 —— 一支手機打開，包廂裡每一台都要看到規則變了。
+  async resetRotation() {
+    const res = await fetch(`${this.baseUrl}/api/rotation/reset`, { method: 'POST' });
+    return await res.json();
+  }
+
   async updateControl(controlData) {
     const res = await fetch(`${this.baseUrl}/api/control`, {
       method: 'POST',

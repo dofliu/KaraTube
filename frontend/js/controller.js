@@ -4,6 +4,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const searchBtn = document.getElementById("searchBtn");
   const searchResults = document.getElementById("searchResults");
   const queueList = document.getElementById("queueList");
+  // 公平輪唱（排麥輪序）
+  const rotationToggle = document.getElementById("rotationToggle");
+  const rotationBar = document.getElementById("rotationBar");
+  const rotationLineEl = document.getElementById("rotationLine");
+  const rotationHintEl = document.getElementById("rotationHint");
+  const rotationResetBtn = document.getElementById("rotationResetBtn");
   const nowPlayingTitle = document.getElementById("nowPlayingTitle");
   const nowPlayingArtist = document.getElementById("nowPlayingArtist");
   const nowPlayingThumb = document.getElementById("nowPlayingThumb");
@@ -1158,9 +1164,15 @@ document.addEventListener("DOMContentLoaded", () => {
   // Global Add Song Action
   window.addSong = async (id, title, artist, thumbnail, priority) => {
     try {
-      await window.api.addToQueue({ id, title, artist, thumbnail, requested_by: nickname }, priority);
+      const res = await window.api.addToQueue(
+        { id, title, artist, thumbnail, requested_by: nickname }, priority);
       // Brief feedback toast
-      showNotification(priority ? "⚡ 已成功插播到下一首！" : "🎤 已加入點歌佇列！");
+      // 輪唱開著時要講出「排到哪裡」—— 不講的話使用者看到的是
+      // 「我點的歌沒有出現在最後面」，那看起來就跟壞掉一樣（然後他會再點一次）。
+      const placed = priority ? "" : window.RotationView.rotationPlacementNote(
+        res && res.placement, nickname);
+      showNotification(priority ? "⚡ 已成功插播到下一首！"
+        : (placed ? `🎤 已加入：${placed}` : "🎤 已加入點歌佇列！"));
     } catch (e) {
       alert("點歌失敗: " + e.message);
     }
@@ -1282,11 +1294,57 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  /**
+   * 公平輪唱的那一條：開關狀態、現在輪到誰、沒人取暱稱的提醒。
+   *
+   * 關著的時候整條收起來（連同「第 N 輪」小標）—— 先到先唱的包廂不需要
+   * 一直看到一組用不到的名詞。
+   */
+  function renderRotation(state) {
+    if (!rotationToggle) return;
+    const enabled = !!state.rotation_enabled;
+    const summary = state.rotation || {};
+    rotationToggle.textContent = window.RotationView.rotationToggleLabel(enabled);
+    rotationToggle.classList.toggle("on", enabled);
+    rotationBar.style.display = enabled ? "block" : "none";
+    if (!enabled) return;
+    rotationLineEl.textContent = window.RotationView.rotationLine(summary);
+    const hint = window.RotationView.rotationNameHint(summary);
+    rotationHintEl.textContent = hint;
+    rotationHintEl.style.display = hint ? "block" : "none";
+  }
+
+  if (rotationToggle) {
+    rotationToggle.addEventListener("click", async () => {
+      const next = !rotationToggle.classList.contains("on");
+      try {
+        // 走共享控制參數：一支手機打開，包廂裡每一台都會收到同一份規則
+        await window.api.updateControl({ rotation_enabled: next });
+        showNotification(window.RotationView.rotationToggleNote(next));
+      } catch (e) {
+        alert("切換輪唱失敗: " + e.message);
+      }
+    });
+  }
+
+  if (rotationResetBtn) {
+    rotationResetBtn.addEventListener("click", async () => {
+      if (!confirm("把「誰今晚唱過幾首」歸零？\n（已經排好的佇列不會變動，只影響接下來新點的歌）")) return;
+      try {
+        await window.api.resetRotation();
+        showNotification("🔁 輪序已重新開始");
+      } catch (e) {
+        alert("重設輪序失敗: " + e.message);
+      }
+    });
+  }
+
   function renderQueue(state) {
     if (queueDragging) {
       pendingQueueState = state;
       return;
     }
+    renderRotation(state);
     const cur = state.current_song;
     if (cur) {
       nowPlayingTitle.textContent = cur.title;
@@ -1308,6 +1366,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    const rounds = (state.rotation && state.rotation.rounds) || {};
     queueList.innerHTML = queue.map((item, idx) => {
       let statusIndicator = "";
       if (item.status === "READY") {
@@ -1329,6 +1388,15 @@ document.addEventListener("DOMContentLoaded", () => {
         ? ` <span class="queue-requester">👤 ${escapeHtml(item.requested_by)}</span>`
         : "";
 
+      // 輪唱開著才標輪次：沒開的時候「第 N 輪」只是雜訊（順序就是先到先唱）
+      const roundText = state.rotation_enabled
+        ? window.RotationView.rotationBadge(rounds[item.queue_id]) : "";
+      const roundBadge = roundText ? ` <span class="queue-round">${roundText}</span>` : "";
+      // 插播不受輪序影響，標出來才看得懂它為什麼在最前面
+      const priorityBadge = item.priority
+        ? ` <span class="queue-round" style="color: var(--accent-yellow); background: rgba(255, 222, 89, 0.12);">⚡ 插播</span>`
+        : "";
+
       // 一首歌沒得排，兩首以上才給拖曳把手
       const dragHandle = queue.length > 1
         ? `<div class="queue-drag-handle" title="按住拖曳調整順序">⠿</div>`
@@ -1340,7 +1408,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <img class="queue-item-thumb" src="${item.thumbnail}">
           <div class="queue-item-info">
             <div class="queue-item-title" title="${item.title}">${item.title}</div>
-            <div class="queue-item-status">${statusIndicator}${requester}</div>
+            <div class="queue-item-status">${statusIndicator}${requester}${roundBadge}${priorityBadge}</div>
           </div>
           <div class="queue-item-actions">
             ${retryBtn}
@@ -1949,6 +2017,7 @@ document.addEventListener("DOMContentLoaded", () => {
     duet_crosstalk_margin_db: { label: "串音判定門檻", unit: " dB", step: 1 },
     default_sing_mode: { label: "演唱模式", choiceLabels: { solo: "🎧 單人", party: "🔊 多人" } },
     default_show_pitch: { label: "顯示音準導唱線" },
+    default_rotation_enabled: { label: "開機就開輪唱", hint: "預設關（先到先唱）" },
     loudness_normalize: { label: "啟用自動音量平衡", hint: "各首歌一樣大聲" },
     loudness_target_lufs: { label: "目標響度", unit: " LUFS", step: 0.5 },
     guide_duck_enabled: { label: "導唱自動淡出", hint: "唱穩了自動變小聲" },
@@ -1985,7 +2054,7 @@ document.addEventListener("DOMContentLoaded", () => {
     recording_share_ttl_hours: { label: "連結有效時間", unit: " 小時", step: 1 },
     recording_share_max_downloads: { label: "下載幾次就失效", unit: " 次", step: 1, hint: "0 = 不限" },
     recording_session_gap_hours: { label: "相隔幾小時算換一場", unit: " 小時", step: 1,
-                                   hint: "整晚打包用的：跨午夜的一晚要算同一場" },
+                                   hint: "整晚打包與輪序共用：跨午夜的一晚要算同一場" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -2001,6 +2070,16 @@ document.addEventListener("DOMContentLoaded", () => {
              "default_mic_echo_repeat", "default_mic_echo_time_ms", "default_mic_tone",
              "default_harmony_enabled", "default_harmony_style", "default_harmony_level",
              "default_sing_mode", "default_show_pitch"],
+    },
+    {
+      title: "🔁 公平輪唱",
+      hint: "一個人連點五首時，其他人不必等完那五首：新點的歌會照「這是誰的第幾首」" +
+            "插進佇列，讓大家輪流唱。已經排好的順序不會被重排，插播也不受影響。" +
+            "身分認的是暱稱（右上角設定）—— 沒取暱稱的所有人算同一位，" +
+            "所以一整間都沒取名時，行為就等於先到先唱。" +
+            "「今晚唱過幾首」隔一段時間沒人唱就自動歸零，那個時數與整晚打包共用" +
+            "（下面的「相隔幾小時算換一場」）。",
+      keys: ["default_rotation_enabled"],
     },
     {
       title: "🎤🎤 對唱模式",

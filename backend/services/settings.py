@@ -52,6 +52,9 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "default_mic_tone": {"type": "float", "default": 0.40, "min": 0.0, "max": 1.0},
     "default_sing_mode": {"type": "choice", "default": "solo", "choices": SING_MODE_CHOICES},
     "default_show_pitch": {"type": "bool", "default": True},
+    # 公平輪唱（排麥輪序）。預設關著：這是一條會改變「我點的歌排在哪」的規則，
+    # 開著而沒人講好的話，使用者只會覺得佇列自己亂跳。包廂講好了再開。
+    "default_rotation_enabled": {"type": "bool", "default": False},
 
     # --- 和聲（雙聲部）---
     # 預設關著：和聲是「加了才有」的效果，而且它跟主唱一樣要外放才聽得到，
@@ -143,6 +146,8 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 刻意不照日曆日期切：包廂的一場是「九點唱到凌晨兩點半」，照日期切會把
     # 它剖成兩半，而且唱到最嗨的後半會被標成「隔天」。
     # 6 小時的理由：一場再久也就五、六個小時，而下一桌跟上一桌之間一定有清場。
+    # 公平輪唱的「今晚唱了幾首」也用同一個欄位判斷換場：系統裡「一場」只能有
+    # 一個定義，兩個各自可調的話會出現「打包算同一場、輪序算換了一場」的矛盾。
     "recording_session_gap_hours": {"type": "int", "default": 6, "min": 1, "max": 24},
 
     # --- 錄音分享 ---
@@ -178,6 +183,7 @@ CONTROL_DEFAULT_KEYS = {
     "default_duet_enabled": "duet_enabled",
     "default_sing_mode": "sing_mode",
     "default_show_pitch": "show_pitch",
+    "default_rotation_enabled": "rotation_enabled",
 }
 
 

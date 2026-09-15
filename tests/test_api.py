@@ -559,6 +559,50 @@ def test_control_endpoint_accepts_loop_range():
         queue_manager.clear_loop()
 
 
+# --- 公平輪唱（排麥輪序）---
+
+@pytest.fixture()
+def rotation_off():
+    """測完把輪唱關回去並清掉輪序統計，不影響其他測試與本機狀態。"""
+    yield
+    queue_manager.rotation_enabled = False
+    queue_manager.rotation.reset()
+    queue_manager.queue.clear()
+
+
+def test_rotation_toggle_is_a_shared_control(rotation_off):
+    """開關走 /api/control，所以包廂裡每一台裝置都會收到同一份規則。"""
+    res = client.post("/api/control", json={"rotation_enabled": True})
+    assert res.status_code == 200
+    assert res.json()["state"]["rotation_enabled"] is True
+    assert client.get("/api/queue").json()["rotation_enabled"] is True
+
+
+def test_rotation_endpoint_reports_rounds(rotation_off):
+    queue_manager.rotation_enabled = True
+    queue_manager.queue.extend([
+        {"queue_id": "r1", "song_id": "s1", "requested_by": "小明"},
+        {"queue_id": "r2", "song_id": "s2", "requested_by": "小明"},
+        {"queue_id": "r3", "song_id": "s3", "requested_by": "小美"},
+    ])
+    body = client.get("/api/rotation").json()
+    assert body["enabled"] is True
+    assert body["rounds"] == {"r1": 1, "r2": 2, "r3": 1}
+    assert [s["name"] for s in body["singers"]] == ["小明", "小美"]
+    assert body["named_count"] == 2
+
+
+def test_rotation_reset_clears_counts_only(rotation_off):
+    queue_manager.rotation.record_play({"requested_by": "小明"})
+    queue_manager.queue.append({"queue_id": "r1", "song_id": "s1", "requested_by": "小美"})
+    body = client.post("/api/rotation/reset").json()
+    assert body["status"] == "success"
+    assert queue_manager.rotation.counts() == {}
+    # 佇列不動：已經排好的順序是大家看著排出來的
+    assert [i["queue_id"] for i in queue_manager.queue] == ["r1"]
+    assert body["rounds"] == {"r1": 1}
+
+
 # --- 曲庫分類瀏覽 / 新歌榜 / 推薦歌單 ---
 
 @pytest.fixture()

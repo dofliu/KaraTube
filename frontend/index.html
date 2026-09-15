@@ -65,7 +65,18 @@
     <aside class="queue-panel glass-panel">
       <div class="panel-title">
         <span>📋 點歌排隊佇列</span>
-        <span style="font-size: 13px; color: var(--text-muted); font-weight: 400;">自動背景分離</span>
+        <!-- 公平輪唱：一個人連點五首時，其他人不必等完那五首。
+             狀態寫在按鈕的字上（包廂的燈是暗的，只靠顏色看不出來）。 -->
+        <button class="btn btn-secondary rotation-toggle" id="rotationToggle"
+                title="公平輪唱：新點的歌照「這是誰的第幾首」排，讓大家輪流唱">🔁 先到先唱</button>
+      </div>
+      <div id="rotationBar" class="rotation-bar" style="display: none;">
+        <div class="rotation-bar-head">
+          <span id="rotationLine" class="rotation-line">還沒有人點歌</span>
+          <button class="btn btn-secondary rotation-reset" id="rotationResetBtn"
+                  title="把「誰唱過幾首」歸零（換一批客人時用）。佇列不動">重新排</button>
+        </div>
+        <div id="rotationHint" class="rotation-hint" style="display: none;"></div>
       </div>
       <div id="queueList" class="queue-list">
         <!-- Dynamic Queue Items -->
@@ -422,6 +433,9 @@
   <!-- 整晚打包的說法（哪一場、幾首、多大）。要在 take-rules.js 之後載入：
        檔案大小的寫法是跟那一支借的。 -->
   <script src="/js/night-export.js"></script>
+  <!-- 公平輪唱的說法（「排在第 2 位，插到 3 首前面」）。排序規則在伺服器，
+       這一支只負責把它講成人話 —— 講不清楚的話，使用者會以為點歌壞了。 -->
+  <script src="/js/rotation-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

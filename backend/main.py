@@ -404,7 +404,10 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
 
     item = await queue_manager.add_song(url_or_id, title, artist, thumbnail, priority,
                                         requested_by=requested_by)
-    return {"status": "success", "item": item}
+    # 公平輪唱開著時，點歌的人要知道自己被排到哪（「排在第 3 位，你的第 2 輪」）——
+    # 不講的話使用者看到的是「我點的歌沒有出現在最後面」，那看起來像壞掉。
+    return {"status": "success", "item": item,
+            "placement": queue_manager.placement_of(item["queue_id"])}
 
 @app.delete("/api/queue/{queue_id}")
 async def remove_queue_item(queue_id: str):
@@ -425,6 +428,23 @@ async def reorder_queue(payload: Dict[str, int] = Body(...)):
     to_idx = payload.get("to_idx", 0)
     await queue_manager.reorder_queue(from_idx, to_idx)
     return {"status": "success"}
+
+@app.get("/api/rotation")
+async def get_rotation():
+    """目前的輪序：每一首的輪次、每個人唱了幾首／還有幾首。"""
+    state = queue_manager.get_full_state()
+    return {"enabled": state["rotation_enabled"], **state["rotation"]}
+
+@app.post("/api/rotation/reset")
+async def reset_rotation():
+    """
+    輪序歸零。換一批客人（但機器沒關）、或是大家講好重新排時按的。
+
+    刻意不動佇列：已經排好的順序是大家看著排出來的，歸零的是「誰已經唱過幾首」
+    這份統計，下一首新點的歌才照新的輪次排。
+    """
+    summary = await queue_manager.reset_rotation()
+    return {"status": "success", "enabled": queue_manager.rotation_enabled, **summary}
 
 @app.post("/api/queue/skip")
 async def skip_song():

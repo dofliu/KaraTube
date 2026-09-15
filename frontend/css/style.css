@@ -1094,6 +1094,43 @@ input[type="range"] {
   color: var(--accent-yellow);
 }
 
+/* --- 每人待唱上限（點歌額度） --- */
+
+.quota-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.quota-toggle,
+.quota-step {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 12px;
+}
+
+/* −／＋ 做成正方形，才不會在中文字的標籤旁邊看起來歪一邊 */
+.quota-step {
+  width: 26px;
+  padding: 4px 0;
+  text-align: center;
+}
+
+/* 限制生效時要一眼看得出來。用黃色而不是輪唱的青色：
+   這兩條規則是分開開關的，同色會讓人以為它們是同一顆按鈕的兩半。 */
+.quota-toggle.on {
+  color: #0b1020;
+  background: var(--accent-yellow);
+  border-color: transparent;
+}
+
+.quota-bar {
+  background: rgba(255, 222, 89, 0.08);
+  border-color: rgba(255, 222, 89, 0.25);
+}
+
 /* 佇列上的「第 N 輪」小標。跟「誰點的」是同一組資訊，所以擺在一起，
    顏色分開（一個是身分、一個是順序）。 */
 .queue-round {

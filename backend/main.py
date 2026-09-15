@@ -28,6 +28,7 @@ from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
+from backend.services import song_quota
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
                                            find_session, group_sessions, iter_session_zip,
@@ -402,12 +403,20 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
     priority = payload.get("priority", False)
     requested_by = payload.get("requested_by", "")
 
-    item = await queue_manager.add_song(url_or_id, title, artist, thumbnail, priority,
-                                        requested_by=requested_by)
+    try:
+        item = await queue_manager.add_song(url_or_id, title, artist, thumbnail, priority,
+                                            requested_by=requested_by)
+    except song_quota.QuotaExceeded as exc:
+        # 409 而不是 429：擋下來的理由不是「按太快」，是「佇列現在的狀態不收這一首」。
+        # 整份結論原封不動送出去，畫面才講得出「誰、現在幾首、什麼時候可以再點」——
+        # 少講最後一件，使用者的下一個動作就是再按一次。
+        raise HTTPException(status_code=409, detail={"error": "pending_limit_reached",
+                                                    "quota": exc.verdict}) from exc
     # 公平輪唱開著時，點歌的人要知道自己被排到哪（「排在第 3 位，你的第 2 輪」）——
     # 不講的話使用者看到的是「我點的歌沒有出現在最後面」，那看起來像壞掉。
     return {"status": "success", "item": item,
-            "placement": queue_manager.placement_of(item["queue_id"])}
+            "placement": queue_manager.placement_of(item["queue_id"]),
+            "quota": queue_manager.quota_of(item["requested_by"])}
 
 @app.delete("/api/queue/{queue_id}")
 async def remove_queue_item(queue_id: str):
@@ -434,6 +443,19 @@ async def get_rotation():
     """目前的輪序：每一首的輪次、每個人唱了幾首／還有幾首。"""
     state = queue_manager.get_full_state()
     return {"enabled": state["rotation_enabled"], **state["rotation"]}
+
+@app.get("/api/quota")
+async def get_quota():
+    """
+    目前的點歌額度：上限是多少、誰排了幾首、誰滿了。
+
+    跟 /api/rotation 分開，因為它們是獨立的兩條規則：輪唱管**順序**
+    （一個人連點五首時其他人不必等完那五首），額度管**量**
+    （那五首本來就不該同時排在佇列裡）。先到先唱的包廂也可能只想要後面那一條。
+    """
+    state = queue_manager.get_full_state()
+    return state["quota"]
+
 
 @app.post("/api/rotation/reset")
 async def reset_rotation():

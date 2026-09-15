@@ -69,6 +69,17 @@
              狀態寫在按鈕的字上（包廂的燈是暗的，只靠顏色看不出來）。 -->
         <button class="btn btn-secondary rotation-toggle" id="rotationToggle"
                 title="公平輪唱：新點的歌照「這是誰的第幾首」排，讓大家輪流唱">🔁 先到先唱</button>
+        <!-- 每人待唱上限：輪唱管順序，這一顆管量（佇列不要被一個人塞滿）。
+             是數字不是開關，所以做成 −／＋ 而不是切換鈕；包廂中途講好要限制時
+             不該還得跑進系統設定頁。 -->
+        <span class="quota-stepper" id="quotaStepper">
+          <button class="btn btn-secondary quota-step" id="quotaDownBtn"
+                  title="每人待唱上限減一（減到 0 就是不限）">−</button>
+          <button class="btn btn-secondary quota-toggle" id="quotaLabel"
+                  title="每人同時最多能排幾首待唱。按一下在「不限」與上次的上限之間切換">🎫 不限首數</button>
+          <button class="btn btn-secondary quota-step" id="quotaUpBtn"
+                  title="每人待唱上限加一">＋</button>
+        </span>
       </div>
       <div id="rotationBar" class="rotation-bar" style="display: none;">
         <div class="rotation-bar-head">
@@ -77,6 +88,11 @@
                   title="把「誰唱過幾首」歸零（換一批客人時用）。佇列不動">重新排</button>
         </div>
         <div id="rotationHint" class="rotation-hint" style="display: none;"></div>
+      </div>
+      <!-- 額度用量。跟輪序那一條分開，因為兩條規則是各自獨立開關的：
+           先到先唱的包廂也可能只想要「每個人不要一次排太多」。 -->
+      <div id="quotaBar" class="rotation-bar quota-bar" style="display: none;">
+        <span id="quotaLine" class="rotation-line"></span>
       </div>
       <div id="queueList" class="queue-list">
         <!-- Dynamic Queue Items -->
@@ -436,6 +452,9 @@
   <!-- 公平輪唱的說法（「排在第 2 位，插到 3 首前面」）。排序規則在伺服器，
        這一支只負責把它講成人話 —— 講不清楚的話，使用者會以為點歌壞了。 -->
   <script src="/js/rotation-view.js"></script>
+  <!-- 每人待唱上限的說法（「已經排了 3 首，等第 1 位那首唱完」）。這是系統裡
+       唯一一個對使用者說「不行」的地方，說不清楚使用者就會再按一次。 -->
+  <script src="/js/quota-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

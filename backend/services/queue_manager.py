@@ -7,6 +7,7 @@ from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
 from backend.services.song_history import SongHistory
 from backend.services import rotation as rotation_rules
+from backend.services import song_quota
 # 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
 from backend.services.settings import HARMONY_STYLE_CHOICES
 
@@ -90,6 +91,10 @@ class QueueManager:
         # 不是機器替包廂決定的事（見 backend/services/rotation.py 的設計說明）。
         self.rotation_enabled: bool = False
         self.rotation = rotation_rules.RotationTracker()
+        # 每人待唱上限（點歌額度）：一個人同時最多能有幾首歌在等，0 = 不限。
+        # 輪唱管順序、額度管量，是獨立的兩條規則（先到先唱的包廂也可能只想要
+        # 「佇列不要被一個人塞滿」）。預設不限，見 backend/services/song_quota.py。
+        self.pending_limit: int = song_quota.DEFAULT_PENDING_LIMIT
 
     def set_broadcast_callback(self, cb: Callable):
         self.broadcast_cb = cb
@@ -134,11 +139,28 @@ class QueueManager:
             # 而不是寫在 queue item 上 —— 有人被刪、有人唱完，剩下的輪次全都要跟著變。
             "rotation": rotation_rules.rotation_summary(
                 self.queue, self.rotation.counts(), self.rotation.names()),
+            "pending_limit": self.pending_limit,
+            # 額度用量跟輪次一樣是算出來的：有人被刪、有人上台，剩下的全都要跟著變。
+            "quota": song_quota.quota_summary(self.queue, self.pending_limit),
         }
 
     async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "",
                        priority: bool = False, requested_by: str = "") -> Dict[str, Any]:
-        """Add song to queue or insert at top (插播)."""
+        """
+        Add song to queue or insert at top (插播).
+
+        點歌額度滿了就丟 song_quota.QuotaExceeded —— 在解析 song_id、查快取、
+        建 queue item **之前**先擋。擋在後面的話會先去 yt-dlp 抓一次 metadata，
+        等於為了一首不會收的歌打一次網路（而且那一秒鐘伺服器正在放歌）。
+        """
+        # 多人包廂：這首是誰點的。長度截 24 字，防手機端惡搞塞爆佇列版面。
+        # 額度與輪序都認這個收斂過的值，不是原始字串。
+        requested_by = str(requested_by or "").strip()[:24]
+        verdict = song_quota.check(self.queue, requested_by, self.pending_limit,
+                                   priority=priority)
+        if not verdict["allowed"]:
+            raise song_quota.QuotaExceeded(verdict)
+
         # Resolve song_id
         import re
         if "youtube.com" in url_or_id or "youtu.be" in url_or_id:
@@ -176,8 +198,7 @@ class QueueManager:
             "status": status,
             "progress": progress,
             "status_text": "Queued" if status == "PENDING" else "Ready (Cached)",
-            # 多人包廂：這首是誰點的。長度截 24 字，防手機端惡搞塞爆佇列版面。
-            "requested_by": str(requested_by or "").strip()[:24],
+            "requested_by": requested_by,
             # 插播的歌。輪唱要認得它才不會插到它前面（現場按下去的決定
             # 不該被機器的規則推翻），拖曳排序之後也還認得出來。
             "priority": bool(priority),
@@ -367,6 +388,15 @@ class QueueManager:
         return {"enabled": self.rotation_enabled, "index": None, "position": None,
                 "round": None, "ahead_of": 0, "queue_length": len(self.queue)}
 
+    def quota_of(self, requested_by: str) -> Dict[str, Any]:
+        """
+        這個人現在的額度狀況。點完歌之後問一次，好在同一句話裡講出「還可以再排幾首」。
+
+        跟 placement_of 一樣是**事後**從當下的佇列讀出來的：兩支手機同時點歌時，
+        點歌那一刻算好的剩餘量在回應送出去之前就已經不對了。
+        """
+        return song_quota.state(self.queue, requested_by, self.pending_limit)
+
     async def reset_rotation(self) -> Dict[str, Any]:
         """把今晚的輪序歸零（換一批客人、或是大家講好重新排）。"""
         self.rotation.reset()
@@ -482,6 +512,10 @@ class QueueManager:
         # （只有「大家都知道」的排序規則才不會變成吵架的來源）。
         if "rotation_enabled" in params:
             self.rotation_enabled = bool(params["rotation_enabled"])
+        # 每人待唱上限也是共享狀態：這條規則要「大家都知道」才不會變成吵架的來源，
+        # 而且被擋下來的那支手機必須看得到現在的上限是多少。
+        if "pending_limit" in params:
+            self.pending_limit = song_quota.coerce_limit(params["pending_limit"])
         # 練唱 A-B 循環：三個欄位可以分開送（先設 A、再設 B、最後才開循環）
         if "loop_start" in params:
             self.loop_start = coerce_position(params["loop_start"])

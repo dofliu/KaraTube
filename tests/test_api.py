@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from backend import main
 from backend.config import SONGS_DIR
+from backend.services import song_quota
 from backend.version import __version__
 from backend.main import (
     app,
@@ -1332,3 +1333,79 @@ def test_share_list_shows_dead_links_with_a_reason(clean_recordings, clean_share
     # 失效的連結要留在清單上一段時間：畫面要說得出「為什麼那個 QR 打不開」
     assert [s["status"] for s in shares] == ["revoked"]
     assert shares[0]["active"] is False
+
+
+# --- 每人待唱上限（點歌額度）---
+
+@pytest.fixture()
+def quota_off():
+    """測完把額度關回去並清空佇列，不影響其他測試與本機狀態。"""
+    yield
+    queue_manager.pending_limit = 0
+    queue_manager.queue.clear()
+
+
+def test_pending_limit_is_a_shared_control(quota_off):
+    """
+    上限走 /api/control，所以包廂裡每一台裝置都看得到現在的規則。
+
+    被擋下來的那支手機一定要看得到上限是多少，否則那句「上限 3 首」對他來說
+    是一個憑空出現的數字。
+    """
+    res = client.post("/api/control", json={"pending_limit": 3})
+    assert res.status_code == 200
+    assert res.json()["state"]["pending_limit"] == 3
+    assert client.get("/api/queue").json()["pending_limit"] == 3
+
+
+def test_pending_limit_control_is_clamped(quota_off):
+    assert client.post("/api/control", json={"pending_limit": -1}
+                       ).json()["state"]["pending_limit"] == 0
+    assert client.post("/api/control", json={"pending_limit": 9999}
+                       ).json()["state"]["pending_limit"] == song_quota.MAX_PENDING_LIMIT
+
+
+def test_quota_endpoint_reports_usage(quota_off):
+    queue_manager.pending_limit = 2
+    queue_manager.queue.extend([
+        {"queue_id": "q1", "song_id": "s1", "requested_by": "小明"},
+        {"queue_id": "q2", "song_id": "s2", "requested_by": "小美"},
+        {"queue_id": "q3", "song_id": "s3", "requested_by": "小明"},
+    ])
+    body = client.get("/api/quota").json()
+    assert body["limit"] == 2
+    assert [(s["name"], s["pending"], s["full"]) for s in body["singers"]] == [
+        ("小明", 2, True), ("小美", 1, False)]
+
+
+def test_add_is_refused_with_409_and_the_whole_verdict(quota_off):
+    """
+    409（不是 429）：擋下來的理由不是「按太快」，是「佇列現在的狀態不收這一首」。
+
+    回應要帶著整份結論，畫面才講得出「誰、現在幾首、什麼時候可以再點」——
+    少講最後一件，使用者的下一個動作就是再按一次。
+    """
+    queue_manager.pending_limit = 1
+    queue_manager.queue.append(
+        {"queue_id": "q1", "song_id": "s1", "requested_by": "小明", "priority": False})
+    res = client.post("/api/queue/add", json={"id": "newsong0001", "requested_by": "小明"})
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert detail["error"] == "pending_limit_reached"
+    assert detail["quota"]["name"] == "小明"
+    assert detail["quota"]["pending"] == 1
+    assert detail["quota"]["limit"] == 1
+    assert detail["quota"]["next_position"] == 1
+    # 被擋下來的歌完全沒有進到佇列裡
+    assert [i["queue_id"] for i in queue_manager.queue] == ["q1"]
+
+
+def test_add_reports_remaining_allowance(quota_off):
+    """點成功時順便回報「還剩幾首」，畫面才講得出「還可以再排 1 首」。"""
+    queue_manager.pending_limit = 3
+    queue_manager.queue.append(
+        {"queue_id": "q1", "song_id": "s1", "requested_by": "小明", "priority": False})
+    res = client.post("/api/queue/add", json={"id": "newsong0002", "requested_by": "小明"})
+    assert res.status_code == 200
+    quota = res.json()["quota"]
+    assert (quota["pending"], quota["remaining"], quota["full"]) == (2, 1, False)

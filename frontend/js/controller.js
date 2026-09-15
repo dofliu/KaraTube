@@ -10,6 +10,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const rotationLineEl = document.getElementById("rotationLine");
   const rotationHintEl = document.getElementById("rotationHint");
   const rotationResetBtn = document.getElementById("rotationResetBtn");
+  const quotaLabelBtn = document.getElementById("quotaLabel");
+  const quotaDownBtn = document.getElementById("quotaDownBtn");
+  const quotaUpBtn = document.getElementById("quotaUpBtn");
+  const quotaBar = document.getElementById("quotaBar");
+  const quotaLineEl = document.getElementById("quotaLine");
   const nowPlayingTitle = document.getElementById("nowPlayingTitle");
   const nowPlayingArtist = document.getElementById("nowPlayingArtist");
   const nowPlayingThumb = document.getElementById("nowPlayingThumb");
@@ -1166,13 +1171,26 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await window.api.addToQueue(
         { id, title, artist, thumbnail, requested_by: nickname }, priority);
+
+      // 點歌額度滿了。這是整個系統唯一一個對使用者說「不行」的地方，所以
+      // 講的是完整的一句話（誰、現在幾首、什麼時候可以再點），而且用通知
+      // 而不是 alert —— alert 要按確定才消失，被擋一次就打斷一次點歌。
+      if (res && res.status === "rejected") {
+        showNotification(window.QuotaView.quotaRejectionNote(res.quota), 6000);
+        return;
+      }
+
       // Brief feedback toast
       // 輪唱開著時要講出「排到哪裡」—— 不講的話使用者看到的是
       // 「我點的歌沒有出現在最後面」，那看起來就跟壞掉一樣（然後他會再點一次）。
       const placed = priority ? "" : window.RotationView.rotationPlacementNote(
         res && res.placement, nickname);
-      showNotification(priority ? "⚡ 已成功插播到下一首！"
-        : (placed ? `🎤 已加入：${placed}` : "🎤 已加入點歌佇列！"));
+      // 額度快用完時順便講一聲（剩很多的時候不講，見 quotaAddNote）
+      const left = window.QuotaView.quotaAddNote(res && res.quota);
+      const parts = [placed, left].filter(Boolean).join("・");
+      showNotification(priority
+        ? (left ? `⚡ 已成功插播到下一首！${left}` : "⚡ 已成功插播到下一首！")
+        : (parts ? `🎤 已加入：${parts}` : "🎤 已加入點歌佇列！"));
     } catch (e) {
       alert("點歌失敗: " + e.message);
     }
@@ -1327,6 +1345,59 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  /**
+   * 每人待唱上限那一條：−／數字／＋ 與底下的用量。
+   *
+   * 上限是 0（不限）時只剩按鈕，用量那一條整條收起來 —— 沒有規則的包廂
+   * 不需要一直看到一排 x/y。
+   */
+  const QUOTA_MAX = 20;
+  // 按「不限」時要回到哪個數字。3 是包廂的常識值（一輪三首，佇列還讀得完），
+  // 使用者調過之後就記住他的選擇：切回不限再切回來不該把他的設定忘掉。
+  let lastQuotaLimit = 3;
+
+  function currentQuotaLimit() {
+    return Math.max(0, Math.floor(Number(quotaLabelBtn && quotaLabelBtn.dataset.limit) || 0));
+  }
+
+  function renderQuota(state) {
+    if (!quotaLabelBtn) return;
+    const limit = Math.max(0, Math.floor(Number(state.pending_limit) || 0));
+    quotaLabelBtn.dataset.limit = String(limit);
+    quotaLabelBtn.textContent = window.QuotaView.quotaLimitLabel(limit);
+    quotaLabelBtn.classList.toggle("on", limit > 0);
+    if (limit > 0) lastQuotaLimit = limit;
+    const line = window.QuotaView.quotaLine(state.quota || {});
+    quotaBar.style.display = line ? "block" : "none";
+    quotaLineEl.textContent = line;
+  }
+
+  async function setQuotaLimit(next) {
+    const limit = Math.max(0, Math.min(QUOTA_MAX, Math.floor(next)));
+    try {
+      // 共享控制參數：一支手機調，包廂裡每一台都收到同一份規則
+      // （只有「大家都知道」的規則才不會變成吵架的來源）
+      await window.api.updateControl({ pending_limit: limit });
+      showNotification(window.QuotaView.quotaChangeNote(limit), limit > 0 ? 5000 : 2500);
+    } catch (e) {
+      alert("調整點歌額度失敗: " + e.message);
+    }
+  }
+
+  if (quotaLabelBtn) {
+    // 按標籤＝在「不限」與上次那個數字之間切換（最常用的兩種狀態）
+    quotaLabelBtn.addEventListener("click", () => {
+      const limit = currentQuotaLimit();
+      setQuotaLimit(limit > 0 ? 0 : lastQuotaLimit);
+    });
+  }
+  if (quotaDownBtn) {
+    quotaDownBtn.addEventListener("click", () => setQuotaLimit(currentQuotaLimit() - 1));
+  }
+  if (quotaUpBtn) {
+    quotaUpBtn.addEventListener("click", () => setQuotaLimit(currentQuotaLimit() + 1));
+  }
+
   if (rotationResetBtn) {
     rotationResetBtn.addEventListener("click", async () => {
       if (!confirm("把「誰今晚唱過幾首」歸零？\n（已經排好的佇列不會變動，只影響接下來新點的歌）")) return;
@@ -1345,6 +1416,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     renderRotation(state);
+    renderQuota(state);
     const cur = state.current_song;
     if (cur) {
       nowPlayingTitle.textContent = cur.title;
@@ -2018,6 +2090,8 @@ document.addEventListener("DOMContentLoaded", () => {
     default_sing_mode: { label: "演唱模式", choiceLabels: { solo: "🎧 單人", party: "🔊 多人" } },
     default_show_pitch: { label: "顯示音準導唱線" },
     default_rotation_enabled: { label: "開機就開輪唱", hint: "預設關（先到先唱）" },
+    default_pending_limit: { label: "每人待唱上限", unit: " 首", step: 1,
+                             hint: "0 = 不限。算的是「同時排幾首」，不是今晚總共" },
     loudness_normalize: { label: "啟用自動音量平衡", hint: "各首歌一樣大聲" },
     loudness_target_lufs: { label: "目標響度", unit: " LUFS", step: 0.5 },
     guide_duck_enabled: { label: "導唱自動淡出", hint: "唱穩了自動變小聲" },
@@ -2080,6 +2154,17 @@ document.addEventListener("DOMContentLoaded", () => {
             "「今晚唱過幾首」隔一段時間沒人唱就自動歸零，那個時數與整晚打包共用" +
             "（下面的「相隔幾小時算換一場」）。",
       keys: ["default_rotation_enabled"],
+    },
+    {
+      title: "🎫 每人待唱上限（點歌額度）",
+      hint: "輪唱管的是順序，這一條管的是量：一個人同時最多能有幾首歌在等。" +
+            "0 = 不限（預設）。算的是「待唱」而不是「今晚總共唱幾首」—— " +
+            "所以排滿了只要等自己其中一首唱完就又能點，不會有人被鎖在今晚之外。" +
+            "調低（或中途才打開）時已經排好的歌一首都不會被刪，只是在降回上限" +
+            "以下之前點不了新的。插播不受上限限制（那是現場按下去的決定），" +
+            "但照樣算進待唱數。身分同樣認暱稱：沒取暱稱的所有人共用一份額度，" +
+            "取個暱稱才有屬於自己的。佇列上方可以隨時用 −／＋ 調整。",
+      keys: ["default_pending_limit"],
     },
     {
       title: "🎤🎤 對唱模式",
@@ -2424,17 +2509,23 @@ document.addEventListener("DOMContentLoaded", () => {
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
-  function showNotification(msg) {
+  /**
+   * 右上角的提示。`ms` 可以拉長 —— 「你的額度滿了，等第 1 位那首唱完」這種
+   * 要看懂才有用的句子，2.5 秒剛好夠讀到一半然後消失。
+   * 寬度設上限並允許換行，否則長句會在手機上被推出畫面右邊。
+   */
+  function showNotification(msg, ms = 2500) {
     const div = document.createElement("div");
     div.style.cssText = `
       position: fixed; top: 20px; right: 20px; z-index: 9999;
+      max-width: min(420px, calc(100vw - 40px));
       background: linear-gradient(135deg, var(--accent-cyan), #0077b6);
-      color: #000; font-weight: 700; padding: 12px 20px;
+      color: #000; font-weight: 700; padding: 12px 20px; line-height: 1.5;
       border-radius: 12px; box-shadow: 0 4px 20px rgba(0,240,255,0.4);
       animation: fadeIn 0.3s ease;
     `;
     div.textContent = msg;
     document.body.appendChild(div);
-    setTimeout(() => div.remove(), 2500);
+    setTimeout(() => div.remove(), Math.max(1000, Number(ms) || 2500));
   }
 });

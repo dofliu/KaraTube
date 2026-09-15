@@ -6,6 +6,9 @@
 import asyncio
 import json
 
+import pytest
+
+from backend.services import song_quota
 from backend.services.play_stats import PlayStats
 from backend.services.queue_manager import QueueManager
 from backend.services.song_history import SongHistory
@@ -631,5 +634,183 @@ def test_session_gap_comes_from_settings(tmp_path):
         assert manager.session_gap_hours() == 9.0
         manager.settings = FakeSettings("壞掉的值")
         assert manager.session_gap_hours() == 6.0
+
+    asyncio.run(scenario())
+
+
+# --- 每人待唱上限（點歌額度）---
+
+def test_pending_limit_is_off_by_default(tmp_path):
+    """預設不限 —— 跟輪唱一樣，會改變「我點不點得了歌」的規則要講好才開。"""
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        assert manager.get_full_state()["pending_limit"] == 0
+        for song_id in ids:
+            await manager.add_song(song_id, requested_by="小明")
+        assert len(manager.queue) == len(ids) - 1   # 第一首直接上台
+
+    asyncio.run(scenario())
+
+
+def test_pending_limit_blocks_the_next_song(tmp_path):
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 2})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台，不佔額度
+        await manager.add_song(ids[1], requested_by="小明")
+        await manager.add_song(ids[2], requested_by="小明")
+        with pytest.raises(song_quota.QuotaExceeded) as excinfo:
+            await manager.add_song(ids[3], requested_by="小明")
+        assert excinfo.value.verdict["pending"] == 2
+        assert excinfo.value.verdict["limit"] == 2
+        # 擋下來的那一首完全沒有進到佇列裡
+        assert len(manager.queue) == 2
+
+    asyncio.run(scenario())
+
+
+def test_singing_a_song_frees_a_slot(tmp_path):
+    """
+    決定一那句承諾要真的成立：排滿了等一首唱完就又能點。
+
+    這是這個功能與「今晚最多幾首」最大的差別 —— 後者沒有這一條，
+    被擋下來的人今晚剩下的三個小時都不能點。
+    """
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 1})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        await manager.add_song(ids[1], requested_by="小明")   # 待唱 1/1
+        with pytest.raises(song_quota.QuotaExceeded):
+            await manager.add_song(ids[2], requested_by="小明")
+        await manager.play_next()                             # 那一首上台了
+        item = await manager.add_song(ids[2], requested_by="小明")
+        assert item["song_id"] == ids[2]
+
+    asyncio.run(scenario())
+
+
+def test_each_named_singer_has_their_own_allowance(tmp_path):
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 1})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        await manager.add_song(ids[1], requested_by="小明")   # 小明 1/1
+        await manager.add_song(ids[2], requested_by="小美")   # 小美 1/1
+        await manager.add_song(ids[3], requested_by="阿華")   # 阿華 1/1
+        assert queue_singers(manager) == ["小明", "小美", "阿華"]
+        with pytest.raises(song_quota.QuotaExceeded):
+            await manager.add_song(ids[4], requested_by="小美")
+
+    asyncio.run(scenario())
+
+
+def test_unnamed_singers_share_one_allowance(tmp_path):
+    """
+    決定二：沒取暱稱的所有人共用一份額度，取暱稱才拿得到自己的。
+
+    反過來寫（沒取名的不受限）等於公告「把暱稱刪掉就無限點」。
+    """
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 2})
+        await manager.add_song(ids[0])                        # 上台
+        await manager.add_song(ids[1])
+        await manager.add_song(ids[2])                        # 這一桶滿了
+        with pytest.raises(song_quota.QuotaExceeded):
+            await manager.add_song(ids[3])
+        # 取個暱稱就有屬於自己的額度
+        item = await manager.add_song(ids[3], requested_by="小明")
+        assert item["requested_by"] == "小明"
+
+    asyncio.run(scenario())
+
+
+def test_priority_bypasses_the_limit_but_still_consumes_it(tmp_path):
+    """
+    插播是現場按下去的決定，機器的規則不該推翻它；但它照樣算進待唱數，
+    否則它就變成「繞過額度」的那顆按鈕（而那顆按鈕在每一張歌卡上）。
+    """
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 1})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        await manager.add_song(ids[1], requested_by="小明")   # 待唱 1/1
+        inserted = await manager.add_song(ids[2], requested_by="小明", priority=True)
+        assert manager.queue[0]["queue_id"] == inserted["queue_id"]
+        # 插播進去之後他有 2 首待唱，普通點歌照樣被擋（而且是被擋得更早）
+        assert manager.quota_of("小明")["pending"] == 2
+        with pytest.raises(song_quota.QuotaExceeded):
+            await manager.add_song(ids[3], requested_by="小明")
+
+    asyncio.run(scenario())
+
+
+def test_lowering_the_limit_never_removes_queued_songs(tmp_path):
+    """
+    決定四：調低上限（或中途才打開）不動任何已經排好的歌。
+
+    「超過的從後面砍掉」會是這個系統最嚴重的一次背叛：有人動了一個設定，
+    別人排好的歌就消失了，而且畫面上看不出是誰、為什麼。
+    """
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        for song_id in ids[1:5]:
+            await manager.add_song(song_id, requested_by="小明")
+        before = [item["queue_id"] for item in manager.queue]
+        await manager.update_controls({"pending_limit": 1})
+        assert [item["queue_id"] for item in manager.queue] == before
+        # 只是在降回上限以下之前點不了新的
+        with pytest.raises(song_quota.QuotaExceeded):
+            await manager.add_song(ids[5], requested_by="小明")
+
+    asyncio.run(scenario())
+
+
+def test_pending_limit_is_clamped_like_other_controls(tmp_path):
+    async def scenario():
+        manager, _ = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": -3})
+        assert manager.pending_limit == 0
+        await manager.update_controls({"pending_limit": 999})
+        assert manager.pending_limit == song_quota.MAX_PENDING_LIMIT
+        await manager.update_controls({"pending_limit": "壞掉的值"})
+        assert manager.pending_limit == 0
+
+    asyncio.run(scenario())
+
+
+def test_state_carries_quota_usage(tmp_path):
+    """畫面上那一行「小明 2/2 滿」的資料來源。"""
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 2})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台
+        await manager.add_song(ids[1], requested_by="小明")
+        await manager.add_song(ids[2], requested_by="小明")
+        await manager.add_song(ids[3], requested_by="小美")
+        quota = manager.get_full_state()["quota"]
+        assert quota["limit"] == 2
+        assert [(s["name"], s["pending"], s["full"]) for s in quota["singers"]] == [
+            ("小明", 2, True), ("小美", 1, False)]
+
+    asyncio.run(scenario())
+
+
+def test_quota_of_reports_standing_after_the_add(tmp_path):
+    """
+    quota_of 回報的是「現在站在哪」，所以點完第一首（上限 3）剩 2，不是 1 ——
+    使用者會拿這句話跟畫面上那一行「1/3」對照，對不上就不會再相信任何一邊。
+    """
+    async def scenario():
+        manager, ids = rotation_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 3})
+        await manager.add_song(ids[0], requested_by="小明")   # 上台，不佔額度
+        assert manager.quota_of("小明") == {
+            "limit": 3, "pending": 0, "remaining": 3, "full": False,
+            "name": "小明", "anonymous": False}
+        await manager.add_song(ids[1], requested_by="小明")
+        assert manager.quota_of("小明")["remaining"] == 2
 
     asyncio.run(scenario())

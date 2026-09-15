@@ -18,6 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# 待唱上限的天花板只有一份（設定頁與控制參數共用）。song_quota 是純邏輯、
+# 不反過來 import 設定，所以這個方向不會有循環。
+from backend.services.song_quota import MAX_PENDING_LIMIT
+
 logger = logging.getLogger("KaraTube.Settings")
 
 WHISPER_MODEL_CHOICES = ("tiny", "base", "small", "medium", "large-v2", "large-v3")
@@ -55,6 +59,13 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 公平輪唱（排麥輪序）。預設關著：這是一條會改變「我點的歌排在哪」的規則，
     # 開著而沒人講好的話，使用者只會覺得佇列自己亂跳。包廂講好了再開。
     "default_rotation_enabled": {"type": "bool", "default": False},
+    # 每人待唱上限（點歌額度）。0 = 不限，也是預設值 —— 跟輪唱同一個理由：
+    # 這是一條會改變「我點不點得了歌」的規則，包廂要先講好才開，
+    # 預設開著的話第一個被擋下來的人只會覺得點歌壞了。
+    # 上限算的是「同時有幾首在等」而不是「今晚總共唱幾首」，所以排滿了只要等
+    # 其中一首唱完就又能點（見 backend/services/song_quota.py 決定一）。
+    "default_pending_limit": {"type": "int", "default": 0,
+                              "min": 0, "max": MAX_PENDING_LIMIT},
 
     # --- 和聲（雙聲部）---
     # 預設關著：和聲是「加了才有」的效果，而且它跟主唱一樣要外放才聽得到，
@@ -184,6 +195,7 @@ CONTROL_DEFAULT_KEYS = {
     "default_sing_mode": "sing_mode",
     "default_show_pitch": "show_pitch",
     "default_rotation_enabled": "rotation_enabled",
+    "default_pending_limit": "pending_limit",
 }
 
 

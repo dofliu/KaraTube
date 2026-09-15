@@ -366,7 +366,17 @@ class KaraTubeAPI {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...songData, priority })
     });
-    return await res.json();
+    const body = await res.json().catch(() => ({}));
+    // 409 = 點歌額度滿了。刻意**不丟例外**：這不是錯誤，是規則生效了，
+    // 而規則生效要用「說明」的語氣講（見 quota-view.js），不是紅字的失敗訊息。
+    // 丟例外的話呼叫端只拿得到 e.message，那一串結論（誰、幾首、何時可以再點）
+    // 就得再從字串裡剖回來。
+    if (res.status === 409) {
+      const detail = (body && body.detail) || {};
+      return { status: 'rejected', reason: detail.error || 'rejected',
+               quota: detail.quota || null };
+    }
+    return body;
   }
 
   async reorderQueue(fromIdx, toIdx) {

@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from backend.services import song_quota
 from backend.services.settings import (
     SETTINGS_SPEC,
     SystemSettings,
@@ -214,3 +215,16 @@ def test_ambient_theme_choices_match_the_frontend():
     js_themes = set(re.findall(r"^  (\w+): \{", block.group(1), re.M))
 
     assert js_themes == set(AMBIENT_THEME_CHOICES) - {"auto"}
+
+
+def test_pending_limit_defaults_to_unlimited_and_reaches_the_queue(settings):
+    """
+    每人待唱上限：預設 0＝不限（跟輪唱一樣，會改變「我點不點得了歌」的規則
+    要包廂講好才開），而且要透過控制欄位真的送到 QueueManager。
+    """
+    assert settings.get("default_pending_limit") == 0
+    settings.update({"default_pending_limit": 3})
+    assert settings.control_defaults()["pending_limit"] == 3
+    # 天花板與 song_quota 共用同一個常數，不是各寫一份
+    settings.update({"default_pending_limit": 999})
+    assert settings.get("default_pending_limit") == song_quota.MAX_PENDING_LIMIT

@@ -7,6 +7,7 @@ from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
 from backend.services.song_history import SongHistory
 from backend.services import rotation as rotation_rules
+from backend.services import room_timer as room_rules
 from backend.services import song_quota
 # 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
 from backend.services.settings import HARMONY_STYLE_CHOICES
@@ -33,7 +34,8 @@ def coerce_position(value: Any) -> Optional[float]:
 class QueueManager:
     def __init__(self, song_processor: SongProcessor, storage: SongStorage,
                  broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None,
-                 song_history: Optional[SongHistory] = None, settings: Optional[Any] = None):
+                 song_history: Optional[SongHistory] = None, settings: Optional[Any] = None,
+                 room: Optional[Any] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
@@ -95,6 +97,15 @@ class QueueManager:
         # 輪唱管順序、額度管量，是獨立的兩條規則（先到先唱的包廂也可能只想要
         # 「佇列不要被一個人塞滿」）。預設不限，見 backend/services/song_quota.py。
         self.pending_limit: int = song_quota.DEFAULT_PENDING_LIMIT
+        # 包廂計時（歡唱時間）。計時本身在 room_timer，這裡只負責「時間到之後
+        # 不再播下一首」那一個動作 —— 它是唯一一件計時管不到、但非它不可的事
+        # （見 backend/services/room_timer.py 決定一）。
+        # 沒給就開一個只活在記憶體裡的（測試與舊呼叫端）。
+        self.room = room if room is not None else room_rules.RoomTimer()
+        # 有人按過「結束計時」。自動開錶（設定頁的 room_timer_autostart）只在
+        # 開機後的第一首歌生效一次，按過結束之後就不再自動把錶打開 ——
+        # 見 _autostart_room_session。
+        self._room_autostart_off = False
 
     def set_broadcast_callback(self, cb: Callable):
         self.broadcast_cb = cb
@@ -142,7 +153,145 @@ class QueueManager:
             "pending_limit": self.pending_limit,
             # 額度用量跟輪次一樣是算出來的：有人被刪、有人上台，剩下的全都要跟著變。
             "quota": song_quota.quota_summary(self.queue, self.pending_limit),
+            # 包廂計時。跟著每一次狀態廣播一起送，畫面才不必自己去輪詢一支
+            # 「還剩多久」的端點 —— 而且倒數在點歌台與舞台上要是同一個數字。
+            # 秒數只會在狀態變動時更新，每一秒的倒數由畫面自己跑（見 room-view.js）：
+            # 為了一個倒數而每秒廣播一次整份狀態，是拿包廂的網路換一個時鐘。
+            "room": self.room_state(),
         }
+
+    # --- 包廂計時 ---
+
+    def room_policy(self) -> Dict[str, Any]:
+        """設定頁定下的計時規則。沒有設定物件（測試、舊呼叫端）就是「沒開」。"""
+        if self.settings and hasattr(self.settings, "room_policy"):
+            return self.settings.room_policy()
+        return {"enabled": False, "minutes": room_rules.DEFAULT_SESSION_MINUTES,
+                "autostart": False, "warn_minutes": room_rules.DEFAULT_WARN_MINUTES,
+                "last_call_minutes": room_rules.DEFAULT_LAST_CALL_MINUTES,
+                "expire_action": room_rules.DEFAULT_EXPIRE_ACTION,
+                "extend_minutes": room_rules.DEFAULT_EXTEND_MINUTES}
+
+    def room_state(self) -> Dict[str, Any]:
+        """
+        廣播給所有裝置的計時狀態 = 計時器的快照 + 現在生效的規則。
+
+        規則跟著快照一起送，是因為畫面上那句話需要它們：「時間到會讓你唱完
+        這一首」與「只是提醒、不會停」是兩句完全不同的話，而決定是哪一句的
+        是設定，不是計時器。
+        """
+        policy = self.room_policy()
+        snap = self.room.snapshot()
+        return {
+            **snap,
+            "enabled": policy["enabled"],
+            "expire_action": policy["expire_action"],
+            "extend_minutes": policy["extend_minutes"],
+            "default_minutes": policy["minutes"],
+            "warn_minutes": policy["warn_minutes"],
+            "last_call_minutes": policy["last_call_minutes"],
+        }
+
+    def room_stops_playback(self) -> bool:
+        """
+        時間到了、而且這台機器的規則是「到點就收」。
+
+        只有這一個條件成立時，唱完的那一首才是今晚的最後一首。
+        計時關著、或規則是「只提醒」時，這裡永遠回 False —— 一個沒有人打開的
+        功能不該有任何機會去停掉別人的歌。
+        """
+        policy = self.room_policy()
+        if not policy["enabled"] or policy["expire_action"] != "finish_song":
+            return False
+        return bool(self.room.snapshot()["expired"])
+
+    async def _halt_for_room_time(self):
+        """
+        時間到，停在這裡。
+
+        佇列一首都不刪（見 room_timer 決定二）：停下來的是播放，不是資料，
+        續時之後接著唱的就是本來排好的那幾首。
+        """
+        if self.current_song:
+            self.history.append(self.current_song)
+        self.current_song = None
+        self.is_playing = False
+        self.room.mark_halted(True)
+        await self.broadcast_state()
+
+    def room_milestones(self):
+        policy = self.room_policy()
+        return room_rules.default_milestones(policy["warn_minutes"],
+                                             policy["last_call_minutes"])
+
+    async def tick_room(self) -> List[Dict[str, Any]]:
+        """
+        時鐘又走了一格（由伺服器的背景迴圈定期呼叫）。
+
+        回傳這一刻剛跨過的提醒，讓呼叫端廣播出去。順便處理「時間到的時候
+        剛好沒有歌在唱」這一種情形 —— 那時候沒有「唱完這一首」可以等，
+        機器直接停在散場畫面。
+        """
+        policy = self.room_policy()
+        if not policy["enabled"]:
+            return []
+        alerts = self.room.tick(self.room_milestones())
+        # 歌與歌之間到點：沒有正在唱的那一首可以讓它唱完，直接收場
+        if (self.current_song is None and self.room_stops_playback()
+                and not self.room.snapshot()["halted"]):
+            self.room.mark_halted(True)
+            await self.broadcast_state()
+        elif alerts:
+            await self.broadcast_state()
+        return alerts
+
+    async def start_room_session(self, minutes: Any = None) -> Dict[str, Any]:
+        """開一場（歸零重算）。沒指定長度就用設定頁的預設值。"""
+        policy = self.room_policy()
+        self.room.start(policy["minutes"] if minutes is None else minutes)
+        self._room_autostart_off = False
+        await self.broadcast_state()
+        return self.room_state()
+
+    async def extend_room_session(self, minutes: Any = None) -> Dict[str, Any]:
+        """
+        續時。停播中的話順便接回去唱下一首 ——
+        按了「續時」還得再按一次播放的話，那顆續時鍵看起來就沒有反應。
+        """
+        policy = self.room_policy()
+        self.room.extend(policy["extend_minutes"] if minutes is None else minutes)
+        resumed = None
+        if self.current_song is None and self.queue:
+            resumed = await self.play_next()
+        if resumed is None:
+            await self.broadcast_state()
+        return self.room_state()
+
+    async def pause_room_session(self) -> Dict[str, Any]:
+        """停錶（中場休息）。刻意不順便暫停播放：停錶是「不要算我的時間」，
+        跟「把歌停下來」是兩件事，而且中場休息時多半還放著音樂。"""
+        self.room.pause()
+        await self.broadcast_state()
+        return self.room_state()
+
+    async def resume_room_session(self) -> Dict[str, Any]:
+        self.room.resume()
+        await self.broadcast_state()
+        return self.room_state()
+
+    async def stop_room_session(self) -> Dict[str, Any]:
+        """
+        結束計時。停播旗標一起解除 —— 這顆鍵的意思是「不要再管時間了」，
+        結果卻讓機器停在散場畫面不肯播的話，沒有人找得到怎麼救回來。
+        """
+        self.room.stop()
+        self._room_autostart_off = True
+        resumed = None
+        if self.current_song is None and self.queue:
+            resumed = await self.play_next()
+        if resumed is None:
+            await self.broadcast_state()
+        return self.room_state()
 
     async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "",
                        priority: bool = False, requested_by: str = "") -> Dict[str, Any]:
@@ -152,7 +301,16 @@ class QueueManager:
         點歌額度滿了就丟 song_quota.QuotaExceeded —— 在解析 song_id、查快取、
         建 queue item **之前**先擋。擋在後面的話會先去 yt-dlp 抓一次 metadata，
         等於為了一首不會收的歌打一次網路（而且那一秒鐘伺服器正在放歌）。
+
+        歡唱時間到了則丟 room_timer.RoomTimeUp。這一道擋在額度前面，因為
+        「今晚結束了」蓋過「你排太多首」—— 兩個理由同時成立時，講後者
+        會讓人以為刪掉一首就能再點（然後他刪了，再點，再被擋一次）。
         """
+        # 時間到之後點的歌永遠不會播（除非續時），收下來只是讓佇列多一首
+        # 沒有人會唱到的歌。插播（⚡）也一樣擋 —— 它繞得過額度那種「包廂內部的
+        # 公平規則」，但繞不過「今晚已經結束」這件事實。
+        if self.room_stops_playback():
+            raise room_rules.RoomTimeUp(self.room_state())
         # 多人包廂：這首是誰點的。長度截 24 字，防手機端惡搞塞爆佇列版面。
         # 額度與輪序都認這個收斂過的值，不是原始字串。
         requested_by = str(requested_by or "").strip()[:24]
@@ -266,6 +424,12 @@ class QueueManager:
 
     async def play_next(self) -> Optional[Dict[str, Any]]:
         """Advance queue and play the next ready song."""
+        # 歡唱時間到了。剛唱完的那一首就是今晚的最後一首 —— 停的是下一首，
+        # 不是正在唱的那一首（見 backend/services/room_timer.py 決定一）。
+        if self.room_stops_playback():
+            await self._halt_for_room_time()
+            return None
+
         if not self.queue:
             self.current_song = None
             self.is_playing = False
@@ -283,6 +447,10 @@ class QueueManager:
             if self.current_song:
                 self.history.append(self.current_song)
             self.current_song = next_item
+            # 第一首歌開始播＝這一場開始了。自動開錶是刻意的：要靠人記得按
+            # 「開始計時」的話，最常見的結局是三小時後才有人想起來沒按 ——
+            # 那時候這個功能等於沒開，而且已經補不回來了。
+            self._autostart_room_session()
             # 上一首圈起來的練唱區間對這一首沒有意義，換人上台就歸零
             self.clear_loop()
             self.is_playing = True
@@ -299,6 +467,21 @@ class QueueManager:
         else:
             logger.info("Next song in queue is not ready yet.")
             return None
+
+    def _autostart_room_session(self):
+        """
+        設定頁開了計時、也開了自動開錶，而且還沒有一場在跑 —— 那就從這一首開始算。
+
+        按過「結束計時」之後就不再自動起錶（`_room_autostart_off`）。那顆鍵的
+        意思是「這桌不要計時了」，如果下一首歌又把錶打開、倒數重新出現在舞台上，
+        那顆鍵看起來就像沒有反應 —— 而使用者的下一個動作是再按一次。
+        """
+        policy = self.room_policy()
+        if not policy["enabled"] or not policy["autostart"] or self._room_autostart_off:
+            return
+        if self.room.snapshot()["active"]:
+            return
+        self.room.start(policy["minutes"])
 
     async def skip_current(self):
         """Cut / Skip currently playing song."""

@@ -98,6 +98,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const micMeterRowB = document.getElementById("micMeterRowB");
   const ambientCanvas = document.getElementById("ambientCanvas");
   const ambientArt = document.getElementById("ambientArt");
+  // 包廂計時（歡唱時間）
+  const roomBadge = document.getElementById("roomBadge");
+  const roomFinale = document.getElementById("roomFinale");
+  const roomFinaleTitle = document.getElementById("roomFinaleTitle");
+  const roomFinaleDetail = document.getElementById("roomFinaleDetail");
 
   // Initializing Engines
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
@@ -1376,12 +1381,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // --- 字幕同步微調 ---
-  function showToast(html) {
+  function showToast(html, ms = 2600) {
     if (!syncToast) return;
     syncToast.innerHTML = html;
     syncToast.style.display = "block";
     if (syncToastTimer) clearTimeout(syncToastTimer);
-    syncToastTimer = setTimeout(() => { syncToast.style.display = "none"; }, 2600);
+    syncToastTimer = setTimeout(() => { syncToast.style.display = "none"; },
+                                Math.max(1000, Number(ms) || 2600));
   }
 
   function showSyncToast() {
@@ -1594,8 +1600,55 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // --- 包廂計時（歡唱時間）---
+  // 舞台只顯示兩件事：最後十分鐘的倒數，以及散場畫面。中間那兩小時什麼都不顯示 ——
+  // 舞台上多一個常駐的東西，就少一塊給歌詞的地方。
+  let roomState = null;
+  let roomStateAt = 0;
+  let roomPendingCount = 0;
+
+  function paintRoom() {
+    if (!roomBadge) return;
+    // 伺服器不會每秒推一次，所以倒數是本地算的（見 room-view.js 開頭）
+    const since = roomStateAt ? (Date.now() - roomStateAt) / 1000 : 0;
+    const text = window.RoomView.roomStageBadge(roomState, since);
+    roomBadge.textContent = text;
+    roomBadge.style.display = text ? "block" : "none";
+    roomBadge.classList.toggle("is-expired", !!(roomState && roomState.expired));
+
+    // 散場畫面只在「時間到、而且最後一首也唱完了」時蓋上來。
+    // 只有時間到（歌還在唱）時不蓋 —— 那一首是說好要讓他唱完的。
+    const halted = !!(roomState && roomState.enabled && roomState.halted);
+    if (halted) {
+      const lines = window.RoomView.roomFinaleLines(roomState, roomPendingCount);
+      roomFinaleTitle.textContent = lines.title;
+      roomFinaleDetail.textContent = lines.detail;
+    }
+    roomFinale.classList.toggle("show", halted);
+  }
+
+  setInterval(paintRoom, 1000);
+
+  window.api.on("ROOM_ALERT", (msg) => {
+    const data = (msg && msg.data) || {};
+    if (data.room) {
+      roomState = data.room;
+      roomStateAt = Date.now();
+    }
+    const note = window.RoomView.roomAlertNote(data, data.room || roomState);
+    if (note) showToast(`⏱️ ${note}`, 9000);
+    paintRoom();
+  });
+
   function handleStateUpdate(state) {
     const song = state.current_song;
+
+    if (state.room) {
+      roomState = state.room;
+      roomStateAt = Date.now();
+    }
+    roomPendingCount = (state.queue || []).length;
+    paintRoom();
 
     if (state.queue && state.queue.length > 0) {
       nextSongToast.innerHTML = `下一首：<span>${state.queue[0].title}</span>`;

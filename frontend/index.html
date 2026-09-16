@@ -14,6 +14,17 @@
       <span style="font-size: 11px; background: rgba(0,240,255,0.15); color: var(--accent-cyan); padding: 2px 8px; border-radius: 20px; font-weight: 700;">PRO KTV</span>
     </div>
     <div class="header-actions">
+      <!-- 包廂計時（歡唱時間）。放在最上排而不是收進系統設定頁裡：這是整台機器上
+           唯一一個「所有人都要看得到、而且看錯就會吵起來」的數字。
+           沒開計時（系統設定頁的開關）時整組不出現，見 controller.js renderRoom。 -->
+      <span class="room-timer" id="roomTimer" style="display: none;">
+        <button class="btn btn-secondary room-clock" id="roomClockBtn"
+                title="歡唱時間。還沒開始計時就按一下開始；計時中按一下可以結束計時">⏱️ 開始計時</button>
+        <button class="btn btn-secondary room-step" id="roomExtendBtn"
+                title="續時：加時間，不是重開一場。時間到停住時按它會接著播下一首">＋時間</button>
+        <button class="btn btn-secondary room-step" id="roomPauseBtn"
+                title="暫停計時（中場休息、餐點來了）。播放不受影響">⏸️</button>
+      </span>
       <button class="btn btn-secondary" id="nickBtn" title="設定顯示在佇列上的暱稱，讓大家知道是誰點的歌">
         👤 <span id="nickText">設定暱稱</span>
       </button>
@@ -93,6 +104,11 @@
            先到先唱的包廂也可能只想要「每個人不要一次排太多」。 -->
       <div id="quotaBar" class="rotation-bar quota-bar" style="display: none;">
         <span id="quotaLine" class="rotation-line"></span>
+      </div>
+      <!-- 歡唱時間。跟佇列擺在一起是刻意的：「還剩多久」與「還有幾首要唱」
+           是同一個問題的兩半，分開放的話沒有人會把它們對起來看。 -->
+      <div id="roomBar" class="rotation-bar room-bar" style="display: none;">
+        <span id="roomLine" class="rotation-line"></span>
       </div>
       <div id="queueList" class="queue-list">
         <!-- Dynamic Queue Items -->
@@ -455,6 +471,10 @@
   <!-- 每人待唱上限的說法（「已經排了 3 首，等第 1 位那首唱完」）。這是系統裡
        唯一一個對使用者說「不行」的地方，說不清楚使用者就會再按一次。 -->
   <script src="/js/quota-view.js"></script>
+  <!-- 包廂計時的說法（倒數、提醒、「時間到會讓這一首唱完」）。舞台端載的是
+       同一支：包廂裡只能有一個倒數，兩邊各算一次就會有兩個數字，
+       而大家會相信對自己有利的那一個。 -->
+  <script src="/js/room-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

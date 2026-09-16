@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from backend.services import song_quota
+from backend.services import room_timer, song_quota
 from backend.services.settings import (
     SETTINGS_SPEC,
     SystemSettings,
@@ -228,3 +228,30 @@ def test_pending_limit_defaults_to_unlimited_and_reaches_the_queue(settings):
     # 天花板與 song_quota 共用同一個常數，不是各寫一份
     settings.update({"default_pending_limit": 999})
     assert settings.get("default_pending_limit") == song_quota.MAX_PENDING_LIMIT
+
+
+def test_room_timer_defaults_to_off_and_finishes_the_current_song(settings):
+    """
+    包廂計時預設關著（家裡唱歌沒有人在算時間），而一旦打開，時間到的預設行為
+    是「讓正在唱的那一首唱完」。
+
+    而且**沒有**「立刻停掉這一首」這個選項：那正是這個功能要消滅的畫面，
+    把它做成一個選項等於把它留在那裡等人選到。
+    """
+    assert settings.get("room_timer_enabled") is False
+    assert settings.get("room_timer_expire_action") == "finish_song"
+    assert coerce_value("room_timer_expire_action", "stop_now") is None
+
+    policy = settings.room_policy()
+    assert policy["enabled"] is False
+    assert policy["minutes"] == settings.get("room_timer_minutes")
+    assert policy["expire_action"] == "finish_song"
+
+
+def test_room_timer_values_are_clamped(settings):
+    result = settings.update({"room_timer_minutes": 1, "room_timer_extend_minutes": 9999,
+                              "room_timer_warn_minutes": -5})
+    assert result["room_timer_minutes"] == room_timer.MIN_SESSION_MINUTES
+    assert result["room_timer_extend_minutes"] == room_timer.MAX_EXTEND_MINUTES
+    # 0 = 不提醒那一次，是合法值而不是要被夾到 1
+    assert result["room_timer_warn_minutes"] == 0

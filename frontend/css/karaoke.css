@@ -1422,3 +1422,80 @@ body.duet-mode .score-card {
 
 .trend-row:not(.is-dim) .trend-row-label,
 .trend-row:not(.is-dim) .trend-row-value { color: var(--text-main); }
+
+/* --- 包廂計時（歡唱時間） --- */
+
+/* 倒數徽章。排在 HUD 那一排的中間（歌名與分數之間），不是絕對定位在角落：
+   角落那兩塊已經有東西了，絕對定位遲早會疊到其中一個 —— 而且那件事只有在
+   包廂裡、只有在最後十分鐘才看得到。flex 會把它們推開，不會互相蓋住。
+   align-self 讓它跟兩邊的卡片切齊上緣。 */
+.room-badge {
+  align-self: flex-start;
+  margin: 2px 16px 0;
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  font-size: 15px;
+  font-weight: 700;
+  /* 秒數每跳一次就換一次寬度的話，整顆徽章會抖 —— 而它一秒抖一次 */
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-yellow);
+  border-left: 3px solid var(--accent-yellow);
+}
+
+/* 時間到之後改口說「唱完這一首」。慢慢的呼吸，不是閃爍 ——
+   這個畫面上正好有人在唱最後一首歌，不要把它變成火警。 */
+.room-badge.is-expired {
+  color: #fff;
+  background: rgba(255, 0, 127, 0.28);
+  border-left-color: var(--accent-pink);
+  animation: roomBadgePulse 2.4s ease-in-out infinite;
+}
+
+@keyframes roomBadgePulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 0, 127, 0); }
+  50% { box-shadow: 0 0 22px rgba(255, 0, 127, 0.6); }
+}
+
+/* 散場畫面。整片蓋住，因為這時候底下沒有歌 —— 留著黑畫面的話，
+   包廂裡的人會以為機器當掉了（然後開始亂按）。
+
+   z-index 24 是夾在片頭卡（18）與結算畫面（60）之間：最後一首唱完時
+   結算畫面還要亮九秒，那是今晚最後一位演唱者的分數，不能被散場畫面蓋掉
+   （伺服器也是等結算跑完收到 SONG_ENDED 才真的停住）。 */
+.room-finale {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  text-align: center;
+  padding: 0 8vw;
+  background: radial-gradient(circle at 50% 45%, rgba(20, 8, 40, 0.86), rgba(4, 6, 18, 0.96));
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease;
+}
+
+.room-finale.show { opacity: 1; }
+
+.room-finale-title {
+  font-size: 60px;
+  font-weight: 900;
+  letter-spacing: 6px;
+  color: #fff;
+  text-shadow: 0 0 40px rgba(255, 0, 127, 0.55);
+}
+
+.room-finale-detail {
+  font-size: 22px;
+  line-height: 1.7;
+  max-width: 46ch;
+  color: var(--text-muted);
+}

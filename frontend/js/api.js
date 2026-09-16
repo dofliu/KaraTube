@@ -371,12 +371,55 @@ class KaraTubeAPI {
     // 而規則生效要用「說明」的語氣講（見 quota-view.js），不是紅字的失敗訊息。
     // 丟例外的話呼叫端只拿得到 e.message，那一串結論（誰、幾首、何時可以再點）
     // 就得再從字串裡剖回來。
+    // 409 = 規則擋下來了（點歌額度滿了，或是歡唱時間已經結束）。
+    // 刻意**不丟例外**：這不是錯誤，是規則生效了，而規則生效要用「說明」的
+    // 語氣講（見 quota-view.js / room-view.js），不是紅字的失敗訊息。
+    // 丟例外的話呼叫端只拿得到 e.message，那一串結論（誰、幾首、何時可以再點／
+    // 怎麼續時）就得再從字串裡剖回來。
     if (res.status === 409) {
       const detail = (body && body.detail) || {};
       return { status: 'rejected', reason: detail.error || 'rejected',
-               quota: detail.quota || null };
+               quota: detail.quota || null, room: detail.room || null };
     }
     return body;
+  }
+
+  // --- 包廂計時（歡唱時間）---
+  // 每一支都回傳最新的計時狀態，畫面不必再問一次；同一份資料也會跟著
+  // STATE_UPDATE 廣播給包廂裡所有裝置（倒數要是同一個數字）。
+
+  async getRoomTimer() {
+    const res = await fetch(`${this.baseUrl}/api/room`);
+    return await res.json();
+  }
+
+  async startRoomTimer(minutes) {
+    return await this._roomAction('start', minutes);
+  }
+
+  async extendRoomTimer(minutes) {
+    return await this._roomAction('extend', minutes);
+  }
+
+  async pauseRoomTimer() {
+    return await this._roomAction('pause');
+  }
+
+  async resumeRoomTimer() {
+    return await this._roomAction('resume');
+  }
+
+  async stopRoomTimer() {
+    return await this._roomAction('stop');
+  }
+
+  async _roomAction(action, minutes) {
+    const res = await fetch(`${this.baseUrl}/api/room/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minutes === undefined || minutes === null ? {} : { minutes })
+    });
+    return await res.json();
   }
 
   async reorderQueue(fromIdx, toIdx) {

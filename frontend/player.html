@@ -39,6 +39,14 @@
         <div id="stageArtist" class="stage-song-artist">請在點歌台搜尋並點播歌曲</div>
       </div>
 
+      <!-- 歡唱時間倒數：只在最後十分鐘出現（見 room-view.js roomStageBadge）。
+           從頭掛到尾的話它會變成包廂裡最亮的那個東西，而且沒有人需要在還剩
+           兩小時的時候盯著秒數看。
+           擺在 HUD 這一排的中間、而不是絕對定位在角落：角落的那兩塊已經是
+           歌名與分數，絕對定位遲早會疊到其中一個（而且只有在包廂裡才看得到）。
+           排進 flex 之後版面只會把它們推開，不會互相蓋住。 -->
+      <div id="roomBadge" class="room-badge" style="display: none;"></div>
+
       <div class="stage-hud">
         <div class="score-card">
           <div class="score-label">KTV SCORE</div>
@@ -105,6 +113,14 @@
     <div id="recordingBadge" class="recording-badge" style="display: none;">
       <span class="recording-dot"></span>
       <span>錄音中</span>
+    </div>
+
+    <!-- 散場畫面：時間到、而且最後一首也唱完了。這個畫面存在的理由是
+         「不要讓最後一秒是一片黑」—— 第二行回答所有人的下一個念頭：
+         「那我排的歌呢」。 -->
+    <div id="roomFinale" class="room-finale">
+      <div id="roomFinaleTitle" class="room-finale-title">🎤 歡唱時間結束</div>
+      <div id="roomFinaleDetail" class="room-finale-detail"></div>
     </div>
 
     <!-- 導唱片頭卡：商用 KTV 的「演唱者：XXX」開場卡，前奏時亮 8 秒 -->
@@ -239,6 +255,9 @@
        take-recorder.js 是真的去操作 MediaRecorder 的那一支，必須排在它後面。 -->
   <script src="/js/take-rules.js"></script>
   <script src="/js/take-recorder.js"></script>
+  <!-- 包廂計時的說法（點歌台載的是同一支）：倒數只能有一個數字，
+       兩邊各算一次就會有兩個，而大家會相信對自己有利的那一個。 -->
+  <script src="/js/room-view.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

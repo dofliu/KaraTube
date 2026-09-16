@@ -1131,6 +1131,56 @@ input[type="range"] {
   border-color: rgba(255, 222, 89, 0.25);
 }
 
+/* --- 包廂計時（歡唱時間） --- */
+
+.room-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.room-clock,
+.room-step {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+/* 倒數要等寬，否則秒數每跳一次整排按鈕就抖一下（而它一秒抖一次） */
+.room-clock {
+  font-variant-numeric: tabular-nums;
+  min-width: 96px;
+  text-align: center;
+}
+
+/* 最後十分鐘：黃色。還不是壞消息，但該開始決定要不要續時了 */
+.room-clock.room-soon {
+  color: #0b1020;
+  background: var(--accent-yellow);
+  border-color: transparent;
+}
+
+/* 時間到：粉紅色 + 慢慢的呼吸。不用紅色閃爍 —— 包廂不是在跳火警，
+   而且這個畫面上正好有人在唱最後一首歌。 */
+.room-clock.room-expired {
+  color: #fff;
+  background: var(--accent-pink);
+  border-color: transparent;
+  animation: roomPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes roomPulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 0, 127, 0); }
+  50% { box-shadow: 0 0 14px rgba(255, 0, 127, 0.75); }
+}
+
+.room-bar {
+  background: rgba(157, 78, 221, 0.10);
+  border-color: rgba(157, 78, 221, 0.30);
+}
+
 /* 佇列上的「第 N 輪」小標。跟「誰點的」是同一組資訊，所以擺在一起，
    顏色分開（一個是身分、一個是順序）。 */
 .queue-round {

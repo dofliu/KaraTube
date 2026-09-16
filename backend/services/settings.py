@@ -21,6 +21,13 @@ from typing import Any, Dict, Optional
 # 待唱上限的天花板只有一份（設定頁與控制參數共用）。song_quota 是純邏輯、
 # 不反過來 import 設定，所以這個方向不會有循環。
 from backend.services.song_quota import MAX_PENDING_LIMIT
+# 包廂計時的上下限與「時間到怎麼辦」的選項同理：規則寫在 room_timer，
+# 設定頁只是把它們列出來讓人調。
+from backend.services.room_timer import (DEFAULT_EXPIRE_ACTION, DEFAULT_EXTEND_MINUTES,
+                                         DEFAULT_LAST_CALL_MINUTES, DEFAULT_SESSION_MINUTES,
+                                         DEFAULT_WARN_MINUTES, EXPIRE_ACTION_CHOICES,
+                                         MAX_EXTEND_MINUTES, MAX_SESSION_MINUTES,
+                                         MIN_EXTEND_MINUTES, MIN_SESSION_MINUTES)
 
 logger = logging.getLogger("KaraTube.Settings")
 
@@ -170,6 +177,28 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 下載幾次就失效。0 = 不限（時效還是在）。只算明確的下載，不算播放。
     "recording_share_max_downloads": {"type": "int", "default": 0, "min": 0, "max": 999},
 
+    # --- 包廂計時（歡唱時間）---
+    # 預設關著：家裡唱歌沒有人在算時間，開著只會多一條沒有人要的倒數。
+    # 開了之後真正重要的是「時間到怎麼辦」—— 預設是讓正在唱的那一首唱完再停，
+    # 而**沒有**「立刻停掉這一首」這個選項（見 backend/services/room_timer.py 決定一）。
+    "room_timer_enabled": {"type": "bool", "default": False},
+    "room_timer_minutes": {"type": "int", "default": DEFAULT_SESSION_MINUTES,
+                           "min": MIN_SESSION_MINUTES, "max": MAX_SESSION_MINUTES},
+    # 第一首歌開始播的時候自動開錶。不自動開的話，最常見的結局是三小時後
+    # 才有人想起來沒按開始 —— 那時候這個功能等於沒開。
+    "room_timer_autostart": {"type": "bool", "default": True},
+    # 提醒門檻（分鐘，0 = 不提醒那一次）。兩次就夠：一次讓人來得及決定要不要
+    # 續時，一次是最後召集。再多就是雜訊，而雜訊會把真正重要的那一次一起淹掉。
+    "room_timer_warn_minutes": {"type": "int", "default": DEFAULT_WARN_MINUTES,
+                                "min": 0, "max": 120},
+    "room_timer_last_call_minutes": {"type": "int", "default": DEFAULT_LAST_CALL_MINUTES,
+                                     "min": 0, "max": 60},
+    "room_timer_expire_action": {"type": "choice", "default": DEFAULT_EXPIRE_ACTION,
+                                 "choices": EXPIRE_ACTION_CHOICES},
+    # 「續時」按一下加多久
+    "room_timer_extend_minutes": {"type": "int", "default": DEFAULT_EXTEND_MINUTES,
+                                  "min": MIN_EXTEND_MINUTES, "max": MAX_EXTEND_MINUTES},
+
     # --- 舞台演出 ---
     "intro_card_enabled": {"type": "bool", "default": True},
     "intro_card_seconds": {"type": "float", "default": 8.0, "min": 2.0, "max": 20.0},
@@ -315,6 +344,25 @@ class SystemSettings:
         """錄音配額（bytes）。設定頁給的是 MB，這裡換算成 bytes。"""
         mb = int(self.get("recording_max_mb", 512) or 0)
         return mb * 1024 * 1024
+
+    def room_policy(self) -> Dict[str, Any]:
+        """
+        包廂計時的規則（QueueManager 與 API 共用）。
+
+        把「幾分鐘」在這裡換算成秒，兩邊才不會各自乘一次 60 而差一個數量級 ——
+        這種錯在計時功能上特別難發現：三小時變成三分鐘看得出來，
+        但十分鐘的提醒變成十秒鐘的提醒只會被當成「那個提醒好像壞了」。
+        """
+        data = self.all()
+        return {
+            "enabled": bool(data["room_timer_enabled"]),
+            "minutes": int(data["room_timer_minutes"]),
+            "autostart": bool(data["room_timer_autostart"]),
+            "warn_minutes": int(data["room_timer_warn_minutes"]),
+            "last_call_minutes": int(data["room_timer_last_call_minutes"]),
+            "expire_action": data["room_timer_expire_action"],
+            "extend_minutes": int(data["room_timer_extend_minutes"]),
+        }
 
     def stage_options(self) -> Dict[str, Any]:
         """舞台端要的演出設定（片頭卡、結算畫面）。"""

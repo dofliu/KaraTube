@@ -5,6 +5,7 @@
 """
 import json
 import os
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1409,3 +1410,103 @@ def test_add_reports_remaining_allowance(quota_off):
     assert res.status_code == 200
     quota = res.json()["quota"]
     assert (quota["pending"], quota["remaining"], quota["full"]) == (2, 1, False)
+
+
+# --- 包廂計時（歡唱時間）---
+
+@pytest.fixture()
+def room_off():
+    """
+    測完把計時關掉、佇列清空、設定還原。
+
+    計時是**持久化**的全域狀態（cache/room_timer.json），不還原的話這支測試
+    會在開發機上留下一場永遠在倒數的包廂。
+    """
+    saved = settings.all()
+    yield
+    settings.update(saved)
+    queue_manager.room.stop()
+    queue_manager._room_autostart_off = False
+    queue_manager.queue.clear()
+    queue_manager.current_song = None
+    queue_manager.is_playing = False
+
+
+def test_room_endpoint_reports_the_clock_and_the_rules(room_off):
+    """
+    快照要帶著規則一起回：「時間到會讓你唱完這一首」與「只是提醒、不會停」
+    是兩句完全不同的話，而決定是哪一句的是設定，不是計時器。
+    """
+    settings.update({"room_timer_enabled": True, "room_timer_minutes": 90,
+                     "room_timer_extend_minutes": 20})
+    res = client.post("/api/room/start", json={})
+    assert res.status_code == 200
+    room = res.json()["room"]
+    assert room["active"] is True
+    assert room["state"] == "running"
+    assert room["total_seconds"] == 90 * 60
+    assert room["enabled"] is True
+    assert room["expire_action"] == "finish_song"
+    assert room["extend_minutes"] == 20
+    # 同一份資料也跟著每一次狀態廣播走，畫面不必自己去輪詢
+    assert client.get("/api/queue").json()["room"]["total_seconds"] == 90 * 60
+    assert client.get("/api/room").json()["total_seconds"] == 90 * 60
+
+
+def test_room_start_takes_an_explicit_length(room_off):
+    settings.update({"room_timer_enabled": True})
+    room = client.post("/api/room/start", json={"minutes": 45}).json()["room"]
+    assert room["total_seconds"] == 45 * 60
+
+
+def test_room_pause_and_resume(room_off):
+    settings.update({"room_timer_enabled": True})
+    client.post("/api/room/start", json={"minutes": 60})
+    assert client.post("/api/room/pause").json()["room"]["state"] == "paused"
+    assert client.post("/api/room/resume").json()["room"]["state"] == "running"
+
+
+def test_room_extend_adds_time_to_the_same_session(room_off):
+    settings.update({"room_timer_enabled": True})
+    client.post("/api/room/start", json={"minutes": 60})
+    room = client.post("/api/room/extend", json={"minutes": 30}).json()["room"]
+    assert room["total_seconds"] == 90 * 60
+
+
+def test_room_stop_clears_the_session(room_off):
+    settings.update({"room_timer_enabled": True})
+    client.post("/api/room/start", json={"minutes": 60})
+    room = client.post("/api/room/stop").json()["room"]
+    assert room["active"] is False
+    assert room["state"] == "off"
+
+
+def test_add_after_time_up_is_refused_with_409_and_the_snapshot(room_off):
+    """
+    時間到跟額度滿在畫面上是同一種語氣：說明規則，並且講出下一步
+    （續時就接著唱）—— 所以整份快照原封不動送出去。
+    """
+    settings.update({"room_timer_enabled": True, "room_timer_expire_action": "finish_song"})
+    client.post("/api/room/start", json={"minutes": 10})
+    # 把開場時間挪到過去，讓這一場已經過期
+    queue_manager.room._started_at -= timedelta(minutes=11)
+
+    res = client.post("/api/queue/add", json={"id": "roomsong001", "requested_by": "小明"})
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert detail["error"] == "room_time_up"
+    assert detail["room"]["expired"] is True
+    assert detail["room"]["extend_minutes"] > 0
+    # 被擋下來的歌完全沒有進到佇列裡
+    assert queue_manager.queue == []
+
+
+def test_notify_only_never_refuses_a_song(room_off):
+    settings.update({"room_timer_enabled": True,
+                     "room_timer_expire_action": "notify_only",
+                     "room_timer_autostart": False})
+    client.post("/api/room/start", json={"minutes": 10})
+    queue_manager.room._started_at -= timedelta(minutes=11)
+    res = client.post("/api/queue/add", json={"id": "roomsong002", "requested_by": "小明"})
+    assert res.status_code == 200
+    assert res.json()["room"]["expired"] is True

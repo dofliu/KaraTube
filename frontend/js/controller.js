@@ -15,6 +15,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const quotaUpBtn = document.getElementById("quotaUpBtn");
   const quotaBar = document.getElementById("quotaBar");
   const quotaLineEl = document.getElementById("quotaLine");
+  // 包廂計時（歡唱時間）
+  const roomTimerBox = document.getElementById("roomTimer");
+  const roomClockBtn = document.getElementById("roomClockBtn");
+  const roomExtendBtn = document.getElementById("roomExtendBtn");
+  const roomPauseBtn = document.getElementById("roomPauseBtn");
+  const roomBar = document.getElementById("roomBar");
+  const roomLineEl = document.getElementById("roomLine");
   const nowPlayingTitle = document.getElementById("nowPlayingTitle");
   const nowPlayingArtist = document.getElementById("nowPlayingArtist");
   const nowPlayingThumb = document.getElementById("nowPlayingThumb");
@@ -1176,7 +1183,11 @@ document.addEventListener("DOMContentLoaded", () => {
       // 講的是完整的一句話（誰、現在幾首、什麼時候可以再點），而且用通知
       // 而不是 alert —— alert 要按確定才消失，被擋一次就打斷一次點歌。
       if (res && res.status === "rejected") {
-        showNotification(window.QuotaView.quotaRejectionNote(res.quota), 6000);
+        // 歡唱時間結束的優先講：「今晚結束了」蓋過「你排太多首」——
+        // 講後者會讓人以為刪掉一首就能再點（然後他刪了，再點，再被擋一次）。
+        showNotification(res.reason === "room_time_up"
+          ? window.RoomView.roomTimeUpNote(res.room)
+          : window.QuotaView.quotaRejectionNote(res.quota), 8000);
         return;
       }
 
@@ -1187,7 +1198,10 @@ document.addEventListener("DOMContentLoaded", () => {
         res && res.placement, nickname);
       // 額度快用完時順便講一聲（剩很多的時候不講，見 quotaAddNote）
       const left = window.QuotaView.quotaAddNote(res && res.quota);
-      const parts = [placed, left].filter(Boolean).join("・");
+      // 歡唱時間快到了也順便講一聲。這句話講在點歌的當下有用，
+      // 講在歌被停下來的那一刻就只是事後諸葛。
+      const timeLeft = window.RoomView.roomAddNote(res && res.room);
+      const parts = [placed, left, timeLeft].filter(Boolean).join("・");
       showNotification(priority
         ? (left ? `⚡ 已成功插播到下一首！${left}` : "⚡ 已成功插播到下一首！")
         : (parts ? `🎤 已加入：${parts}` : "🎤 已加入點歌佇列！"));
@@ -1398,6 +1412,122 @@ document.addEventListener("DOMContentLoaded", () => {
     quotaUpBtn.addEventListener("click", () => setQuotaLimit(currentQuotaLimit() + 1));
   }
 
+  // --- 包廂計時（歡唱時間）---
+  // 伺服器每五秒才推一次狀態（而且只在有事發生時推），所以畫面上那個每秒跳的
+  // 數字是本地算出來的：記下「收到快照的時刻」，之後每秒用 room-view 重算一次。
+  // 為了一個時鐘而每秒廣播一次整份狀態，是拿包廂的網路換一個本來就算得出來的數字。
+  let lastRoom = null;
+  let lastRoomAt = 0;
+
+  function roomSince() {
+    return lastRoomAt ? (Date.now() - lastRoomAt) / 1000 : 0;
+  }
+
+  function paintRoom() {
+    if (!roomTimerBox) return;
+    const room = lastRoom;
+    // 沒開計時就整組不出現：沒有在算時間的包廂不需要看到一個 00:00，
+    // 更不需要一顆隨時可能被按到的「開始計時」。
+    const on = !!(room && room.enabled);
+    roomTimerBox.style.display = on ? "inline-flex" : "none";
+    if (!on) {
+      roomBar.style.display = "none";
+      return;
+    }
+    const since = roomSince();
+    roomClockBtn.textContent = window.RoomView.roomHeaderLabel(room, since);
+    // 狀態也寫進 class，讓最後十分鐘與時間到在暗的包廂裡看得出差別
+    const left = window.RoomView.roomRemainingSeconds(room, since);
+    roomClockBtn.classList.toggle("room-expired", !!room.expired);
+    roomClockBtn.classList.toggle(
+      "room-soon", !room.expired && room.active
+        && left <= window.RoomView.ROOM_STAGE_SHOW_SECONDS);
+    const extendMinutes = Math.max(0, Math.floor(Number(room.extend_minutes) || 0));
+    roomExtendBtn.textContent = extendMinutes > 0 ? `＋${extendMinutes} 分` : "＋時間";
+    // 還沒開始計時的時候，暫停與續時都沒有意義（續時會變成「開始」，
+    // 那是一顆會做出乎意料的事的按鈕）
+    roomExtendBtn.style.display = room.active ? "inline-flex" : "none";
+    roomPauseBtn.style.display = room.active && !room.expired ? "inline-flex" : "none";
+    roomPauseBtn.textContent = room.running ? "⏸️" : "▶️";
+    roomPauseBtn.title = room.running ? "暫停計時（中場休息）。播放不受影響" : "繼續倒數";
+
+    const line = window.RoomView.roomStatusLine(room, since);
+    roomBar.style.display = line ? "block" : "none";
+    roomLineEl.textContent = line;
+  }
+
+  function renderRoom(state) {
+    if (!state || !state.room) return;
+    lastRoom = state.room;
+    lastRoomAt = Date.now();
+    paintRoom();
+  }
+
+  // 每秒重畫一次倒數。刻意不用 requestAnimationFrame：這個數字一秒只變一次，
+  // 而點歌台常常開著擺在一旁（手機會一直亮著螢幕跑動畫）。
+  setInterval(paintRoom, 1000);
+
+  async function roomAction(fn, note) {
+    try {
+      const res = await fn();
+      if (res && res.room) {
+        lastRoom = res.room;
+        lastRoomAt = Date.now();
+        paintRoom();
+      }
+      if (note) showNotification(note(res && res.room), 5000);
+    } catch (e) {
+      alert("包廂計時操作失敗: " + e.message);
+    }
+  }
+
+  if (roomClockBtn) {
+    roomClockBtn.addEventListener("click", () => {
+      const room = lastRoom || {};
+      if (!room.active) {
+        roomAction(() => window.api.startRoomTimer(), (r) =>
+          `⏱️ 開始計時：${window.RoomView.roomDuration((r && r.total_seconds) || 0)}。`
+          + window.RoomView.roomExpiryPolicyNote(r));
+        return;
+      }
+      // 結束計時是會改變包廂規則的操作，而這顆鍵就在最上排（很容易被誤按），
+      // 所以要問一次。問句裡要講出「不會停歌」—— 不然沒有人敢按。
+      if (!confirm("結束計時？倒數會消失，之後不會再因為時間到而停止播放。"
+                   + "（佇列與已經唱過的統計都不受影響）")) return;
+      roomAction(() => window.api.stopRoomTimer(), () => "⏱️ 已結束計時，不再倒數");
+    });
+  }
+
+  if (roomExtendBtn) {
+    roomExtendBtn.addEventListener("click", () => {
+      roomAction(() => window.api.extendRoomTimer(), (r) =>
+        `⏱️ 已續時，還剩 ${window.RoomView.roomDuration(
+          window.RoomView.roomRemainingSeconds(r))}`);
+    });
+  }
+
+  if (roomPauseBtn) {
+    roomPauseBtn.addEventListener("click", () => {
+      const running = !!(lastRoom && lastRoom.running);
+      roomAction(
+        () => (running ? window.api.pauseRoomTimer() : window.api.resumeRoomTimer()),
+        () => (running ? "⏸️ 已暫停計時（播放不受影響）" : "▶️ 繼續倒數"));
+    });
+  }
+
+  // 提醒（剩十分鐘、剩三分鐘、時間到）。停留久一點 —— 這幾句話要看懂才有用，
+  // 而且它們一個晚上只會出現三次。
+  window.api.on("ROOM_ALERT", (msg) => {
+    const data = (msg && msg.data) || {};
+    if (data.room) {
+      lastRoom = data.room;
+      lastRoomAt = Date.now();
+      paintRoom();
+    }
+    const note = window.RoomView.roomAlertNote(data, data.room);
+    if (note) showNotification(note, 9000);
+  });
+
   if (rotationResetBtn) {
     rotationResetBtn.addEventListener("click", async () => {
       if (!confirm("把「誰今晚唱過幾首」歸零？\n（已經排好的佇列不會變動，只影響接下來新點的歌）")) return;
@@ -1417,6 +1547,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     renderRotation(state);
     renderQuota(state);
+    renderRoom(state);
     const cur = state.current_song;
     if (cur) {
       nowPlayingTitle.textContent = cur.title;
@@ -2129,6 +2260,16 @@ document.addEventListener("DOMContentLoaded", () => {
     recording_share_max_downloads: { label: "下載幾次就失效", unit: " 次", step: 1, hint: "0 = 不限" },
     recording_session_gap_hours: { label: "相隔幾小時算換一場", unit: " 小時", step: 1,
                                    hint: "整晚打包與輪序共用：跨午夜的一晚要算同一場" },
+    room_timer_enabled: { label: "啟用包廂計時", hint: "預設關（家裡唱歌沒人在算時間）" },
+    room_timer_minutes: { label: "一場多久", unit: " 分鐘", step: 30 },
+    room_timer_autostart: { label: "第一首歌自動開錶", hint: "免得三小時後才想起來沒按" },
+    room_timer_warn_minutes: { label: "第一次提醒", unit: " 分鐘前", step: 1, hint: "0 = 不提醒" },
+    room_timer_last_call_minutes: { label: "最後召集", unit: " 分鐘前", step: 1, hint: "0 = 不提醒" },
+    room_timer_expire_action: {
+      label: "時間到怎麼辦",
+      choiceLabels: { finish_song: "唱完這一首再停", notify_only: "只提醒，不停歌" },
+    },
+    room_timer_extend_minutes: { label: "續時一次加", unit: " 分鐘", step: 5 },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -2257,6 +2398,20 @@ document.addEventListener("DOMContentLoaded", () => {
             "這裡調的是「相隔幾小時算換了一場」：調小會把中間休息很久的一晚切成兩場，" +
             "調大則會把下午那一輪跟晚上那一輪算成同一場。",
       keys: ["recording_session_gap_hours"],
+    },
+    {
+      title: "⏱️ 包廂計時（歡唱時間）",
+      hint: "商用點歌機的「歡唱時間到」。難的不是倒數，是時間到之後怎麼收場 —— " +
+            "所以這裡**沒有**「立刻停掉正在唱的那一首」這個選項：" +
+            "被停在副歌那一句的人不會覺得時間到了，只會覺得機器把他關掉。" +
+            "預設是讓正在唱的那一首唱完再停，超時的上限因此就是一首歌的長度。" +
+            "停下來的只有播放，佇列一首都不會被刪，續時之後接著唱。" +
+            "提醒預設兩次（剩 10 分鐘、剩 3 分鐘），每一次都會講出「時間到會怎樣」" +
+            "與怎麼續時 —— 不講的話，最後一首的點歌者會以為自己被偷走一首歌。" +
+            "倒數、續時與暫停在右上角隨時可以操作。",
+      keys: ["room_timer_enabled", "room_timer_minutes", "room_timer_autostart",
+             "room_timer_warn_minutes", "room_timer_last_call_minutes",
+             "room_timer_expire_action", "room_timer_extend_minutes"],
     },
     {
       title: "🖥️ 舞台演出",

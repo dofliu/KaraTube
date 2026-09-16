@@ -28,7 +28,7 @@ from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
-from backend.services import song_quota
+from backend.services import room_timer, song_quota
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
                                            find_session, group_sessions, iter_session_zip,
@@ -45,18 +45,53 @@ from backend.version import __version__, version_info
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("KaraTube.Server")
 
+# 包廂計時的心跳。5 秒一次就夠：提醒的門檻是「剩 10 分鐘」這種尺度，
+# 差五秒沒有人看得出來，而每秒醒來一次是拿 CPU 換一個沒有人要的精確度
+# （畫面上那個每秒跳一次的倒數是前端自己跑的，不靠這個迴圈）。
+ROOM_TICK_SECONDS = 5
+
+
+async def room_timer_loop():
+    """
+    定期推進包廂計時，把剛跨過的提醒廣播出去。
+
+    提醒不能等到「下一次有人操作」才發現：包廂最安靜的時候正是快唱完的時候，
+    而那正是最需要聽到「剩十分鐘」的時候。
+    """
+    while True:
+        try:
+            await asyncio.sleep(ROOM_TICK_SECONDS)
+            for alert in await queue_manager.tick_room():
+                await ws_manager.broadcast({
+                    "type": "ROOM_ALERT",
+                    "data": {**alert, "room": queue_manager.room_state()},
+                })
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # 這個迴圈死掉的話倒數就永遠停在那裡，而且沒有人看得出來，
+            # 所以任何一次失敗都只記錄、不中斷。
+            logger.warning(f"包廂計時心跳失敗: {e}")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """
     背景工作的生老病死。
 
-    排程預處理的迴圈要有 event loop 才能建立，所以不能在模組層級 start()；
-    關機時要記得 cancel，否則 uvicorn --reload 每存一次檔就多一個迴圈在跑。
+    排程預處理與包廂計時的迴圈都要有 event loop 才能建立，所以不能在模組層級
+    start()；關機時要記得 cancel，否則 uvicorn --reload 每存一次檔就多一個迴圈在跑。
     """
     batch_scheduler.start()
+    room_task = asyncio.create_task(room_timer_loop())
     try:
         yield
     finally:
+        room_task.cancel()
+        try:
+            await room_task
+        except asyncio.CancelledError:
+            pass
         await batch_scheduler.stop()
 
 
@@ -126,9 +161,12 @@ class ConnectionManager:
             self.disconnect(dead)
 
 ws_manager = ConnectionManager()
+# 包廂計時。存檔放在 cache/ —— 計時對應的是「客人買了多久」，不該因為
+# 伺服器重開（或 --reload 存了一次檔）就重算或歸零。
+room = room_timer.RoomTimer(CACHE_DIR / "room_timer.json")
 queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
                              play_stats=play_stats, song_history=song_history,
-                             settings=settings)
+                             settings=settings, room=room)
 # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
 queue_manager.apply_control_defaults()
 
@@ -406,6 +444,12 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
     try:
         item = await queue_manager.add_song(url_or_id, title, artist, thumbnail, priority,
                                             requested_by=requested_by)
+    except room_timer.RoomTimeUp as exc:
+        # 同樣是 409（不是 403）：這一首沒被收下的理由是「現在的狀態不收」，
+        # 而不是「你沒有權限」。時間到跟額度滿在畫面上是同一種語氣 ——
+        # 說明規則，並且講出下一步（續時就接著唱）。
+        raise HTTPException(status_code=409, detail={"error": "room_time_up",
+                                                     "room": exc.snapshot}) from exc
     except song_quota.QuotaExceeded as exc:
         # 409 而不是 429：擋下來的理由不是「按太快」，是「佇列現在的狀態不收這一首」。
         # 整份結論原封不動送出去，畫面才講得出「誰、現在幾首、什麼時候可以再點」——
@@ -414,9 +458,13 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
                                                     "quota": exc.verdict}) from exc
     # 公平輪唱開著時，點歌的人要知道自己被排到哪（「排在第 3 位，你的第 2 輪」）——
     # 不講的話使用者看到的是「我點的歌沒有出現在最後面」，那看起來像壞掉。
+    # 計時開著時把剩餘時間一起帶回去：剩 4 分鐘還點了一首 5 分鐘的歌，
+    # 畫面才講得出「這首可能唱不完」—— 那句話講在點歌的當下有用，
+    # 講在歌被停下來的那一刻就只是事後諸葛。
     return {"status": "success", "item": item,
             "placement": queue_manager.placement_of(item["queue_id"]),
-            "quota": queue_manager.quota_of(item["requested_by"])}
+            "quota": queue_manager.quota_of(item["requested_by"]),
+            "room": queue_manager.room_state()}
 
 @app.delete("/api/queue/{queue_id}")
 async def remove_queue_item(queue_id: str):
@@ -467,6 +515,62 @@ async def reset_rotation():
     """
     summary = await queue_manager.reset_rotation()
     return {"status": "success", "enabled": queue_manager.rotation_enabled, **summary}
+
+@app.get("/api/room")
+async def get_room_timer():
+    """
+    包廂計時：這一場買了多久、用掉多久、還剩多久、時間到會怎麼處理。
+
+    每一次 STATE_UPDATE 也帶著同一份資料（`state["room"]`），這支端點是給
+    不想開 WebSocket 的呼叫端（外掛的櫃檯看板、腳本）用的。
+    """
+    return queue_manager.room_state()
+
+
+@app.post("/api/room/start")
+async def start_room_timer(payload: Dict[str, Any] = Body(default={})):
+    """
+    開始計時（歸零重算）。`minutes` 不給就用設定頁的預設長度。
+
+    已經在計時的時候按它是**重開一場**，不是續時 —— 續時請用 /api/room/extend。
+    兩件事做成同一顆鍵的話，中途按錯就會把已經用掉的兩小時抹掉，
+    而那兩小時是拿不回來的（沒有人記得剛剛是幾點開始的）。
+    """
+    return {"status": "success",
+            "room": await queue_manager.start_room_session(payload.get("minutes"))}
+
+
+@app.post("/api/room/extend")
+async def extend_room_timer(payload: Dict[str, Any] = Body(default={})):
+    """
+    續時（加時間，不是重開一場）。停在「時間到」畫面時按它會自己接回去播下一首。
+    """
+    return {"status": "success",
+            "room": await queue_manager.extend_room_session(payload.get("minutes"))}
+
+
+@app.post("/api/room/pause")
+async def pause_room_timer():
+    """停錶（中場休息、餐點來了）。播放不受影響。"""
+    return {"status": "success", "room": await queue_manager.pause_room_session()}
+
+
+@app.post("/api/room/resume")
+async def resume_room_timer():
+    """繼續倒數。"""
+    return {"status": "success", "room": await queue_manager.resume_room_session()}
+
+
+@app.post("/api/room/stop")
+async def stop_room_timer():
+    """
+    結束計時（這桌不要再被計時了）。
+
+    刻意連「時間到停播」的旗標一起解除並接回去播：這顆鍵的意思是
+    「不要再管時間了」，按完卻還停在散場畫面不肯播的話，沒有人找得到怎麼救回來。
+    """
+    return {"status": "success", "room": await queue_manager.stop_room_session()}
+
 
 @app.post("/api/queue/skip")
 async def skip_song():

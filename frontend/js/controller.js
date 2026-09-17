@@ -2270,6 +2270,12 @@ document.addEventListener("DOMContentLoaded", () => {
       choiceLabels: { finish_song: "唱完這一首再停", notify_only: "只提醒，不停歌" },
     },
     room_timer_extend_minutes: { label: "續時一次加", unit: " 分鐘", step: 5 },
+    marquee_enabled: { label: "啟用舞台訊息", hint: "櫃檯把字打到包廂螢幕上" },
+    marquee_seconds: { label: "每則停留", unit: " 秒", step: 1, hint: "多則訊息輪播的一輪" },
+    marquee_ttl_minutes: { label: "幾分鐘後消失", unit: " 分鐘", step: 1,
+                           hint: "要久一點的用「📌 釘住」送" },
+    marquee_card_when_idle: { label: "沒在播歌時用大字卡",
+                              hint: "播歌中一律降級成上緣那一條，不受此選項影響" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -2412,6 +2418,19 @@ document.addEventListener("DOMContentLoaded", () => {
       keys: ["room_timer_enabled", "room_timer_minutes", "room_timer_autostart",
              "room_timer_warn_minutes", "room_timer_last_call_minutes",
              "room_timer_expire_action", "room_timer_extend_minutes"],
+    },
+    {
+      title: "📺 舞台訊息（跑馬燈）",
+      hint: "商用點歌機的「櫃檯把字打到包廂螢幕上」：餐點到了、生日祝福。" +
+            "功能本身三行就寫得完，難的是那段字會蓋掉畫面上的什麼 —— " +
+            "舞台那面螢幕上已經沒有空地了，而唯一不能搶的就是歌詞（台上那個人" +
+            "正在看它唱歌）。所以訊息只走畫面最上緣，而且是把 HUD **推開**、" +
+            "不是疊上去；大字卡只在沒有人唱歌的時候出現，播歌中一律降級成那一條。" +
+            "每一則都會自己消失：「您的餐點到了」在四十分鐘之後才出現，" +
+            "是比沒有訊息更糟的錯誤資訊。要留久一點的用「📌 釘住」送（最長四小時）。" +
+            "訊息在最上排的「📺 舞台訊息」隨時可以送出與撤掉。",
+      keys: ["marquee_enabled", "marquee_seconds", "marquee_ttl_minutes",
+             "marquee_card_when_idle"],
     },
     {
       title: "🖥️ 舞台演出",
@@ -2577,6 +2596,204 @@ document.addEventListener("DOMContentLoaded", () => {
     const busy = performance.now() - lastSettingsInteraction < 2000;
     if (!busy && settingsModal.classList.contains("open") && settingsSpec) renderSettings();
   });
+
+  // --- 舞台訊息（跑馬燈）---
+  // 櫃檯把一句話打到包廂螢幕上。顯示的規則全在 marquee-view.js（舞台端載的是
+  // 同一支），這裡只負責送出、列出來、撤掉。
+
+  const marqueeBtn = document.getElementById("marqueeBtn");
+  const marqueeModal = document.getElementById("marqueeModal");
+  const closeMarqueeBtn = document.getElementById("closeMarqueeBtn");
+  const marqueeInput = document.getElementById("marqueeInput");
+  const marqueeSendBtn = document.getElementById("marqueeSendBtn");
+  const marqueeQuickBox = document.getElementById("marqueeQuick");
+  const marqueeUrgentBox = document.getElementById("marqueeUrgent");
+  const marqueePinnedBox = document.getElementById("marqueePinned");
+  const marqueeListBox = document.getElementById("marqueeList");
+  const marqueeClearBtn = document.getElementById("marqueeClearBtn");
+  const marqueeCountBadge = document.getElementById("marqueeCountBadge");
+  const marqueeCharHint = document.getElementById("marqueeCharHint");
+
+  // 常用句。包廂裡真正會用到的就是這幾句，而「要打字」正是這個功能最大的阻力 ——
+  // 餐點送到門口的那十秒鐘，沒有人想在手機上打字。
+  const MARQUEE_QUICK = [
+    "您的餐點到了，請開門",
+    "🎂 生日快樂！",
+    "麥克風請傳給下一位",
+    "請到櫃檯結帳",
+    "冷氣已為您調整",
+  ];
+
+  let marqueeSnapshot = null;
+  let marqueeSnapshotAt = 0;
+
+  function marqueeSince() {
+    return marqueeSnapshotAt ? (Date.now() - marqueeSnapshotAt) / 1000 : 0;
+  }
+
+  function marqueeIsOpen() {
+    return !!(marqueeModal && marqueeModal.classList.contains("open"));
+  }
+
+  function paintMarqueeBadge() {
+    if (!marqueeBtn) return;
+    const enabled = !marqueeSnapshot || marqueeSnapshot.enabled !== false;
+    // 關著的時候不是把按鈕藏起來，是讓它講出怎麼打開 —— 藏起來的話，
+    // 使用者只會覺得「我記得有這個功能」然後找不到。
+    marqueeBtn.classList.toggle("is-off", !enabled);
+    const count = window.MarqueeView.marqueeActive(marqueeSnapshot, marqueeSince()).length;
+    if (!marqueeCountBadge) return;
+    marqueeCountBadge.textContent = count > 0 ? String(count) : "";
+    marqueeCountBadge.style.display = count > 0 ? "inline-block" : "none";
+  }
+
+  function renderMarqueeList() {
+    if (!marqueeListBox) return;
+    const since = marqueeSince();
+    const active = window.MarqueeView.marqueeActive(marqueeSnapshot, since);
+    if (active.length === 0) {
+      marqueeListBox.innerHTML =
+        '<div class="marquee-empty">螢幕上目前沒有訊息。</div>';
+      return;
+    }
+    marqueeListBox.innerHTML = active.map((msg) => `
+      <div class="marquee-row${msg.urgent ? " is-urgent" : ""}">
+        <span class="marquee-row-text"></span>
+        <button class="btn btn-secondary marquee-drop" data-id="${msg.id}"
+                title="從螢幕上撤掉這一則">撤掉</button>
+      </div>`).join("");
+    // 訊息是包廂裡任何一支手機打進來的，所以文字一律用 textContent 放進去，
+    // 不跟著上面那串 HTML 一起拼（拼進去的話，一則帶標籤的訊息就能改掉這一頁）。
+    marqueeListBox.querySelectorAll(".marquee-row-text").forEach((el, idx) => {
+      el.textContent = window.MarqueeView.marqueeListLine(active[idx], marqueeSnapshot, since);
+    });
+    marqueeListBox.querySelectorAll(".marquee-drop").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const res = await window.api.deleteMarquee(btn.dataset.id);
+        applyMarqueeState(res && res.marquee);
+      });
+    });
+  }
+
+  function applyMarqueeState(state) {
+    if (!state) return;
+    marqueeSnapshot = state;
+    marqueeSnapshotAt = Date.now();
+    paintMarqueeBadge();
+    if (marqueeIsOpen()) renderMarqueeList();
+  }
+
+  function paintMarqueeHint() {
+    if (!marqueeCharHint) return;
+    const max = (marqueeSnapshot && marqueeSnapshot.max_chars) || 40;
+    const used = (marqueeInput && marqueeInput.value.trim().length) || 0;
+    const ttl = (marqueeSnapshot && marqueeSnapshot.default_ttl_minutes) || 0;
+    const life = marqueePinnedBox && marqueePinnedBox.checked
+      ? "釘住的會留著直到撤掉（最長 4 小時）"
+      : (ttl > 0 ? `${ttl} 分鐘後自己消失` : "過一會兒自己消失");
+    marqueeCharHint.textContent = `${used}/${max} 字・${life}`;
+  }
+
+  async function sendMarquee() {
+    const text = marqueeInput ? marqueeInput.value.trim() : "";
+    if (!text) {
+      showNotification(window.MarqueeView.marqueeRejectNote("empty",
+        { max_chars: (marqueeSnapshot && marqueeSnapshot.max_chars) || 40 }), 5000);
+      return;
+    }
+    const res = await window.api.sendMarquee({
+      text,
+      sender: nickname,
+      urgent: !!(marqueeUrgentBox && marqueeUrgentBox.checked),
+      pinned: !!(marqueePinnedBox && marqueePinnedBox.checked),
+    });
+    if (res && res.status === "rejected") {
+      // 規則擋下來不是錯誤，用說明的語氣講，而且每一句「不行」後面都有下一步
+      showNotification(window.MarqueeView.marqueeRejectNote(res.reason, res.detail || {}), 6000);
+      applyMarqueeState(res.marquee);
+      return;
+    }
+    if (marqueeInput) marqueeInput.value = "";
+    if (marqueeUrgentBox) marqueeUrgentBox.checked = false;
+    applyMarqueeState(res && res.marquee);
+    paintMarqueeHint();
+    showNotification(window.MarqueeView.marqueeSentNote(res && res.message, isPlaying), 5000);
+  }
+
+  async function openMarquee() {
+    if (marqueeQuickBox && !marqueeQuickBox.dataset.ready) {
+      marqueeQuickBox.dataset.ready = "1";
+      MARQUEE_QUICK.forEach((phrase) => {
+        const btn = document.createElement("button");
+        btn.className = "btn btn-secondary marquee-quick-btn";
+        btn.textContent = phrase;
+        btn.addEventListener("click", () => {
+          if (!marqueeInput) return;
+          marqueeInput.value = phrase;
+          marqueeInput.focus();
+          paintMarqueeHint();
+        });
+        marqueeQuickBox.appendChild(btn);
+      });
+    }
+    marqueeModal.classList.add("open");
+    try {
+      applyMarqueeState(await window.api.getMarquee());
+    } catch (e) {
+      renderMarqueeList();
+    }
+    paintMarqueeHint();
+    if (marqueeInput) marqueeInput.focus();
+  }
+
+  if (marqueeBtn) marqueeBtn.addEventListener("click", openMarquee);
+  if (closeMarqueeBtn) {
+    closeMarqueeBtn.addEventListener("click", () => marqueeModal.classList.remove("open"));
+  }
+  if (marqueeModal) {
+    marqueeModal.addEventListener("click", (e) => {
+      if (e.target === marqueeModal) marqueeModal.classList.remove("open");
+    });
+  }
+  if (marqueeSendBtn) marqueeSendBtn.addEventListener("click", sendMarquee);
+  if (marqueeInput) {
+    marqueeInput.addEventListener("input", paintMarqueeHint);
+    marqueeInput.addEventListener("keydown", (e) => {
+      // Enter 直接送出：這個功能的使用場景是「餐點在門口」，多一次滑鼠移動都嫌久
+      if (e.key === "Enter") { e.preventDefault(); sendMarquee(); }
+    });
+  }
+  if (marqueePinnedBox) marqueePinnedBox.addEventListener("change", paintMarqueeHint);
+  if (marqueeClearBtn) {
+    marqueeClearBtn.addEventListener("click", async () => {
+      const res = await window.api.clearMarquee(true);
+      applyMarqueeState(res && res.marquee);
+    });
+  }
+
+  window.api.on("MARQUEE_UPDATE", (msg) => applyMarqueeState(msg && msg.data));
+
+  // 設定頁把功能關掉（或打開）時，按鈕的樣子要當場跟著變 —— 不然那顆鍵會
+  // 一直看起來可以按，按下去才發現送不出去。
+  window.api.on("SETTINGS_UPDATE", (msg) => {
+    const data = (msg && msg.data) || {};
+    if (data.marquee_enabled === undefined || !marqueeSnapshot) return;
+    marqueeSnapshot = { ...marqueeSnapshot, enabled: !!data.marquee_enabled };
+    paintMarqueeBadge();
+  });
+
+  // 清單上的「剩 8 分鐘」要自己走。五秒一次就夠（沒有秒數在跳），
+  // 而且只有在面板開著的時候才重畫。
+  setInterval(() => {
+    paintMarqueeBadge();
+    if (marqueeIsOpen()) renderMarqueeList();
+  }, 5000);
+
+  // 開機先問一次：WebSocket 只推「有變動」的那一刻，中途才打開的點歌台
+  // 不問就會以為螢幕上什麼都沒有。
+  window.api.getMarquee()
+    .then((data) => applyMarqueeState(data))
+    .catch(() => { /* 拿不到就當成沒有訊息，下一次 MARQUEE_UPDATE 會補上 */ });
 
   // Sound FX Buttons
   document.querySelectorAll(".sfx-btn").forEach(btn => {

@@ -28,6 +28,11 @@ from backend.services.room_timer import (DEFAULT_EXPIRE_ACTION, DEFAULT_EXTEND_M
                                          DEFAULT_WARN_MINUTES, EXPIRE_ACTION_CHOICES,
                                          MAX_EXTEND_MINUTES, MAX_SESSION_MINUTES,
                                          MIN_EXTEND_MINUTES, MIN_SESSION_MINUTES)
+# 舞台訊息（跑馬燈）的秒數與存活時間上下限同理：規則寫在 marquee，
+# 設定頁只是把它們列出來讓人調。
+from backend.services.marquee import (DEFAULT_SHOW_SECONDS, DEFAULT_TTL_MINUTES,
+                                      MAX_SHOW_SECONDS, MAX_TTL_MINUTES,
+                                      MIN_SHOW_SECONDS, MIN_TTL_MINUTES)
 
 logger = logging.getLogger("KaraTube.Settings")
 
@@ -199,6 +204,23 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "room_timer_extend_minutes": {"type": "int", "default": DEFAULT_EXTEND_MINUTES,
                                   "min": MIN_EXTEND_MINUTES, "max": MAX_EXTEND_MINUTES},
 
+    # --- 舞台訊息（跑馬燈）---
+    # 櫃檯把字打到包廂螢幕上：「您的餐點到了」、生日祝福。預設開著 ——
+    # 它不會自己跳出來（沒有人送訊息就什麼都不會發生），而關著的話，
+    # 需要用它的那一刻（餐點送到門口）沒有人會想到要先去設定頁打開。
+    "marquee_enabled": {"type": "bool", "default": True},
+    # 每一則在螢幕上停留幾秒（多則訊息輪播的一輪）。
+    "marquee_seconds": {"type": "float", "default": DEFAULT_SHOW_SECONDS,
+                        "min": MIN_SHOW_SECONDS, "max": MAX_SHOW_SECONDS},
+    # 多久之後自己消失。刻意沒有「不會消失」這個值：「您的餐點到了」在四十分鐘
+    # 之後才在螢幕上，是比沒有訊息更糟的錯誤資訊。要留久一點的用「📌 釘住」送，
+    # 而釘住的也有上限（見 marquee.py PINNED_MAX_HOURS）。
+    "marquee_ttl_minutes": {"type": "int", "default": DEFAULT_TTL_MINUTES,
+                            "min": MIN_TTL_MINUTES, "max": MAX_TTL_MINUTES},
+    # 沒有在播歌時用置中的大字卡（看一眼就知道）。正在播歌時一律降級成上緣
+    # 那一條，不受這個選項影響 —— 沒有任何訊息重要到可以蓋住正在唱的那個人。
+    "marquee_card_when_idle": {"type": "bool", "default": True},
+
     # --- 舞台演出 ---
     "intro_card_enabled": {"type": "bool", "default": True},
     "intro_card_seconds": {"type": "float", "default": 8.0, "min": 2.0, "max": 20.0},
@@ -362,6 +384,22 @@ class SystemSettings:
             "last_call_minutes": int(data["room_timer_last_call_minutes"]),
             "expire_action": data["room_timer_expire_action"],
             "extend_minutes": int(data["room_timer_extend_minutes"]),
+        }
+
+    def marquee_policy(self) -> Dict[str, Any]:
+        """
+        舞台訊息的規則（API 與舞台端共用）。
+
+        `card_when_idle` 只影響「沒有在播歌」時的樣子。播歌中一律是上緣那一條，
+        設定頁**沒有**可以改掉這件事的選項 —— 沒有任何訊息重要到可以蓋住
+        正在唱的那個人（見 backend/services/marquee.py 決定二）。
+        """
+        data = self.all()
+        return {
+            "enabled": bool(data["marquee_enabled"]),
+            "seconds": float(data["marquee_seconds"]),
+            "ttl_minutes": int(data["marquee_ttl_minutes"]),
+            "card_when_idle": bool(data["marquee_card_when_idle"]),
         }
 
     def stage_options(self) -> Dict[str, Any]:

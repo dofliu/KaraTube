@@ -28,7 +28,7 @@ from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_history import SongHistory
-from backend.services import room_timer, song_quota
+from backend.services import marquee, room_timer, song_quota
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
                                            find_session, group_sessions, iter_session_zip,
@@ -51,12 +51,14 @@ logger = logging.getLogger("KaraTube.Server")
 ROOM_TICK_SECONDS = 5
 
 
-async def room_timer_loop():
+async def stage_heartbeat_loop():
     """
-    定期推進包廂計時，把剛跨過的提醒廣播出去。
+    舞台的心跳：推進包廂計時，並丟掉過期的舞台訊息。
 
-    提醒不能等到「下一次有人操作」才發現：包廂最安靜的時候正是快唱完的時候，
-    而那正是最需要聽到「剩十分鐘」的時候。
+    兩件事共用同一個迴圈，是因為它們要的是同一件事 —— 「時間自己過去了」
+    這件事必須有人發現。提醒不能等到「下一次有人操作」才發現：包廂最安靜的
+    時候正是快唱完的時候，而那正是最需要聽到「剩十分鐘」的時候。
+    過期的訊息同理：沒有人會為了讓一則舊訊息消失而去按什麼。
     """
     while True:
         try:
@@ -66,12 +68,16 @@ async def room_timer_loop():
                     "type": "ROOM_ALERT",
                     "data": {**alert, "room": queue_manager.room_state()},
                 })
+            # 舞台自己也會濾掉過期的（心跳五秒一次，而「十分鐘後消失」差五秒就
+            # 不叫十分鐘了），這裡是為了讓點歌台的訊息清單跟舞台看到的同一份。
+            if marquee_board.prune():
+                await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": marquee_state()})
         except asyncio.CancelledError:
             raise
         except Exception as e:
             # 這個迴圈死掉的話倒數就永遠停在那裡，而且沒有人看得出來，
             # 所以任何一次失敗都只記錄、不中斷。
-            logger.warning(f"包廂計時心跳失敗: {e}")
+            logger.warning(f"舞台心跳失敗: {e}")
 
 
 @asynccontextmanager
@@ -79,11 +85,11 @@ async def lifespan(_app: FastAPI):
     """
     背景工作的生老病死。
 
-    排程預處理與包廂計時的迴圈都要有 event loop 才能建立，所以不能在模組層級
+    排程預處理與舞台心跳的迴圈都要有 event loop 才能建立，所以不能在模組層級
     start()；關機時要記得 cancel，否則 uvicorn --reload 每存一次檔就多一個迴圈在跑。
     """
     batch_scheduler.start()
-    room_task = asyncio.create_task(room_timer_loop())
+    room_task = asyncio.create_task(stage_heartbeat_loop())
     try:
         yield
     finally:
@@ -164,6 +170,9 @@ ws_manager = ConnectionManager()
 # 包廂計時。存檔放在 cache/ —— 計時對應的是「客人買了多久」，不該因為
 # 伺服器重開（或 --reload 存了一次檔）就重算或歸零。
 room = room_timer.RoomTimer(CACHE_DIR / "room_timer.json")
+# 舞台訊息（跑馬燈）。刻意不落地：伺服器重開之後最可能的狀況是「那件事早就
+# 處理完了」，而一則沒有人記得的舊訊息自己跳到螢幕上，看起來就像機器壞了。
+marquee_board = marquee.MarqueeBoard()
 queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
                              play_stats=play_stats, song_history=song_history,
                              settings=settings, room=room)
@@ -570,6 +579,91 @@ async def stop_room_timer():
     「不要再管時間了」，按完卻還停在散場畫面不肯播的話，沒有人找得到怎麼救回來。
     """
     return {"status": "success", "room": await queue_manager.stop_room_session()}
+
+
+def marquee_state() -> Dict[str, Any]:
+    """
+    廣播給所有裝置的舞台訊息狀態 = 訊息清單 + 現在生效的規則。
+
+    規則跟著清單一起送，是因為畫面需要它們：舞台要知道「沒在播歌時要不要用
+    大字卡」，點歌台要知道送出時預設幾秒、幾分鐘後消失。分兩支端點拿的話，
+    兩邊會有一邊拿到的是舊的。
+    """
+    policy = settings.marquee_policy()
+    return {
+        **marquee_board.snapshot(),
+        "enabled": policy["enabled"],
+        "default_seconds": policy["seconds"],
+        "default_ttl_minutes": policy["ttl_minutes"],
+        "card_when_idle": policy["card_when_idle"],
+    }
+
+
+@app.get("/api/marquee")
+async def get_marquee():
+    """
+    舞台訊息：現在有哪些字要出現在包廂螢幕上。
+
+    舞台端開機時先問這一支（WebSocket 只推「有變動」的那一刻，
+    中途才打開的舞台不問一次就會是空的），之後靠 MARQUEE_UPDATE 更新。
+    """
+    return marquee_state()
+
+
+@app.post("/api/marquee")
+async def post_marquee(payload: Dict[str, Any] = Body(...)):
+    """
+    送一則到舞台上（櫃檯的「您的餐點到了」、生日祝福）。
+
+    擋下來的時候回 409 而不是 400：跟點歌額度、歡唱時間同一種語氣 ——
+    這不是「你送錯了」，是「現在的狀態不收這一則」，而每一句「不行」
+    後面都要有下一步（等一則播完、或先撤掉一則）。
+    """
+    policy = settings.marquee_policy()
+    if not policy["enabled"]:
+        raise HTTPException(status_code=409, detail={"error": "disabled",
+                                                     "marquee": marquee_state()})
+    try:
+        message = marquee_board.post(
+            payload.get("text"),
+            sender=payload.get("sender", "") or "",
+            urgent=bool(payload.get("urgent")),
+            pinned=bool(payload.get("pinned")),
+            # 沒指定就用設定頁的值。每一則都可以自己帶（緊急的想久一點、
+            # 生日祝福想釘住），但包廂不該為了送一句話而先進設定頁。
+            ttl_minutes=payload.get("ttl_minutes", policy["ttl_minutes"]),
+            seconds=payload.get("seconds", policy["seconds"]),
+        )
+    except marquee.MarqueeRejected as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail,
+                                    "marquee": marquee_state()}) from exc
+    state = marquee_state()
+    await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
+    return {"status": "success", "message": message, "marquee": state}
+
+
+@app.delete("/api/marquee/{message_id}")
+async def delete_marquee(message_id: str):
+    """撤掉一則（打錯字、那件事已經處理完了）。撤不到也回 success：
+    畫面要的結果是「它不在了」，而它確實不在了。"""
+    removed = marquee_board.remove(message_id)
+    state = marquee_state()
+    if removed:
+        await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
+    return {"status": "success", "removed": removed, "marquee": state}
+
+
+@app.delete("/api/marquee")
+async def clear_marquee(include_pinned: bool = Query(default=True)):
+    """
+    全部撤掉。`include_pinned=false` 會留下釘住的那幾則 ——
+    「把剛剛那幾則清掉」跟「連生日祝福也拿掉」是兩個不同的意思。
+    """
+    removed = marquee_board.clear(include_pinned=include_pinned)
+    state = marquee_state()
+    await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
+    return {"status": "success", "removed": removed, "marquee": state}
 
 
 @app.post("/api/queue/skip")

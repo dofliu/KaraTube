@@ -1781,3 +1781,113 @@ input[type="range"] {
   border: 1px solid rgba(255, 255, 255, 0.15);
   max-width: 160px;
 }
+
+/* ===== 舞台訊息（跑馬燈）=====
+   櫃檯把一句話打到包廂螢幕上。這裡是點歌台那一側（送出、列出來、撤掉）。 */
+
+/* 最上排那顆鍵右上角的數字：螢幕上現在有幾則。
+   沒有這個數字的話，沒有人知道舞台上還掛著昨天那句生日祝福。 */
+.marquee-count {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-pink);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* 功能關著時：不是把按鈕藏起來，是讓它看起來是關著的。
+   藏起來的話，使用者只會覺得「我記得有這個功能」然後找不到。 */
+.btn.is-off { opacity: 0.45; }
+
+.marquee-compose {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.marquee-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+}
+
+.marquee-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+/* 常用句：餐點送到門口的那十秒鐘，沒有人想在手機上打字 */
+.marquee-quick-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 14px;
+}
+
+.marquee-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.marquee-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.marquee-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.marquee-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(157, 78, 221, 0.12);
+  border: 1px solid rgba(157, 78, 221, 0.3);
+}
+
+.marquee-row.is-urgent {
+  background: rgba(255, 0, 127, 0.12);
+  border-color: rgba(255, 0, 127, 0.35);
+}
+
+.marquee-row-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-main);
+  word-break: break-word;
+}
+
+.marquee-drop {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.marquee-empty {
+  padding: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}

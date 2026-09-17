@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import main
 from backend.config import SONGS_DIR
-from backend.services import song_quota
+from backend.services import marquee, song_quota
 from backend.version import __version__
 from backend.main import (
     app,
@@ -1510,3 +1510,81 @@ def test_notify_only_never_refuses_a_song(room_off):
     res = client.post("/api/queue/add", json={"id": "roomsong002", "requested_by": "小明"})
     assert res.status_code == 200
     assert res.json()["room"]["expired"] is True
+
+
+# --- 舞台訊息（跑馬燈）---
+
+@pytest.fixture()
+def marquee_clean():
+    """測完把訊息清乾淨、設定還原（訊息是全域狀態，會漏到下一支測試）。"""
+    saved = settings.all()
+    main.marquee_board.clear()
+    yield
+    main.marquee_board.clear()
+    settings.update(saved)
+
+
+def test_marquee_post_and_list(marquee_clean):
+    """送出去的那一則要立刻出現在清單上，而且帶著「什麼時候會消失」。"""
+    settings.update({"marquee_enabled": True, "marquee_ttl_minutes": 10})
+    res = client.post("/api/marquee", json={"text": "您的餐點到了", "sender": "櫃檯"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["message"]["text"] == "您的餐點到了"
+    assert body["message"]["expires_at"]
+    state = client.get("/api/marquee").json()
+    assert state["count"] == 1
+    assert state["enabled"] is True
+    # 規則跟著清單一起送：舞台要知道「沒在播歌時要不要用大字卡」，
+    # 點歌台要知道預設幾分鐘後消失。分兩支端點拿的話會有一邊是舊的。
+    assert state["default_ttl_minutes"] == 10
+    assert "card_when_idle" in state
+
+
+def test_marquee_empty_text_is_409_not_500(marquee_clean):
+    """擋下來的語氣是「說明」不是「錯誤」—— 跟點歌額度、歡唱時間同一種。"""
+    settings.update({"marquee_enabled": True})
+    res = client.post("/api/marquee", json={"text": "   "})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "empty"
+
+
+def test_marquee_refuses_when_the_feature_is_off(marquee_clean):
+    settings.update({"marquee_enabled": False})
+    res = client.post("/api/marquee", json={"text": "測試"})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "disabled"
+    assert client.get("/api/marquee").json()["enabled"] is False
+
+
+def test_marquee_full_says_how_many_and_what_to_do(marquee_clean):
+    settings.update({"marquee_enabled": True})
+    for i in range(marquee.MAX_MESSAGES):
+        assert client.post("/api/marquee", json={"text": f"訊息 {i}"}).status_code == 200
+    res = client.post("/api/marquee", json={"text": "再一則"})
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert detail["error"] == "full"
+    assert detail["max_messages"] == marquee.MAX_MESSAGES
+
+
+def test_marquee_delete_one_and_clear_all(marquee_clean):
+    settings.update({"marquee_enabled": True})
+    first = client.post("/api/marquee", json={"text": "打錯字了"}).json()["message"]
+    client.post("/api/marquee", json={"text": "🎂 生日快樂", "pinned": True})
+    res = client.delete(f"/api/marquee/{first['id']}")
+    assert res.json()["removed"] is True
+    assert res.json()["marquee"]["count"] == 1
+    # 撤不到也回 success：畫面要的結果是「它不在了」，而它確實不在了
+    assert client.delete(f"/api/marquee/{first['id']}").json()["removed"] is False
+    # 「把剛剛那幾則清掉」跟「連生日祝福也拿掉」是兩個不同的意思
+    assert client.delete("/api/marquee?include_pinned=false").json()["removed"] == 0
+    assert client.delete("/api/marquee").json()["removed"] == 1
+    assert client.get("/api/marquee").json()["count"] == 0
+
+
+def test_marquee_message_text_is_capped(marquee_clean):
+    """舞台那一條只有一行。一段一百字的訊息在上面沒有人讀得完。"""
+    settings.update({"marquee_enabled": True})
+    msg = client.post("/api/marquee", json={"text": "字" * 300}).json()["message"]
+    assert len(msg["text"]) == marquee.MAX_TEXT_CHARS

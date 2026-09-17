@@ -1499,3 +1499,100 @@ body.duet-mode .score-card {
   max-width: 46ch;
   color: var(--text-muted);
 }
+
+/* ===== 舞台訊息（跑馬燈）=====
+   櫃檯打到包廂螢幕上的那句話（「您的餐點到了」、生日祝福）。
+
+   叫它跑馬燈是因為大家都這樣叫它，但**它不跑**：會動的字會一直把餘光拉過去，
+   而唱歌的人正需要那個餘光看歌詞。這裡只有一次淡入，之後就停著讓人讀完。
+
+   這一條是 .stage-wrapper 的 flex 子元素（不是絕對定位）：出現時整排 HUD
+   往下讓位，永遠不可能疊到歌名、倒數或分數。歌詞與音準線那半邊完全不動。 */
+.marquee-band {
+  position: relative;
+  /* 散場畫面（24）之上 —— 「請到櫃檯結帳」正是散場時最需要看到的那一句；
+     結算畫面（60）之下 —— 那九秒是今晚某一位演唱者的分數。 */
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 32px;
+  background: linear-gradient(90deg, rgba(157, 78, 221, 0.9), rgba(0, 240, 255, 0.28));
+  border-bottom: 2px solid rgba(0, 240, 255, 0.5);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  animation: marqueeBandIn 0.45s ease-out;
+}
+
+@keyframes marqueeBandIn {
+  from { opacity: 0; transform: translateY(-100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.marquee-band-icon { font-size: 22px; flex-shrink: 0; }
+
+.marquee-band-text {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  /* 一行就是一行：訊息在伺服器端就被裁到 40 字（見 marquee.py 決定五），
+     這裡是最後一道保險，寧可截斷也不要把 HUD 往下推兩行。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 緊急訊息：亮度換成暖色，並且慢慢呼吸（不是閃爍）。
+   閃爍會讓包廂以為出事了，而這裡多半只是「您的餐點到了」。 */
+.marquee-band.is-urgent {
+  background: linear-gradient(90deg, rgba(255, 0, 127, 0.92), rgba(255, 222, 89, 0.35));
+  border-bottom-color: var(--accent-yellow);
+  animation: marqueeBandIn 0.45s ease-out, marqueeUrgentPulse 2.6s ease-in-out 0.45s infinite;
+}
+
+@keyframes marqueeUrgentPulse {
+  0%, 100% { box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); }
+  50% { box-shadow: 0 6px 34px rgba(255, 0, 127, 0.7); }
+}
+
+/* 大字卡：只在沒有人唱歌時出現（播歌中一律降級成上面那一條）。
+   z-index 26 夾在散場畫面（24）與結算畫面（60）之間。 */
+.marquee-card {
+  position: absolute;
+  inset: 0;
+  z-index: 26;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  text-align: center;
+  padding: 0 8vw;
+  background: radial-gradient(circle at 50% 45%, rgba(24, 10, 46, 0.88), rgba(4, 6, 18, 0.95));
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s ease;
+}
+
+.marquee-card.show { opacity: 1; }
+
+.marquee-card-kicker {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 8px;
+  color: var(--accent-cyan);
+}
+
+.marquee-card-text {
+  font-size: 64px;
+  font-weight: 900;
+  line-height: 1.35;
+  max-width: 22ch;
+  color: #fff;
+  text-shadow: 0 0 44px rgba(157, 78, 221, 0.6);
+}
+
+.marquee-card.is-urgent .marquee-card-kicker { color: var(--accent-yellow); }
+.marquee-card.is-urgent .marquee-card-text { text-shadow: 0 0 44px rgba(255, 0, 127, 0.65); }

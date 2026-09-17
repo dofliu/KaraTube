@@ -25,6 +25,12 @@
         <button class="btn btn-secondary room-step" id="roomPauseBtn"
                 title="暫停計時（中場休息、餐點來了）。播放不受影響">⏸️</button>
       </span>
+      <!-- 舞台訊息（跑馬燈）：櫃檯把字打到包廂螢幕上。放在最上排、不收進設定頁裡 ——
+           要用到它的時候（餐點送到門口、有人要唱生日歌）是分秒的事，
+           翻三層選單才找得到的功能等於沒有。 -->
+      <button class="btn btn-secondary" id="marqueeBtn" title="把一句話打到舞台螢幕上（餐點到了、生日祝福）">
+        📺 舞台訊息<span id="marqueeCountBadge" class="marquee-count" style="display: none;"></span>
+      </button>
       <button class="btn btn-secondary" id="nickBtn" title="設定顯示在佇列上的暱稱，讓大家知道是誰點的歌">
         👤 <span id="nickText">設定暱稱</span>
       </button>
@@ -418,6 +424,44 @@
     </div>
   </div>
 
+  <!-- 舞台訊息：把一句話打到包廂螢幕上 -->
+  <div id="marqueeModal" class="modal-overlay">
+    <div class="modal-content mixer-content">
+      <div class="mixer-header">
+        <h3>📺 舞台訊息</h3>
+        <button id="closeMarqueeBtn" class="btn btn-secondary" style="padding: 4px 12px;">關閉</button>
+      </div>
+      <p class="mixer-hint" style="margin-top: 0;">
+        打一句話到舞台螢幕上。<strong>正在播歌時只會走畫面最上緣那一條</strong>
+        （不會蓋住歌詞），沒有人在唱的時候才用大字卡。
+        每一則過一會兒自己消失 ——「您的餐點到了」在四十分鐘後才出現，比沒有訊息更糟。
+      </p>
+      <div class="marquee-compose">
+        <input type="text" id="marqueeInput" class="search-input marquee-input"
+               maxlength="40" placeholder="例如：A 桌的餐點到了，請開門">
+        <button class="btn btn-primary" id="marqueeSendBtn">送到舞台</button>
+      </div>
+      <div class="marquee-quick" id="marqueeQuick">
+        <!-- 常用句：包廂裡真正會用到的那幾句，按一下就填好（由 controller.js 產生） -->
+      </div>
+      <div class="marquee-options">
+        <label title="排到最前面、而且停留久一點。它換到的優待不包含「蓋住歌詞」">
+          <input type="checkbox" id="marqueeUrgent"> ⚡ 緊急
+        </label>
+        <label title="一直留在輪播裡直到撤掉（生日祝福）。最長四小時">
+          <input type="checkbox" id="marqueePinned"> 📌 釘住
+        </label>
+        <span id="marqueeCharHint" class="mixer-hint" style="margin: 0;"></span>
+      </div>
+      <div class="mixer-header" style="margin-top: 18px;">
+        <h3 style="font-size: 15px;">現在螢幕上的訊息</h3>
+        <button id="marqueeClearBtn" class="btn btn-secondary" style="padding: 4px 12px;"
+                title="撤掉所有訊息（釘住的也一起）">全部撤掉</button>
+      </div>
+      <div id="marqueeList" class="marquee-list"></div>
+    </div>
+  </div>
+
   <!-- Phone Pairing QR Modal -->
   <div id="qrModal" class="modal-overlay">
     <div class="modal-content">
@@ -474,6 +518,8 @@
   <!-- 包廂計時的說法（倒數、提醒、「時間到會讓這一首唱完」）。舞台端載的是
        同一支：包廂裡只能有一個倒數，兩邊各算一次就會有兩個數字，
        而大家會相信對自己有利的那一個。 -->
+  <!-- 舞台訊息的說法（舞台端載的是同一支）：哪一則、剩多久、送不出去時說什麼 -->
+  <script src="/js/marquee-view.js"></script>
   <script src="/js/room-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>

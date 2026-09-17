@@ -367,10 +367,6 @@ class KaraTubeAPI {
       body: JSON.stringify({ ...songData, priority })
     });
     const body = await res.json().catch(() => ({}));
-    // 409 = 點歌額度滿了。刻意**不丟例外**：這不是錯誤，是規則生效了，
-    // 而規則生效要用「說明」的語氣講（見 quota-view.js），不是紅字的失敗訊息。
-    // 丟例外的話呼叫端只拿得到 e.message，那一串結論（誰、幾首、何時可以再點）
-    // 就得再從字串裡剖回來。
     // 409 = 規則擋下來了（點歌額度滿了，或是歡唱時間已經結束）。
     // 刻意**不丟例外**：這不是錯誤，是規則生效了，而規則生效要用「說明」的
     // 語氣講（見 quota-view.js / room-view.js），不是紅字的失敗訊息。
@@ -419,6 +415,50 @@ class KaraTubeAPI {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(minutes === undefined || minutes === null ? {} : { minutes })
     });
+    return await res.json();
+  }
+
+  // --- 舞台訊息（跑馬燈）---
+  // 每一支都回傳最新的整份狀態，畫面不必再問一次；同一份也會用
+  // MARQUEE_UPDATE 廣播出去（點歌台的清單與舞台上跑的要是同一份）。
+
+  async getMarquee() {
+    const res = await fetch(`${this.baseUrl}/api/marquee`);
+    return await res.json();
+  }
+
+  async sendMarquee({ text, sender = '', urgent = false, pinned = false,
+                      seconds, ttlMinutes } = {}) {
+    const payload = { text, sender, urgent, pinned };
+    if (seconds !== undefined && seconds !== null) payload.seconds = seconds;
+    if (ttlMinutes !== undefined && ttlMinutes !== null) payload.ttl_minutes = ttlMinutes;
+    const res = await fetch(`${this.baseUrl}/api/marquee`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await res.json().catch(() => ({}));
+    // 409 = 規則擋下來了（滿了、空訊息、功能關著）。跟點歌那一支同樣
+    // **不丟例外**：這不是錯誤，是規則生效了，而規則生效要用「說明」的語氣講
+    // （見 marquee-view.js marqueeRejectNote）。靜靜地失敗最糟 —— 送出的人
+    // 會以為螢幕上已經有字了，然後對著客人說「您看一下螢幕」。
+    if (res.status === 409) {
+      const detail = (body && body.detail) || {};
+      return { status: 'rejected', reason: detail.error || 'rejected', detail,
+               marquee: detail.marquee || null };
+    }
+    return body;
+  }
+
+  async deleteMarquee(messageId) {
+    const res = await fetch(`${this.baseUrl}/api/marquee/${messageId}`, { method: 'DELETE' });
+    return await res.json();
+  }
+
+  async clearMarquee(includePinned = true) {
+    const res = await fetch(
+      `${this.baseUrl}/api/marquee?include_pinned=${includePinned ? 'true' : 'false'}`,
+      { method: 'DELETE' });
     return await res.json();
   }
 

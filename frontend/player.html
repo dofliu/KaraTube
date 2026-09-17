@@ -32,6 +32,16 @@
     <video id="videoBg" class="video-background" muted playsinline loop></video>
     <div class="stage-vignette"></div>
 
+    <!-- 舞台訊息（跑馬燈）：櫃檯打到包廂螢幕上的那句話。
+         這一條是 .stage-wrapper 的第一個 flex 子元素，出現時整排 HUD
+         往下讓位 —— 是「推開」不是「蓋住」。絕對定位疊上去的話遲早會壓到
+         某個字，而那件事只有在包廂裡、只有在訊息跳出來的那幾秒才看得到。
+         歌詞與音準線那半邊完全不動：那是這個功能唯一不准碰的區域。 -->
+    <div id="marqueeBand" class="marquee-band" style="display: none;">
+      <span class="marquee-band-icon">📺</span>
+      <span id="marqueeBandText" class="marquee-band-text"></span>
+    </div>
+
     <!-- Top HUD: Song Info & Score -->
     <header class="stage-header">
       <div class="stage-song-info">
@@ -121,6 +131,14 @@
     <div id="roomFinale" class="room-finale">
       <div id="roomFinaleTitle" class="room-finale-title">🎤 歡唱時間結束</div>
       <div id="roomFinaleDetail" class="room-finale-detail"></div>
+    </div>
+
+    <!-- 舞台訊息的大字卡：只在**沒有人在唱歌**的時候出現。
+         櫃檯要的是「一定看得到」，而「一定看得到」在副歌那一句等於
+         「一定擋到」—— 所以播歌中同一則訊息自動降級成上面那一條。 -->
+    <div id="marqueeCard" class="marquee-card">
+      <div class="marquee-card-kicker">📺 包廂訊息</div>
+      <div id="marqueeCardText" class="marquee-card-text"></div>
     </div>
 
     <!-- 導唱片頭卡：商用 KTV 的「演唱者：XXX」開場卡，前奏時亮 8 秒 -->
@@ -255,6 +273,8 @@
        take-recorder.js 是真的去操作 MediaRecorder 的那一支，必須排在它後面。 -->
   <script src="/js/take-rules.js"></script>
   <script src="/js/take-recorder.js"></script>
+  <!-- 舞台訊息的說法（點歌台載的是同一支）：現在輪到哪一則、要用哪一種身體顯示 -->
+  <script src="/js/marquee-view.js"></script>
   <!-- 包廂計時的說法（點歌台載的是同一支）：倒數只能有一個數字，
        兩邊各算一次就會有兩個，而大家會相信對自己有利的那一個。 -->
   <script src="/js/room-view.js"></script>

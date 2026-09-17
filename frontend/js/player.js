@@ -103,6 +103,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const roomFinale = document.getElementById("roomFinale");
   const roomFinaleTitle = document.getElementById("roomFinaleTitle");
   const roomFinaleDetail = document.getElementById("roomFinaleDetail");
+  // 舞台訊息（跑馬燈）
+  const marqueeBand = document.getElementById("marqueeBand");
+  const marqueeBandText = document.getElementById("marqueeBandText");
+  const marqueeCard = document.getElementById("marqueeCard");
+  const marqueeCardText = document.getElementById("marqueeCardText");
 
   // Initializing Engines
   const karaokeRenderer = new KaraokeRenderer(subtitlesContainer);
@@ -307,6 +312,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // 片頭卡、結算畫面、自動音量平衡的參數都在點歌台的設定頁，改了立刻生效。
   window.api.on("SETTINGS_UPDATE", (msg) => {
     const s = msg.data || {};
+    if (s.marquee_enabled !== undefined) {
+      marqueeEnabled = !!s.marquee_enabled;
+      paintMarquee();
+    }
+    if (s.marquee_card_when_idle !== undefined) {
+      marqueeCardWhenIdle = !!s.marquee_card_when_idle;
+      paintMarquee();
+    }
     if (s.intro_card_enabled !== undefined) introCardEnabled = !!s.intro_card_enabled;
     if (s.intro_card_seconds !== undefined) introCardMs = Math.round(s.intro_card_seconds * 1000);
     if (s.settlement_enabled !== undefined) settlementEnabled = !!s.settlement_enabled;
@@ -1628,6 +1641,70 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   setInterval(paintRoom, 1000);
+
+  // --- 舞台訊息（跑馬燈）---
+  // 櫃檯打到包廂螢幕上的那句話。顯示的規則全在 marquee-view.js（純邏輯，有測試），
+  // 這裡只負責把它算出來的結果放到畫面上，以及回答「現在有沒有人在唱歌」。
+  let marqueeSnapshot = null;
+  let marqueeSnapshotAt = 0;
+  let marqueeEnabled = true;
+  let marqueeCardWhenIdle = true;
+
+  function paintMarquee() {
+    if (!marqueeBand || !marqueeCard) return;
+    // 存活時間跟包廂計時同一套算法：拿快照裡的時間差 + 收到之後過了多久。
+    // 比對絕對時刻的話，舞台那台機器的時鐘只要跟伺服器差幾分鐘，
+    // 訊息就會提早消失或不肯消失（見 marquee-view.js 開頭）。
+    const since = marqueeSnapshotAt ? (Date.now() - marqueeSnapshotAt) / 1000 : 0;
+    const current = marqueeEnabled
+      ? window.MarqueeView.marqueeCurrent(marqueeSnapshot, since)
+      : null;
+    // 播歌中一律降級成上緣那一條：沒有任何訊息重要到可以蓋住正在唱的那個人。
+    const style = window.MarqueeView.marqueeStyle(current, {
+      playing: isPlaying, cardWhenIdle: marqueeCardWhenIdle,
+    });
+    const urgent = !!(current && current.urgent);
+
+    if (style === "band") {
+      // textContent 而不是 innerHTML：這段字是包廂裡任何一支手機打進來的
+      marqueeBandText.textContent = current.text || "";
+      marqueeBand.style.display = "flex";
+    } else {
+      marqueeBand.style.display = "none";
+    }
+    marqueeBand.classList.toggle("is-urgent", urgent && style === "band");
+
+    if (style === "card") {
+      marqueeCardText.textContent = current.text || "";
+    }
+    marqueeCard.classList.toggle("show", style === "card");
+    marqueeCard.classList.toggle("is-urgent", urgent && style === "card");
+  }
+
+  // 一秒一次就夠：輪播的一輪是好幾秒，而這裡沒有每秒在跳的數字。
+  setInterval(paintMarquee, 1000);
+
+  window.api.on("MARQUEE_UPDATE", (msg) => {
+    marqueeSnapshot = (msg && msg.data) || null;
+    marqueeSnapshotAt = Date.now();
+    if (marqueeSnapshot && marqueeSnapshot.enabled !== undefined) {
+      marqueeEnabled = !!marqueeSnapshot.enabled;
+    }
+    if (marqueeSnapshot && marqueeSnapshot.card_when_idle !== undefined) {
+      marqueeCardWhenIdle = !!marqueeSnapshot.card_when_idle;
+    }
+    paintMarquee();
+  });
+
+  // WebSocket 只推「有變動」的那一刻，所以中途才打開的舞台要自己先問一次 ——
+  // 不問的話，這面螢幕會一直空著，而點歌台上明明列著三則訊息。
+  window.api.getMarquee().then((data) => {
+    marqueeSnapshot = data || null;
+    marqueeSnapshotAt = Date.now();
+    if (data && data.enabled !== undefined) marqueeEnabled = !!data.enabled;
+    if (data && data.card_when_idle !== undefined) marqueeCardWhenIdle = !!data.card_when_idle;
+    paintMarquee();
+  }).catch(() => { /* 拿不到就先空著，下一次 MARQUEE_UPDATE 會補上 */ });
 
   window.api.on("ROOM_ALERT", (msg) => {
     const data = (msg && msg.data) || {};

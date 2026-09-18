@@ -658,6 +658,40 @@ def test_library_songs_rejects_bad_sort():
     assert client.get("/api/library/songs", params={"sort": "隨便排"}).status_code == 422
 
 
+# --- 曲庫查歌（注音首字／字數）---
+
+def test_find_keys_shape(fake_library_song):
+    res = client.get("/api/library/find/keys")
+    assert res.status_code == 200
+    data = res.json()
+    assert len([k for row in data["rows"] for k in row]) == 37
+    assert data["total"] >= 1
+    assert isinstance(data["bopomofo_available"], bool)
+    # 「曲庫測試歌」是 5 個字，字數桶裡要看得到
+    assert any(b["chars"] == 5 and b["count"] >= 1 for b in data["char_buckets"])
+
+
+def test_find_by_text_and_chars(fake_library_song):
+    res = client.get("/api/library/find", params={"q": "曲庫測試歌"})
+    assert res.status_code == 200
+    data = res.json()
+    assert any(s["song_id"] == fake_library_song for s in data["songs"])
+    assert data["query"] == "曲庫測試歌"
+
+    res = client.get("/api/library/find", params={"chars": 5})
+    assert any(s["song_id"] == fake_library_song for s in res.json()["songs"])
+
+    # 查不到就是空清單，不是 500
+    res = client.get("/api/library/find", params={"q": "這首歌不在曲庫裡"})
+    assert res.status_code == 200
+    assert res.json()["songs"] == []
+
+
+def test_find_rejects_out_of_range_params():
+    assert client.get("/api/library/find", params={"chars": -1}).status_code == 422
+    assert client.get("/api/library/find", params={"limit": 999}).status_code == 422
+
+
 # --- 排程預處理 ---
 
 @pytest.fixture()

@@ -27,6 +27,7 @@ from backend.services.queue_manager import QueueManager
 from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
+from backend.services.song_index import SongFinder
 from backend.services.song_history import SongHistory
 from backend.services import marquee, room_timer, song_quota
 from backend.services.score_history import ScoreHistory
@@ -139,6 +140,9 @@ mp3_gate = TranscodeGate(max_concurrent=1)
 night_gate = ExportGate()
 # 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
 library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
+# 曲庫查歌（注音首字／歌名字數）。索引建在 library 給的同一份清單上，
+# 才不會出現「分類瀏覽看得到、查歌查不到」這種兩套清單對不起來的狀況。
+song_finder = SongFinder(storage, library)
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -418,6 +422,30 @@ async def browse_library(
     songs = library.browse(language=language, artist=artist, sort=sort, limit=limit)
     return {"songs": songs, "count": len(songs),
             "language": language, "artist": artist, "sort": sort}
+
+
+@app.get("/api/library/find/keys")
+async def get_find_keys():
+    """查歌鍵盤要的資料：注音鍵位、歌名字數桶、曲庫有幾首。"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, song_finder.facets)
+
+
+@app.get("/api/library/find")
+async def find_in_library(
+    q: str = Query("", description="注音首碼、英文首字母或歌名片段"),
+    chars: int = Query(0, ge=0, le=30, description="歌名字數，0 代表不篩選"),
+    limit: int = Query(60, ge=1, le=300),
+):
+    """
+    只在已備好的曲庫裡查歌（查到的每一首都是快取秒播）。
+
+    第一次查會替沒有索引的歌算注音首碼並寫回 metadata，所以整包丟到 executor
+    去做 —— 曲庫幾百首時那是幾百次讀檔，不能佔住 event loop 讓別人點不了歌。
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, lambda: song_finder.search(query=q, chars=chars or None, limit=limit))
 
 
 @app.get("/api/library/new")

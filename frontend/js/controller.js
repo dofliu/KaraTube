@@ -1016,6 +1016,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   window.setLibFilter = (kind, value) => {
+    // 查歌分頁的字數鈕借用同一顆 chip 元件，但它切的是查歌條件而不是瀏覽條件
+    if (kind === "findchars") return window.findSetChars(value);
     if (kind === "sort") browseFilter.sort = value || "recent";
     else if (kind === "language") browseFilter.language = value;
     else if (kind === "artist") browseFilter.artist = value;
@@ -1039,6 +1041,133 @@ document.addEventListener("DOMContentLoaded", () => {
       searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">曲庫分類讀取失敗</div>`;
     }
   }
+
+  // --- 曲庫查歌（注音首字 / 歌名字數）---
+  // 商用點歌機的實體鍵盤查法。跟上面的搜尋框是兩件事：搜尋框查的是 YouTube
+  // （點下去要等 AI 跑），這一頁只查**已經備好的曲庫**，查到的每一首都是秒播。
+  // 注音、字數與直接打字共用同一個查詢字串（伺服器本來就三種都吃），
+  // 使用者才不會遇到「我打在哪一個框裡」這種問題。
+  let findKeyboard = null;              // 鍵盤與字數桶（曲庫沒變就不用重抓）
+  let findState = { query: "", chars: 0, nextKeys: [] };
+  let findTypingTimer = null;
+  let findInputFocused = false;
+
+  function findKeyHtml(key, enabled) {
+    return `<button class="find-key${enabled ? "" : " find-key-off"}"
+      ${enabled ? "" : "disabled"}
+      onclick="window.findPress('${key}')">${key}</button>`;
+  }
+
+  function buildFindBar(keyboard, res) {
+    const LS = window.LibrarySearch;
+    const kb = keyboard || {};
+    const available = kb.bopomofo_available !== false;
+    const buckets = kb.char_buckets || [];
+    // 會讓整個鍵盤一起變灰的「下一鍵」等於沒給資訊（見 usableNextKeys）
+    const nextKeys = LS.usableNextKeys(kb.rows, findState.nextKeys);
+
+    const charChips = [facetChip("findchars", "0", "不限字數", null, !findState.chars)]
+      .concat(buckets.map(b => {
+        const { label, count } = LS.charBucketLabel(b);
+        return facetChip("findchars", String(b.chars), label, count,
+          findState.chars === b.chars);
+      })).join("");
+
+    const keyboardHtml = available
+      ? (kb.rows || []).map(row =>
+        `<div class="find-key-row">${row.map(k =>
+          findKeyHtml(k, LS.keyEnabled(k, nextKeys))).join("")}</div>`).join("")
+      : `<div class="find-keyboard-off">這台伺服器沒有安裝注音字典（pypinyin），
+          注音查歌關閉中；字數與打字查詢照常可用。</div>`;
+
+    // 查詢列擺在鍵盤上面：按到第五顆的時候，人要看得到自己按了什麼
+    return `
+      <div class="find-bar">
+        <div class="find-row">
+          <span class="facet-label">🔤 查歌</span>
+          <input type="text" id="findInput" class="find-input"
+                 value="${escapeAttr(findState.query)}"
+                 placeholder="按下面的注音，或直接打歌名／歌手"
+                 oninput="window.findTyped(this.value)"
+                 onfocus="window.findFocus(true)" onblur="window.findFocus(false)">
+          <button class="btn btn-secondary find-act" onclick="window.findBackspace()"
+                  title="退一格">⌫</button>
+          <button class="btn btn-secondary find-act" onclick="window.findClear()"
+                  title="把注音、字數條件全部清掉">清除</button>
+        </div>
+        <div class="find-row">
+          <span class="facet-label">🔎 條件</span>
+          <span class="find-query-label">${escapeHtml(
+            LS.queryLabel(findState.query, findState.chars))}</span>
+        </div>
+        <div class="find-row"><span class="facet-label">🔢 字數</span>
+          <div class="facet-chips facet-chips-scroll">${charChips}</div></div>
+        <div class="find-keyboard">${keyboardHtml}</div>
+      </div>`;
+  }
+
+  async function loadFind(reloadKeyboard = true) {
+    try {
+      if (reloadKeyboard || !findKeyboard) findKeyboard = await window.api.getFindKeys();
+      const res = await window.api.findInLibrary({
+        q: findState.query, chars: findState.chars, limit: 60 });
+      findState.nextKeys = res.next_keys || [];
+      // 這一頁的歌卡標題用萃出來的歌名本體，不是整串 YouTube 標題 ——
+      // 查的是「稻香」，列出來卻是「周杰倫 Jay Chou - 稻香…【4K】」很難掃視。
+      const songs = (res.songs || []).map(s => ({
+        ...s, title: s.core_title || s.title, uploader: s.artist_name }));
+      libSummary.textContent = window.LibrarySearch.resultSummary(res);
+      renderSearchResults(songs, "🔤 曲庫查歌（列出來的都是快取秒播）",
+        buildFindBar(findKeyboard, res), window.LibrarySearch.emptyHint(res));
+      restoreFindFocus();
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">曲庫查歌讀取失敗</div>`;
+    }
+  }
+
+  // 每查一次就重畫整區，輸入框會跟著換掉一個新的 DOM 節點 ——
+  // 不把游標放回去的話，打字打到第二個字就會發現自己在對著空氣打。
+  function restoreFindFocus() {
+    if (!findInputFocused) return;
+    const input = document.getElementById("findInput");
+    if (!input) return;
+    input.focus();
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch (e) { /* 舊瀏覽器不支援就算了 */ }
+  }
+
+  window.findFocus = (focused) => { findInputFocused = !!focused; };
+
+  window.findPress = (key) => {
+    findState.query = window.LibrarySearch.pressKey(findState.query, key);
+    loadFind(false);
+  };
+
+  window.findBackspace = () => {
+    findState.query = window.LibrarySearch.backspace(findState.query);
+    loadFind(false);
+  };
+
+  window.findClear = () => {
+    findState.query = "";
+    findState.chars = 0;
+    loadFind(false);
+  };
+
+  window.findSetChars = (value) => {
+    const n = Math.max(0, parseInt(value, 10) || 0);
+    // 再按一次同一個字數＝取消（點歌機上最常見的動作是「我按錯了」）
+    findState.chars = (findState.chars === n) ? 0 : n;
+    loadFind(false);
+  };
+
+  // 打字每一鍵都查一次會把伺服器打爆（每次查詢都要掃一遍曲庫），
+  // 所以停手 250ms 才送出 —— 中文輸入法選字的時候更需要這個緩衝。
+  window.findTyped = (value) => {
+    findState.query = value || "";
+    clearTimeout(findTypingTimer);
+    findTypingTimer = setTimeout(() => loadFind(false), 250);
+  };
 
   // --- 新歌榜 + 推薦歌單 ---
   // 新歌榜＝最近加入曲庫的歌；推薦歌單＝依點唱紀錄推回「接下來唱什麼」，
@@ -1098,6 +1227,7 @@ document.addEventListener("DOMContentLoaded", () => {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
     if (which === "rankings") loadRankings();
     else if (which === "browse") loadBrowse();
+    else if (which === "find") loadFind();
     else if (which === "new") loadNewAndRecommend();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();

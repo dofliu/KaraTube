@@ -61,6 +61,7 @@
       <div class="library-tabs">
         <button class="btn btn-secondary lib-tab active" data-lib="cached">📚 快取歌曲</button>
         <button class="btn btn-secondary lib-tab" data-lib="browse" title="依語言別與歌手分類點歌">🎼 分類瀏覽</button>
+        <button class="btn btn-secondary lib-tab" data-lib="find" title="只在已備好的曲庫裡查歌：注音首字、歌名字數，查到的每一首都是快取秒播">🔤 注音查歌</button>
         <button class="btn btn-secondary lib-tab" data-lib="new" title="最近加入曲庫的新歌與為你推薦的歌單">🆕 新歌推薦</button>
         <button class="btn btn-secondary lib-tab" data-lib="favorites">⭐ 我的最愛</button>
         <button class="btn btn-secondary lib-tab" data-lib="rankings">🏆 點唱排行</button>
@@ -520,6 +521,10 @@
        而大家會相信對自己有利的那一個。 -->
   <!-- 舞台訊息的說法（舞台端載的是同一支）：哪一則、剩多久、送不出去時說什麼 -->
   <script src="/js/marquee-view.js"></script>
+  <!-- 曲庫查歌的說法（按了什麼、為什麼查不到）。查得到什麼由伺服器決定，
+       這一支只負責把「空白畫面」講成一句有用的話 —— 講不出來的話，
+       使用者會回去用搜尋框把已經在曲庫裡的歌再下載一次。 -->
+  <script src="/js/library-search.js"></script>
   <script src="/js/room-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>

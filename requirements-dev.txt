@@ -11,6 +11,9 @@ requests>=2.31.0
 # 歌詞對齊的簡繁轉換。純 Python、幾百 KB，裝了 CI 才測得到真正的解析行為
 # （沒裝的話 _to_traditional_chinese 會走 except 分支，測到的是退化路徑）
 zhconv>=1.4.3
+# 曲庫查歌的注音首字。裝了 CI 才測得到真正的比對行為
+# （沒裝的話 song_index 會走「注音查詢關閉」的退化路徑，那幾條測試會被跳過）
+pypinyin>=0.51.0
 yt-dlp>=2024.3.10
 qrcode>=7.4.2
 pillow>=10.2.0

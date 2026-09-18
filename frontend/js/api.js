@@ -243,6 +243,19 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  async getFindKeys() {
+    const res = await fetch(`${this.baseUrl}/api/library/find/keys`);
+    return await res.json();
+  }
+
+  async findInLibrary({ q = "", chars = 0, limit = 60 } = {}) {
+    const params = new URLSearchParams({ limit });
+    if (q) params.set("q", q);
+    if (chars > 0) params.set("chars", chars);
+    const res = await fetch(`${this.baseUrl}/api/library/find?${params}`);
+    return await res.json();
+  }
+
   async getNewSongs(limit = 24) {
     const res = await fetch(`${this.baseUrl}/api/library/new?limit=${limit}`);
     return await res.json();

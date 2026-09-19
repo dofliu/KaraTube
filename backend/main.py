@@ -28,6 +28,7 @@ from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_index import SongFinder
+from backend.services.artist_index import ArtistFinder
 from backend.services.song_history import SongHistory
 from backend.services import marquee, room_timer, song_quota
 from backend.services.score_history import ScoreHistory
@@ -143,6 +144,9 @@ library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history
 # 曲庫查歌（注音首字／歌名字數）。索引建在 library 給的同一份清單上，
 # 才不會出現「分類瀏覽看得到、查歌查不到」這種兩套清單對不起來的狀況。
 song_finder = SongFinder(storage, library)
+# 歌星查歌（注音首字查歌手）。接在 song_finder 後面而不是自己掃一次曲庫：
+# 歌手清單與歌單用的都是同一份索引，歌名也跟著是萃出來的本體而非整串標題。
+artist_finder = ArtistFinder(song_finder)
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -446,6 +450,31 @@ async def find_in_library(
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, lambda: song_finder.search(query=q, chars=chars or None, limit=limit))
+
+
+@app.get("/api/library/artists/keys")
+async def get_artist_find_keys():
+    """歌星鍵盤要的資料：注音鍵位、曲庫有幾位歌手、幾首認不出歌手。"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, artist_finder.facets)
+
+
+@app.get("/api/library/artists/find")
+async def find_artists(
+    q: str = Query("", description="歌手名的注音首碼、英文首字母，或直接打名字"),
+    artist: str = Query("", description="選定的歌手（歌星清單給的 id）"),
+    limit: int = Query(60, ge=1, le=300),
+):
+    """
+    歌星查歌：查到歌手，同一包就把他的歌單帶回來。
+
+    同一位歌手在曲庫裡的多種寫法（周杰倫 / Jay Chou / 周杰倫 Jay Chou）已經併成
+    一位，所以歌單是完整的那一份。跟歌名查歌一樣丟到 executor：第一次查要替整個
+    曲庫建索引，那是幾百次讀檔，不能佔住 event loop 讓別人點不了歌。
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, lambda: artist_finder.search(query=q, artist_id=artist, limit=limit))
 
 
 @app.get("/api/library/new")

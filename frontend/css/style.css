@@ -767,6 +767,29 @@ input[type="range"] {
   .find-key { min-width: 36px; font-size: 15px; padding: 7px 0; }
 }
 
+/* --- 歌星查歌的歌星鈕 --- */
+/* 別名（「也寫作 Jay Chou」）直接印在鈕上而不是只放 title：
+   按英文查到中文名字的人，滑鼠停在上面才看得到解釋等於沒解釋 ——
+   包廂那台是觸控螢幕，根本沒有 hover。 */
+.artist-chip {
+  gap: 6px;
+}
+
+.artist-alias {
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.6;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 歌星清單比語言別長得多，給它高一點的捲動區（還是有上限，
+   不能把歌卡整個擠到螢幕外） */
+.find-bar .facet-chips-scroll {
+  max-height: 120px;
+}
+
 /* 歌卡上的語言別與新歌標記 */
 .lang-badge {
   position: absolute;

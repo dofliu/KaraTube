@@ -1169,6 +1169,134 @@ document.addEventListener("DOMContentLoaded", () => {
     findTypingTimer = setTimeout(() => loadFind(false), 250);
   };
 
+  // --- 歌星查歌（按歌星名字的注音首字）---
+  // 跟上面的「注音查歌」是同一副鍵盤、不同索引：那邊按的是歌名的字，
+  // 這邊按的是**歌星名字**的字。包廂裡更常用的其實是這一邊 ——
+  // 想不起歌名的人，一定記得自己要唱誰。
+  let artistKeyboard = null;
+  let artistState = { query: "", artist: "", nextKeys: [] };
+  let artistTypingTimer = null;
+  let artistInputFocused = false;
+
+  function artistChipHtml(artist, selected) {
+    const info = window.ArtistSearch.artistLabel(artist);
+    const active = window.ArtistSearch.isSelected(artist, selected);
+    const title = info.note || (info.unknown ? "這些歌認不出是誰唱的" : info.label);
+    return `<button class="facet-chip artist-chip ${active ? "active" : ""}"
+      title="${escapeAttr(title)}"
+      onclick="window.artistPick('${escapeAttr(artist.id || "")}')">${escapeHtml(info.label)}${
+      info.note ? `<span class="artist-alias">${escapeHtml(info.note)}</span>` : ""
+    }<span class="facet-count">${info.count}</span></button>`;
+  }
+
+  function buildArtistBar(keyboard, res) {
+    const AS = window.ArtistSearch;
+    const kb = keyboard || {};
+    const available = kb.bopomofo_available !== false;
+    const nextKeys = window.LibrarySearch.usableNextKeys(kb.rows, artistState.nextKeys);
+    const artists = res.artists || [];
+
+    const chips = artists.map(a => artistChipHtml(a, res.selected)).join("");
+    const keyboardHtml = available
+      ? (kb.rows || []).map(row =>
+        `<div class="find-key-row">${row.map(k =>
+          `<button class="find-key${window.LibrarySearch.keyEnabled(k, nextKeys) ? "" : " find-key-off"}"
+            ${window.LibrarySearch.keyEnabled(k, nextKeys) ? "" : "disabled"}
+            onclick="window.artistPress('${k}')">${k}</button>`).join("")}</div>`).join("")
+      : `<div class="find-keyboard-off">這台伺服器沒有安裝注音字典（pypinyin），
+          注音查歌星關閉中；直接打歌星的名字照常可用。</div>`;
+
+    return `
+      <div class="find-bar">
+        <div class="find-row">
+          <span class="facet-label">🎤 歌星</span>
+          <input type="text" id="artistInput" class="find-input"
+                 value="${escapeAttr(artistState.query)}"
+                 placeholder="按下面的注音，或直接打歌星的名字"
+                 oninput="window.artistTyped(this.value)"
+                 onfocus="window.artistFocus(true)" onblur="window.artistFocus(false)">
+          <button class="btn btn-secondary find-act" onclick="window.artistBackspace()"
+                  title="退一格">⌫</button>
+          <button class="btn btn-secondary find-act" onclick="window.artistClear()"
+                  title="把注音與選定的歌星清掉">清除</button>
+        </div>
+        <div class="find-row">
+          <span class="facet-label">🔎 條件</span>
+          <span class="find-query-label">${escapeHtml(
+            AS.queryLabel(artistState.query, res.selected))}</span>
+        </div>
+        <div class="find-row"><span class="facet-label">🎼 歌星</span>
+          <div class="facet-chips facet-chips-scroll">${
+            chips || `<span class="find-query-label">${AS.emptyHint(res)}</span>`}</div></div>
+        <div class="find-keyboard">${keyboardHtml}</div>
+      </div>`;
+  }
+
+  async function loadArtists(reloadKeyboard = true) {
+    try {
+      if (reloadKeyboard || !artistKeyboard) {
+        artistKeyboard = await window.api.getArtistKeys();
+      }
+      const res = await window.api.findArtists({
+        q: artistState.query, artist: artistState.artist, limit: 80 });
+      artistState.nextKeys = res.next_keys || [];
+      // 伺服器可能自己選了一位（只剩一位的時候），本地狀態要跟上，
+      // 不然下一次查詢會把那位又弄丟
+      if (res.selected && res.selected.id) artistState.artist = res.selected.id;
+      const songs = (res.songs || []).map(s => ({
+        ...s, title: s.core_title || s.title, uploader: s.artist_name }));
+      libSummary.textContent = window.ArtistSearch.resultSummary(res);
+      renderSearchResults(songs, window.ArtistSearch.songHeading(res),
+        buildArtistBar(artistKeyboard, res), window.ArtistSearch.emptyHint(res));
+      restoreArtistFocus();
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">歌星查歌讀取失敗</div>`;
+    }
+  }
+
+  function restoreArtistFocus() {
+    if (!artistInputFocused) return;
+    const input = document.getElementById("artistInput");
+    if (!input) return;
+    input.focus();
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch (e) { /* 舊瀏覽器不支援就算了 */ }
+  }
+
+  window.artistFocus = (focused) => { artistInputFocused = !!focused; };
+
+  window.artistPress = (key) => {
+    artistState.query = window.LibrarySearch.pressKey(artistState.query, key);
+    // 多按一個鍵＝重新縮範圍，之前選定的那位要放掉（不放的話歌單不會動，
+    // 使用者會以為鍵盤壞了）
+    artistState.artist = "";
+    loadArtists(false);
+  };
+
+  window.artistBackspace = () => {
+    artistState.query = window.LibrarySearch.backspace(artistState.query);
+    artistState.artist = "";
+    loadArtists(false);
+  };
+
+  window.artistClear = () => {
+    artistState.query = "";
+    artistState.artist = "";
+    loadArtists(false);
+  };
+
+  window.artistPick = (id) => {
+    artistState.artist = window.ArtistSearch.toggleArtist(artistState.artist, id);
+    loadArtists(false);
+  };
+
+  window.artistTyped = (value) => {
+    artistState.query = value || "";
+    artistState.artist = "";
+    clearTimeout(artistTypingTimer);
+    artistTypingTimer = setTimeout(() => loadArtists(false), 250);
+  };
+
   // --- 新歌榜 + 推薦歌單 ---
   // 新歌榜＝最近加入曲庫的歌；推薦歌單＝依點唱紀錄推回「接下來唱什麼」，
   // 每首都附推薦理由，使用者才知道為什麼會出現這首。
@@ -1228,6 +1356,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (which === "rankings") loadRankings();
     else if (which === "browse") loadBrowse();
     else if (which === "find") loadFind();
+    else if (which === "artists") loadArtists();
     else if (which === "new") loadNewAndRecommend();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();

@@ -62,6 +62,7 @@
         <button class="btn btn-secondary lib-tab active" data-lib="cached">📚 快取歌曲</button>
         <button class="btn btn-secondary lib-tab" data-lib="browse" title="依語言別與歌手分類點歌">🎼 分類瀏覽</button>
         <button class="btn btn-secondary lib-tab" data-lib="find" title="只在已備好的曲庫裡查歌：注音首字、歌名字數，查到的每一首都是快取秒播">🔤 注音查歌</button>
+        <button class="btn btn-secondary lib-tab" data-lib="artists" title="歌星查歌：按歌星名字的注音首字（周杰倫＝ㄓㄐㄌ），選一位就翻開他的歌單">🎤 歌星查歌</button>
         <button class="btn btn-secondary lib-tab" data-lib="new" title="最近加入曲庫的新歌與為你推薦的歌單">🆕 新歌推薦</button>
         <button class="btn btn-secondary lib-tab" data-lib="favorites">⭐ 我的最愛</button>
         <button class="btn btn-secondary lib-tab" data-lib="rankings">🏆 點唱排行</button>
@@ -525,6 +526,9 @@
        這一支只負責把「空白畫面」講成一句有用的話 —— 講不出來的話，
        使用者會回去用搜尋框把已經在曲庫裡的歌再下載一次。 -->
   <script src="/js/library-search.js"></script>
+  <!-- 歌星查歌的說法（按英文查到中文名字、按到只剩一位就自動翻開歌單，
+       這兩件事不講清楚都會被當成壞掉）。 -->
+  <script src="/js/artist-search.js"></script>
   <script src="/js/room-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>

@@ -256,6 +256,21 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  async getArtistKeys() {
+    const res = await fetch(`${this.baseUrl}/api/library/artists/keys`);
+    return await res.json();
+  }
+
+  // 歌星清單與那位歌星的歌單一起回來：使用者要的是歌不是名字，
+  // 分兩支 API 會讓「按到只剩一位就自動翻開歌單」多閃一次空畫面
+  async findArtists({ q = "", artist = "", limit = 60 } = {}) {
+    const params = new URLSearchParams({ limit });
+    if (q) params.set("q", q);
+    if (artist) params.set("artist", artist);
+    const res = await fetch(`${this.baseUrl}/api/library/artists/find?${params}`);
+    return await res.json();
+  }
+
   async getNewSongs(limit = 24) {
     const res = await fetch(`${this.baseUrl}/api/library/new?limit=${limit}`);
     return await res.json();

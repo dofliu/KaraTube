@@ -692,6 +692,43 @@ def test_find_rejects_out_of_range_params():
     assert client.get("/api/library/find", params={"limit": 999}).status_code == 422
 
 
+# --- 歌星查歌 ---
+
+def test_artist_find_keys_shape(fake_library_song):
+    res = client.get("/api/library/artists/keys")
+    assert res.status_code == 200
+    data = res.json()
+    assert len([k for row in data["rows"] for k in row]) == 37
+    assert data["artist_count"] >= 1
+    assert isinstance(data["bopomofo_available"], bool)
+
+
+def test_artist_find_by_name_returns_his_songs(fake_library_song):
+    res = client.get("/api/library/artists/find", params={"q": "測試歌手"})
+    assert res.status_code == 200
+    data = res.json()
+    assert any(a["name"] == "測試歌手" for a in data["artists"])
+    assert any(s["song_id"] == fake_library_song for s in data["songs"])
+
+    # 指定歌手就只回他的歌
+    res = client.get("/api/library/artists/find", params={"artist": "測試歌手"})
+    data = res.json()
+    assert data["selected"]["name"] == "測試歌手"
+    assert all(s["artist_name"] == "測試歌手" for s in data["songs"])
+    # 歌單另外回傳，歌手清單裡就不用再夾一份
+    assert "songs" not in data["artists"][0]
+
+    # 查不到就是空清單，不是 500
+    res = client.get("/api/library/artists/find", params={"q": "這位歌手不在曲庫裡"})
+    assert res.status_code == 200
+    assert res.json()["artists"] == []
+
+
+def test_artist_find_rejects_out_of_range_params():
+    assert client.get("/api/library/artists/find",
+                      params={"limit": 999}).status_code == 422
+
+
 # --- 排程預處理 ---
 
 @pytest.fixture()

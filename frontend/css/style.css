@@ -1255,6 +1255,25 @@ input[type="range"] {
   border-color: rgba(255, 222, 89, 0.25);
 }
 
+/* 自動接歌（沒有人點歌時，機器自己接一首）。綠色是刻意的：
+   這一條講的是「機器正在替你墊檔」，不是警告也不是規則限制。 */
+.autofill-bar {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+/* 正在播的是機器接的歌。標出來才不會有人以為是誰偷點的 —— 而且它
+   隨時會讓位給真正點的歌，看得到標記才預期得到那件事。 */
+.auto-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+}
+
 /* --- 包廂計時（歡唱時間） --- */
 
 .room-timer {

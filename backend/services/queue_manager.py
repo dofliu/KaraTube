@@ -1,4 +1,5 @@
 import asyncio
+import time
 import uuid
 import logging
 from typing import List, Dict, Any, Optional, Callable
@@ -6,6 +7,7 @@ from backend.pipeline.song_processor import SongProcessor
 from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
 from backend.services.song_history import SongHistory
+from backend.services import autofill as autofill_rules
 from backend.services import rotation as rotation_rules
 from backend.services import room_timer as room_rules
 from backend.services import song_quota
@@ -35,7 +37,8 @@ class QueueManager:
     def __init__(self, song_processor: SongProcessor, storage: SongStorage,
                  broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None,
                  song_history: Optional[SongHistory] = None, settings: Optional[Any] = None,
-                 room: Optional[Any] = None):
+                 room: Optional[Any] = None, library: Optional[Any] = None,
+                 favorites: Optional[Any] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
@@ -43,6 +46,10 @@ class QueueManager:
         self.song_history = song_history
         # 系統設定（可為 None：測試與舊呼叫端不必提供）
         self.settings = settings
+        # 自動接歌的歌單來源：曲庫索引（已經備好的歌）與我的最愛。
+        # 兩個都可為 None —— 沒給就等於這台機器接不了歌（而不是壞掉）。
+        self.library = library
+        self.favorites = favorites
 
         self.current_song: Optional[Dict[str, Any]] = None
         self.queue: List[Dict[str, Any]] = []
@@ -106,6 +113,21 @@ class QueueManager:
         # 開機後的第一首歌生效一次，按過結束之後就不再自動把錶打開 ——
         # 見 _autostart_room_session。
         self._room_autostart_off = False
+        # 自動接歌（沒有人點歌時，機器自己接一首）。
+        # 規則在 backend/services/autofill.py，這裡只留三件跟「現在這一場」
+        # 有關的狀態：接過哪幾首（不要一直重複）、連著接了幾首（接太多要停）、
+        # 以及最後那一次的說明（畫面要講得出「它為什麼放這首」）。
+        self.autofill_recent: List[str] = []
+        self.autofill_streak: int = 0
+        self.autofill_last: Optional[Dict[str, Any]] = None
+        # 從什麼時候開始沒歌可播（單調時鐘）。None = 還沒進入空閒。
+        self._idle_since: Optional[float] = None
+        # 機器接的那一首是什麼時候開播的。讓位的判斷要它（見 autofill 決定三）。
+        self._auto_started_at: Optional[float] = None
+
+    def _now(self) -> float:
+        """單調時鐘。測試會換掉它，所以「45 秒之後」不必真的等 45 秒。"""
+        return time.monotonic()
 
     def set_broadcast_callback(self, cb: Callable):
         self.broadcast_cb = cb
@@ -158,6 +180,10 @@ class QueueManager:
             # 秒數只會在狀態變動時更新，每一秒的倒數由畫面自己跑（見 room-view.js）：
             # 為了一個倒數而每秒廣播一次整份狀態，是拿包廂的網路換一個時鐘。
             "room": self.room_state(),
+            # 自動接歌。跟計時一樣跟著每一次廣播走：點歌台要能標出「現在這首是
+            # 機器接的」，而那個標記必須跟佇列是同一份狀態 —— 分兩支 API 拿的話，
+            # 畫面會出現「歌換了、標記還停在上一首」的半秒鐘。
+            "autofill": self.autofill_state(),
         }
 
     # --- 包廂計時 ---
@@ -217,6 +243,8 @@ class QueueManager:
         self.current_song = None
         self.is_playing = False
         self.room.mark_halted(True)
+        # 散場之後不要接歌。空閒計時一起清掉，續時接回去時才從那一刻重新算。
+        self._idle_since = None
         await self.broadcast_state()
 
     def room_milestones(self):
@@ -292,6 +320,215 @@ class QueueManager:
         if resumed is None:
             await self.broadcast_state()
         return self.room_state()
+
+    # --- 自動接歌 ---
+
+    def autofill_policy(self) -> Dict[str, Any]:
+        """設定頁定下的自動接歌規則。沒有設定物件（測試、舊呼叫端）就是「沒開」。"""
+        if self.settings and hasattr(self.settings, "autofill_policy"):
+            return self.settings.autofill_policy()
+        return {"enabled": False, "source": autofill_rules.DEFAULT_SOURCE,
+                "idle_seconds": autofill_rules.DEFAULT_IDLE_SECONDS,
+                "stop_after": autofill_rules.DEFAULT_STOP_AFTER}
+
+    def autofill_state(self) -> Dict[str, Any]:
+        """
+        廣播給所有裝置的自動接歌狀態 = 規則 + 這一場已經接了幾首。
+
+        `stopped` 是算出來的（連續接滿了就停），不是另外存一個旗標：
+        存旗標的話會出現「有人點了一首、旗標忘了清」那種沒有人查得出來的狀態。
+        """
+        policy = self.autofill_policy()
+        playing = bool(self.current_song and self.current_song.get("auto"))
+        return {
+            **policy,
+            "streak": self.autofill_streak,
+            "stopped": policy["enabled"] and self.autofill_streak >= policy["stop_after"],
+            "playing": playing,
+            "last": self.autofill_last,
+            "available": self.library is not None,
+        }
+
+    def busy_song_ids(self) -> List[str]:
+        """正在播的、還排在佇列裡的歌。自動接歌與 🎲 隨機點歌都不該挑到這些。"""
+        ids = [item["song_id"] for item in self.queue if item.get("song_id")]
+        if self.current_song and self.current_song.get("song_id"):
+            ids.append(self.current_song["song_id"])
+        return ids
+
+    def auto_yield_due(self) -> bool:
+        """
+        現在正在播的是機器接的歌，而且還在前 45 秒 —— 有人點歌就該立刻讓位。
+
+        超過 45 秒代表很可能已經有人跟著唱了，那就讓它唱完再換
+        （見 backend/services/autofill.py 決定三）。
+        """
+        if not (self.current_song and self.current_song.get("auto")):
+            return False
+        if self._auto_started_at is None:
+            return True
+        return (self._now() - self._auto_started_at) < autofill_rules.YIELD_GRACE_SECONDS
+
+    async def _library_entries(self) -> List[Dict[str, Any]]:
+        """
+        曲庫裡「已經備好、可以秒播」的歌。
+
+        丟到執行緒裡跑：它會去掃快取資料夾（曲庫大的時候是幾百個 stat），
+        而呼叫它的時機正是舞台在放歌或剛要放歌的時候。
+        """
+        if self.library is None:
+            return []
+        try:
+            return await asyncio.to_thread(self.library.entries)
+        except Exception as e:  # 曲庫壞掉不該讓整個心跳迴圈死掉
+            logger.warning(f"自動接歌讀不到曲庫: {e}")
+            return []
+
+    def _favorite_ids(self) -> List[str]:
+        if self.favorites is None:
+            return []
+        try:
+            return list(self.favorites.ids())
+        except Exception:
+            return []
+
+    async def plan_autofill(self, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """挑一首機器要接的歌（只挑，不播）。挑不到回 None。"""
+        entries = await self._library_entries()
+        if not entries:
+            return None
+        policy = self.autofill_policy()
+        return autofill_rules.pick(
+            entries,
+            source=source or policy["source"],
+            favorite_ids=self._favorite_ids(),
+            busy_ids=self.busy_song_ids(),
+            recent_ids=self.autofill_recent,
+        )
+
+    def _autofill_item(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """把挑到的曲庫項目做成佇列項目。`auto` 這一欄是它跟人點的歌唯一的差別。"""
+        song = plan["song"]
+        song_id = song["song_id"]
+        return {
+            "queue_id": str(uuid.uuid4()),
+            "song_id": song_id,
+            "url": f"https://www.youtube.com/watch?v={song_id}",
+            "title": song.get("title") or song_id,
+            "artist": song.get("artist") or "",
+            "thumbnail": song.get("thumbnail") or f"https://img.youtube.com/vi/{song_id}/hqdefault.jpg",
+            "has_video": None,
+            "status": "READY",
+            "progress": 100,
+            "status_text": "自動接歌",
+            # 機器接的歌沒有點歌人。刻意留空而不是填「系統」——
+            # 那個名字會跑進輪序與額度的統計裡，變成包廂裡一位唱不停的客人。
+            "requested_by": "",
+            "priority": False,
+            "auto": True,
+            "auto_reason": plan["reason"],
+        }
+
+    def _autofill_blocked(self) -> bool:
+        """現在絕對不該自己接歌的情形（見 autofill 決定五、七）。"""
+        policy = self.autofill_policy()
+        if not policy["enabled"] or self.library is None:
+            return True
+        # 有歌在播、佇列裡還有東西（含正在跑流水線的）就輪不到機器
+        if self.current_song is not None or self.queue:
+            return True
+        # 散場之後、或時間到等著收場時不接
+        if self.room_stops_playback() or self.room.snapshot()["halted"]:
+            return True
+        # 連著接滿了：很可能沒有人在了
+        return self.autofill_streak >= policy["stop_after"]
+
+    async def tick_autofill(self) -> Optional[Dict[str, Any]]:
+        """
+        心跳呼叫：該接歌了嗎？接了就回傳那一首，沒接回 None。
+
+        空閒的起算點放在這裡（而不是歌一唱完就開始算），是因為「空閒」的定義
+        是**這一刻沒歌可播**：佇列裡還有一首在跑流水線時不算空閒，那首跑完
+        就會自己接上，機器不該搶在它前面。
+        """
+        if self._autofill_blocked():
+            # 有歌在播（或排著）就不是空閒。下次真的空下來要從那一刻重新算，
+            # 不然剛才那三分鐘的演唱會被算成「已經空閒三分鐘」，歌一唱完
+            # 機器就當場接上 —— 而決定四說的正是「別跟正在找歌的人搶」。
+            if self.current_song is not None or self.queue:
+                self._idle_since = None
+            return None
+
+        policy = self.autofill_policy()
+        now = self._now()
+        if self._idle_since is None:
+            self._idle_since = now
+            return None
+        if now - self._idle_since < policy["idle_seconds"]:
+            return None
+
+        plan = await self.plan_autofill()
+        if plan is None:
+            # 曲庫是空的（或剩下的全在佇列裡）。重新起算空閒，
+            # 否則每一次心跳都會再掃一次快取資料夾。
+            self._idle_since = now
+            return None
+
+        item = self._autofill_item(plan)
+        self.queue.insert(0, item)
+        played = await self.play_next()
+        if played is None:
+            # 沒播成（時間剛好到了之類）。不要把這一首留在佇列裡 ——
+            # 那會變成一首沒有人點、卻排在最前面的歌。
+            if item in self.queue:
+                self.queue.remove(item)
+            self._idle_since = now
+            return None
+
+        self.autofill_streak += 1
+        self.autofill_recent = autofill_rules.remember(self.autofill_recent, item["song_id"])
+        self.autofill_last = {
+            "song_id": item["song_id"],
+            "title": item["title"],
+            "artist": item["artist"],
+            "reason": plan["reason"],
+            "relaxed": plan["relaxed"],
+            "source_fallback": plan["source_fallback"],
+            "streak": self.autofill_streak,
+        }
+        self._idle_since = None
+        logger.info(f"自動接歌：{item['title']}（{plan['reason']}，第 {self.autofill_streak} 首）")
+        await self.broadcast_state()
+        return played
+
+    async def random_pick(self, requested_by: str = "") -> Optional[Dict[str, Any]]:
+        """
+        🎲 來一首：用同一副挑歌規則隨機點一首進佇列。
+
+        跟自動接歌共用挑法（包廂設「只挑我的最愛」時，🎲 也照辦），但**算人點的**：
+        有人按了那顆鍵，就是有人做了決定 —— 計入點唱排行與已唱歷史、佔輪序與
+        額度，跟手動點一首完全一樣。額度滿了照樣會被擋（丟 QuotaExceeded），
+        那是對的：這顆鍵是點歌的捷徑，不是繞過規則的後門。
+
+        擋的判斷刻意排在挑歌**之前**：挑完再擋的話，曲庫裡剩下的歌剛好都排在
+        佇列裡時，使用者收到的會是「沒有歌可以挑」—— 而真正的理由是他排太多了。
+        那兩句話的下一步完全不同（一句是去點別的歌，一句是等一首唱完）。
+        """
+        if self.room_stops_playback():
+            raise room_rules.RoomTimeUp(self.room_state())
+        verdict = song_quota.check(self.queue, str(requested_by or "").strip()[:24],
+                                   self.pending_limit, priority=False)
+        if not verdict["allowed"]:
+            raise song_quota.QuotaExceeded(verdict)
+
+        plan = await self.plan_autofill()
+        if plan is None:
+            return None
+        song = plan["song"]
+        item = await self.add_song(song["song_id"], song.get("title", ""),
+                                   song.get("artist", ""), song.get("thumbnail", ""),
+                                   priority=False, requested_by=requested_by)
+        return {"item": item, "reason": plan["reason"], "song_id": song["song_id"]}
 
     async def add_song(self, url_or_id: str, title: str = "", artist: str = "", thumbnail: str = "",
                        priority: bool = False, requested_by: str = "") -> Dict[str, Any]:
@@ -381,6 +618,12 @@ class QueueManager:
             # If nothing currently playing, play immediately
             if self.current_song is None:
                 await self.play_next()
+            elif self.auto_yield_due():
+                # 正在播的是機器接的歌，而且才剛開始 —— 真的有人點歌了，
+                # 它就該讓開（見 autofill 決定三）。這裡切的是一首沒有人點的歌，
+                # 不是把誰的演唱打斷。
+                logger.info("自動接歌讓位給剛點的歌")
+                await self.play_next()
 
         return queue_item
 
@@ -411,7 +654,13 @@ class QueueManager:
             self._cleanup_cache_if_needed()
 
             # Auto-play if nothing is currently playing and this is the head of queue
-            if self.current_song is None and self.queue and self.queue[0]["queue_id"] == item["queue_id"]:
+            is_head = bool(self.queue and self.queue[0]["queue_id"] == item["queue_id"])
+            if self.current_song is None and is_head:
+                await self.play_next()
+            elif is_head and self.auto_yield_due():
+                # 點的時候還在跑流水線，跑完的這一刻機器正好在接歌墊檔 ——
+                # 一樣讓位（通常跑完都超過 45 秒了，所以這條多半不會觸發，
+                # 但快取命中的重跑會）。
                 await self.play_next()
             else:
                 await self.broadcast_state()
@@ -433,6 +682,9 @@ class QueueManager:
         if not self.queue:
             self.current_song = None
             self.is_playing = False
+            # 從這一刻開始算「空了多久」。自動接歌要等滿設定的秒數才出手，
+            # 免得跟正在找下一首的人搶（見 autofill 決定四）。
+            self._idle_since = self._now()
             await self.broadcast_state()
             return None
 
@@ -447,21 +699,34 @@ class QueueManager:
             if self.current_song:
                 self.history.append(self.current_song)
             self.current_song = next_item
-            # 第一首歌開始播＝這一場開始了。自動開錶是刻意的：要靠人記得按
-            # 「開始計時」的話，最常見的結局是三小時後才有人想起來沒按 ——
-            # 那時候這個功能等於沒開，而且已經補不回來了。
-            self._autostart_room_session()
             # 上一首圈起來的練唱區間對這一首沒有意義，換人上台就歸零
             self.clear_loop()
             self.is_playing = True
-            # 輪序也是「真的上台」才算一首 —— 排進佇列又被刪掉的不該佔掉他的輪次。
-            # 被切歌的算（麥克風確實輪到他手上了），這一點跟點唱排行一致。
-            self.rotation.record_play(next_item, gap_hours=self.session_gap_hours())
-            # 真正上台才計入點唱排行與已唱歷史，排進佇列又被移除的不算
-            if self.play_stats:
-                self.play_stats.record_play(next_item)
-            if self.song_history:
-                self.song_history.record(next_item)
+            self._idle_since = None
+            if next_item.get("auto"):
+                # 機器自己接的歌不算任何人的一首（見 autofill 決定二）：
+                # 不進點唱排行（否則排行變成機器自己的回音 —— 照排行挑歌、
+                # 播出來又計進排行，幾個晚上之後榜上只剩它愛放的那幾首）、
+                # 不進已唱歷史（沒有人唱它也會被記成「今天唱過」，
+                # 那份清單是給人按「再唱一次」的，混進沒人唱的歌就不準了）、
+                # 不佔輪序，也不會把包廂的錶打開（決定六）。
+                self._auto_started_at = self._now()
+            else:
+                self._auto_started_at = None
+                # 有人點歌了：機器可以重新接（連續接歌的計數歸零，決定五）
+                self.autofill_streak = 0
+                # 第一首歌開始播＝這一場開始了。自動開錶是刻意的：要靠人記得按
+                # 「開始計時」的話，最常見的結局是三小時後才有人想起來沒按 ——
+                # 那時候這個功能等於沒開，而且已經補不回來了。
+                self._autostart_room_session()
+                # 輪序也是「真的上台」才算一首 —— 排進佇列又被刪掉的不該佔掉他的輪次。
+                # 被切歌的算（麥克風確實輪到他手上了），這一點跟點唱排行一致。
+                self.rotation.record_play(next_item, gap_hours=self.session_gap_hours())
+                # 真正上台才計入點唱排行與已唱歷史，排進佇列又被移除的不算
+                if self.play_stats:
+                    self.play_stats.record_play(next_item)
+                if self.song_history:
+                    self.song_history.record(next_item)
             await self.broadcast_state()
             return next_item
         else:

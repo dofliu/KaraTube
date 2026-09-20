@@ -55,7 +55,7 @@ ROOM_TICK_SECONDS = 5
 
 async def stage_heartbeat_loop():
     """
-    舞台的心跳：推進包廂計時，並丟掉過期的舞台訊息。
+    舞台的心跳：推進包廂計時、丟掉過期的舞台訊息，並在沒有人點歌時自己接一首。
 
     兩件事共用同一個迴圈，是因為它們要的是同一件事 —— 「時間自己過去了」
     這件事必須有人發現。提醒不能等到「下一次有人操作」才發現：包廂最安靜的
@@ -74,6 +74,10 @@ async def stage_heartbeat_loop():
             # 不叫十分鐘了），這裡是為了讓點歌台的訊息清單跟舞台看到的同一份。
             if marquee_board.prune():
                 await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": marquee_state()})
+            # 沒有人點歌時，機器自己接一首。掛在同一個心跳上的理由跟計時一樣：
+            # 「空了二十秒」這件事必須有人發現，而包廂最安靜的時候正是
+            # 沒有人會去按任何按鈕的時候。
+            await queue_manager.tick_autofill()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -183,7 +187,10 @@ room = room_timer.RoomTimer(CACHE_DIR / "room_timer.json")
 marquee_board = marquee.MarqueeBoard()
 queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
                              play_stats=play_stats, song_history=song_history,
-                             settings=settings, room=room)
+                             settings=settings, room=room,
+                             # 自動接歌只從「已經備好的曲庫」挑（見 autofill 決定一），
+                             # 所以它拿的是曲庫索引，不是搜尋服務。
+                             library=library, favorites=favorites)
 # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
 queue_manager.apply_control_defaults()
 
@@ -569,6 +576,62 @@ async def get_quota():
     """
     state = queue_manager.get_full_state()
     return state["quota"]
+
+
+@app.get("/api/autofill")
+async def get_autofill():
+    """
+    自動接歌：開了沒有、照什麼挑、空多久才接、連著接了幾首、剛才那首為什麼被挑中。
+
+    每一次 STATE_UPDATE 也帶著同一份資料（`state["autofill"]`），這支端點是給
+    不想開 WebSocket 的呼叫端用的。
+    """
+    return queue_manager.autofill_state()
+
+
+@app.get("/api/autofill/preview")
+async def preview_autofill():
+    """
+    「現在接的話會接哪一首」。設定頁按下去可以先看一眼，不必真的等它接。
+
+    只挑不播：挑歌本身沒有副作用（不記進「最近接過」，也不碰佇列），
+    所以按幾次都不會影響等一下真正接歌的結果。
+    """
+    plan = await queue_manager.plan_autofill()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="曲庫裡還沒有可以接的歌")
+    return {"song": plan["song"], "reason": plan["reason"], "source": plan["source"],
+            "source_fallback": plan["source_fallback"], "relaxed": plan["relaxed"],
+            "pool": plan["pool"]}
+
+
+@app.post("/api/autofill/random")
+async def random_pick_song(payload: Dict[str, Any] = Body(default={})):
+    """
+    🎲 來一首：從已經備好的曲庫隨機點一首。
+
+    「想唱歌但想不到要唱什麼」是包廂裡最常見的一種卡住，而它跟搜尋是兩件事 ——
+    搜尋要先想得出關鍵字。這顆鍵用的是自動接歌那一副挑歌規則（設定頁說
+    「只挑我的最愛」時它也照辦），但挑出來的歌**算人點的**：計入排行與歷史、
+    佔輪序與額度，跟手動點一首完全一樣 —— 有人按了這顆鍵，就是有人做了決定。
+    """
+    requested_by = (payload or {}).get("requested_by", "")
+    try:
+        result = await queue_manager.random_pick(requested_by=requested_by)
+    except room_timer.RoomTimeUp as exc:
+        raise HTTPException(status_code=409, detail={"error": "room_time_up",
+                                                     "room": exc.snapshot}) from exc
+    except song_quota.QuotaExceeded as exc:
+        raise HTTPException(status_code=409, detail={"error": "pending_limit_reached",
+                                                     "quota": exc.verdict}) from exc
+    if result is None:
+        # 404 而不是 500：曲庫還是空的不是錯誤，是「這台機器還沒有歌可以挑」，
+        # 而畫面要講的下一步是「先去搜尋點一首，處理好就會留在曲庫裡」。
+        raise HTTPException(status_code=404, detail="曲庫裡還沒有備好的歌可以挑")
+    item = result["item"]
+    return {"status": "success", "item": item, "reason": result["reason"],
+            "placement": queue_manager.placement_of(item["queue_id"]),
+            "quota": queue_manager.quota_of(item["requested_by"])}
 
 
 @app.post("/api/rotation/reset")

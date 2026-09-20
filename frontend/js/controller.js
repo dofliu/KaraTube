@@ -15,6 +15,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const quotaUpBtn = document.getElementById("quotaUpBtn");
   const quotaBar = document.getElementById("quotaBar");
   const quotaLineEl = document.getElementById("quotaLine");
+  // 自動接歌（沒有人點歌時，機器自己接一首）與 🎲 來一首
+  const autofillLineEl = document.getElementById("autofillLine");
+  const randomPickBtn = document.getElementById("randomPickBtn");
   // 包廂計時（歡唱時間）
   const roomTimerBox = document.getElementById("roomTimer");
   const roomClockBtn = document.getElementById("roomClockBtn");
@@ -1645,6 +1648,35 @@ document.addEventListener("DOMContentLoaded", () => {
     quotaLineEl.textContent = line;
   }
 
+  function renderAutofill(state) {
+    if (!autofillLineEl) return;
+    autofillLineEl.textContent = window.AutofillView.autofillLine(state.autofill);
+  }
+
+  if (randomPickBtn) {
+    randomPickBtn.addEventListener("click", async () => {
+      randomPickBtn.disabled = true;
+      try {
+        const res = await window.api.randomPick(nickname);
+        showNotification(window.AutofillView.randomPickNote(res), 6000);
+      } catch (e) {
+        // 被擋下來的理由要照實講：額度滿了跟曲庫沒歌，下一步完全不同
+        // （一個是等一首唱完，一個是先去點一首讓它進曲庫）。
+        if (e.status === 404) {
+          showNotification(window.AutofillView.emptyLibraryNote(), 8000);
+        } else if (e.detail && e.detail.error === "room_time_up") {
+          showNotification(window.RoomView.roomTimeUpNote(e.detail.room), 8000);
+        } else if (e.detail && e.detail.error === "pending_limit_reached") {
+          showNotification(window.QuotaView.quotaRejectionNote(e.detail.quota), 8000);
+        } else {
+          alert("隨機點歌失敗: " + e.message);
+        }
+      } finally {
+        randomPickBtn.disabled = false;
+      }
+    });
+  }
+
   async function setQuotaLimit(next) {
     const limit = Math.max(0, Math.min(QUOTA_MAX, Math.floor(next)));
     try {
@@ -1807,10 +1839,16 @@ document.addEventListener("DOMContentLoaded", () => {
     renderRotation(state);
     renderQuota(state);
     renderRoom(state);
+    renderAutofill(state);
     const cur = state.current_song;
     if (cur) {
       nowPlayingTitle.textContent = cur.title;
-      nowPlayingArtist.textContent = cur.artist || "YouTube Music";
+      // 機器接的歌要標出來：不標的話會有人以為是誰偷點的，
+      // 而且它隨時會讓位給真正點的歌 —— 看得到標記才預期得到那件事。
+      const badge = window.AutofillView.autoBadge(cur);
+      nowPlayingArtist.textContent = badge
+        ? `${cur.artist || "YouTube Music"} ・ ${badge}`
+        : (cur.artist || "YouTube Music");
       nowPlayingThumb.src = cur.thumbnail || "https://img.youtube.com/vi/default.jpg";
     } else {
       nowPlayingTitle.textContent = "尚未播放歌曲";
@@ -1824,7 +1862,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // Render upcoming queue
     const queue = state.queue || [];
     if (queue.length === 0) {
-      queueList.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px 10px; font-size: 13px;">點歌佇列為空<br>快搜尋並點播想唱的歌吧！</div>`;
+      // 自動接歌開著的話要先講「等一下機器會自己接」—— 否則那首自己冒出來的歌
+      // 看起來像是機器壞了（或像是誰偷點的）。
+      const note = window.AutofillView.emptyQueueNote(state.autofill);
+      queueList.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px 10px; font-size: 13px;">${note}</div>`;
       return;
     }
 
@@ -2535,6 +2576,16 @@ document.addEventListener("DOMContentLoaded", () => {
                            hint: "要久一點的用「📌 釘住」送" },
     marquee_card_when_idle: { label: "沒在播歌時用大字卡",
                               hint: "播歌中一律降級成上緣那一條，不受此選項影響" },
+    autofill_enabled: { label: "啟用自動接歌", hint: "沒人點歌時，機器自己從曲庫接一首" },
+    autofill_source: {
+      label: "照什麼挑",
+      choiceLabels: { mixed: "混著挑", favorites: "只挑我的最愛",
+                      popular: "只挑常點的歌", fresh: "只挑還沒唱過的" },
+    },
+    autofill_idle_seconds: { label: "空多久才接", unit: " 秒", step: 5,
+                             hint: "0 = 佇列一空就接。太短會跟正在找歌的人搶" },
+    autofill_stop_after: { label: "連著接幾首就停", unit: " 首", step: 1,
+                           hint: "有人點一首就重新計數" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
@@ -2690,6 +2741,23 @@ document.addEventListener("DOMContentLoaded", () => {
             "訊息在最上排的「📺 舞台訊息」隨時可以送出與撤掉。",
       keys: ["marquee_enabled", "marquee_seconds", "marquee_ttl_minutes",
              "marquee_card_when_idle"],
+    },
+    {
+      title: "🎧 自動接歌",
+      hint: "商用點歌機沒有「安靜」這個狀態：一首唱完、佇列空了，機器會自己接上下一首。" +
+            "真正被那段安靜傷到的是氣氛 —— 一首唱完之後那三十秒沒有聲音，" +
+            "所有人會同時低頭滑手機。功能本身聽起來只是「隨機挑一首播」，" +
+            "難的全部在**機器什麼時候該閉嘴**：接的歌只從已經備好的曲庫挑" +
+            "（絕不趁大家在聊天的時候去下載新歌把 CPU 吃光）；空了要先等一下下" +
+            "才接（切歌之後那幾秒鐘多半有人正在找下一首）；有人點歌時，" +
+            "機器接的那一首**開播 45 秒內就讓位、超過就唱完再換**" +
+            "（已經唱到一半的人被切掉，比點歌的人多等兩分鐘難堪）；" +
+            "而且它會自己停下來 —— 連著接完設定的首數就安靜，" +
+            "因為「沒有人點歌」最常見的原因是沒有人在了。" +
+            "機器接的歌不算任何人的一首：不進點唱排行（否則排行會變成它自己的回音）、" +
+            "不進已唱歷史、不佔輪序與額度，也不會把包廂的錶打開。",
+      keys: ["autofill_enabled", "autofill_source", "autofill_idle_seconds",
+             "autofill_stop_after"],
     },
     {
       title: "🖥️ 舞台演出",

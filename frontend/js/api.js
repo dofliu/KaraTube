@@ -531,6 +531,37 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // 自動接歌（沒有人點歌時，機器自己接一首）。開關在系統設定頁，
+  // 這兩支是「現在的狀態」與「現在接的話會接哪一首」。
+  async getAutofill() {
+    const res = await fetch(`${this.baseUrl}/api/autofill`);
+    return await res.json();
+  }
+
+  async previewAutofill() {
+    const res = await fetch(`${this.baseUrl}/api/autofill/preview`);
+    if (!res.ok) throw new Error('曲庫裡還沒有可以接的歌');
+    return await res.json();
+  }
+
+  // 🎲 來一首：從已備好的曲庫隨機點一首。算人點的，所以跟手動點歌一樣
+  // 會被額度與歡唱時間擋下來（409 帶著整份理由回來）。
+  async randomPick(requestedBy = '') {
+    const res = await fetch(`${this.baseUrl}/api/autofill/random`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested_by: requestedBy })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error((data && data.detail && data.detail.error) || '隨機點歌失敗');
+      err.status = res.status;
+      err.detail = data && data.detail;
+      throw err;
+    }
+    return data;
+  }
+
   async updateControl(controlData) {
     const res = await fetch(`${this.baseUrl}/api/control`, {
       method: 'POST',

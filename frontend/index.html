@@ -118,6 +118,17 @@
       <div id="roomBar" class="rotation-bar room-bar" style="display: none;">
         <span id="roomLine" class="rotation-line"></span>
       </div>
+      <!-- 自動接歌與「🎲 來一首」。跟輪序、額度、計時擺在同一排是刻意的：
+           這幾條都是「機器現在照什麼規則在動」，分開放的話沒有人會把它們
+           對起來看。這一條永遠在（就算自動接歌關著），因為 🎲 那顆鍵
+           解的是另一個問題 —— 想唱歌但想不到要唱什麼。 -->
+      <div id="autofillBar" class="rotation-bar autofill-bar">
+        <div class="rotation-bar-head">
+          <span id="autofillLine" class="rotation-line">想不到要唱什麼？讓機器從曲庫裡挑一首</span>
+          <button class="btn btn-secondary rotation-reset" id="randomPickBtn"
+                  title="從已經備好的曲庫隨機點一首（算你點的，會佔額度與輪序）">🎲 來一首</button>
+        </div>
+      </div>
       <div id="queueList" class="queue-list">
         <!-- Dynamic Queue Items -->
       </div>
@@ -529,6 +540,8 @@
   <!-- 歌星查歌的說法（按英文查到中文名字、按到只剩一位就自動翻開歌單，
        這兩件事不講清楚都會被當成壞掉）。 -->
   <script src="/js/artist-search.js"></script>
+  <!-- 自動接歌的說法（機器接的那一首要講得出「為什麼是這首」與「有人點歌就讓開」）-->
+  <script src="/js/autofill-view.js"></script>
   <script src="/js/room-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>

@@ -1388,7 +1388,12 @@ document.addEventListener("DOMContentLoaded", () => {
     hideIntroCard();
     introTitle.textContent = song.title || "";
     introArtist.textContent = song.artist ? `演唱者：${song.artist}` : "";
-    introRequester.textContent = song.requested_by ? `點歌：${song.requested_by}` : "";
+    // 機器接的那一首沒有點歌人。這裡刻意講出「自動接歌」而不是留白：
+    // 舞台上憑空出現一首沒有人點的歌，看起來像機器壞了 ——
+    // 而且它隨時會讓位給真正點的歌，先講出來才預期得到。
+    introRequester.textContent = song.auto
+      ? "🎧 自動接歌・有人點歌就讓開"
+      : (song.requested_by ? `點歌：${song.requested_by}` : "");
     introCard.classList.add("show");
     introCardTimer = setTimeout(hideIntroCard, introCardMs);
   }

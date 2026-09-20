@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from backend.services import room_timer, song_quota
+from backend.services import autofill, room_timer, song_quota
 from backend.services.settings import (
     SETTINGS_SPEC,
     SystemSettings,
@@ -255,3 +255,33 @@ def test_room_timer_values_are_clamped(settings):
     assert result["room_timer_extend_minutes"] == room_timer.MAX_EXTEND_MINUTES
     # 0 = 不提醒那一次，是合法值而不是要被夾到 1
     assert result["room_timer_warn_minutes"] == 0
+
+
+def test_autofill_defaults_to_off_and_stops_by_itself(settings):
+    """
+    自動接歌預設關著（會讓機器自己發出聲音的規則，包廂要先講好才開），
+    而且一旦打開，它必須有一個會自己停下來的理由 —— 「連著接三首沒人接手
+    就安靜」，否則一間沒有人的包廂會整夜自己唱歌到隔天早上。
+    """
+    assert settings.get("autofill_enabled") is False
+    assert settings.get("autofill_source") == autofill.DEFAULT_SOURCE
+    policy = settings.autofill_policy()
+    assert policy == {"enabled": False, "source": autofill.DEFAULT_SOURCE,
+                      "idle_seconds": autofill.DEFAULT_IDLE_SECONDS,
+                      "stop_after": autofill.DEFAULT_STOP_AFTER}
+
+
+def test_autofill_source_choices_come_from_one_place(settings):
+    """挑歌來源的選項只有一份（規則寫在 autofill，設定頁只是列出來）。"""
+    assert SETTINGS_SPEC["autofill_source"]["choices"] == autofill.SOURCE_CHOICES
+    assert coerce_value("autofill_source", "沒有這種來源") is None
+    assert coerce_value("autofill_source", "fresh") == "fresh"
+
+
+def test_autofill_values_are_clamped(settings):
+    result = settings.update({"autofill_idle_seconds": 99999, "autofill_stop_after": 0})
+    assert result["autofill_idle_seconds"] == autofill.MAX_IDLE_SECONDS
+    # 0 首會讓「開啟」的功能永遠不出聲，所以夾到最低 1
+    assert result["autofill_stop_after"] == autofill.MIN_STOP_AFTER
+    # 0 秒是合法值（「空了就接」），不該被夾掉
+    assert settings.update({"autofill_idle_seconds": 0})["autofill_idle_seconds"] == 0

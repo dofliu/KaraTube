@@ -814,3 +814,333 @@ def test_quota_of_reports_standing_after_the_add(tmp_path):
         assert manager.quota_of("小明")["remaining"] == 2
 
     asyncio.run(scenario())
+
+
+# --- 自動接歌（沒有人點歌時，機器自己接一首）---
+
+class FakeLibrary:
+    """假曲庫索引：直接回一份固定的「已經備好」清單。"""
+
+    def __init__(self, entries):
+        self._entries = list(entries)
+
+    def entries(self):
+        return [dict(e) for e in self._entries]
+
+
+class FakeFavorites:
+    def __init__(self, ids=()):
+        self._ids = list(ids)
+
+    def ids(self):
+        return list(self._ids)
+
+
+class AutofillSettings:
+    """只提供自動接歌（必要時加上包廂計時）規則的假設定物件。"""
+
+    def __init__(self, enabled=True, source="mixed", idle_seconds=20, stop_after=3,
+                 room=None):
+        self._policy = {"enabled": enabled, "source": source,
+                        "idle_seconds": idle_seconds, "stop_after": stop_after}
+        self._room = room
+
+    def autofill_policy(self):
+        return dict(self._policy)
+
+    def room_policy(self):
+        # 沒特別指定就是「計時沒開」—— 自動接歌的測試多半不關心計時
+        return dict(self._room or {
+            "enabled": False, "minutes": 180, "autostart": False,
+            "warn_minutes": 10, "last_call_minutes": 3,
+            "expire_action": "finish_song", "extend_minutes": 30})
+
+    def get(self, key, fallback=None):
+        return fallback
+
+
+def autofill_manager(tmp_path, library_ids=("lib00000001", "lib00000002", "lib00000003"),
+                     favorites=(), **policy):
+    """一台開著自動接歌、曲庫裡有幾首備好歌的機器，外加一個可以撥的時鐘。"""
+    manager, stats = make_manager(tmp_path, cached_ids=library_ids)
+    entries = [{"song_id": sid, "title": f"曲庫歌 {sid}", "artist": "歌手",
+                "thumbnail": "", "plays": 0} for sid in library_ids]
+    manager.library = FakeLibrary(entries)
+    manager.favorites = FakeFavorites(favorites)
+    manager.settings = AutofillSettings(**policy)
+    clock = {"t": 1000.0}
+    manager._now = lambda: clock["t"]
+    return manager, stats, clock
+
+
+async def idle_until_autofill(manager, clock, seconds=20.0):
+    """撥過空閒門檻，讓心跳接一首。回傳接到的那一首（沒接就是 None）。"""
+    await manager.tick_autofill()      # 第一次只是開始計算空閒
+    clock["t"] += seconds + 1
+    return await manager.tick_autofill()
+
+
+def test_autofill_is_off_by_default(tmp_path):
+    """預設關著（決定八）：會讓機器自己出聲的功能，包廂要先講好才開。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["lib00000001"])
+        state = manager.get_full_state()["autofill"]
+        assert state["enabled"] is False
+        assert await manager.tick_autofill() is None
+        assert manager.current_song is None
+
+    asyncio.run(scenario())
+
+
+def test_autofill_waits_out_the_idle_window(tmp_path):
+    """
+    空了要先等一下下才接（決定四）。
+
+    門檻沒到就接的話，會跟正在找下一首的人搶 —— 而使用者的下一個動作是按切歌。
+    """
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path, idle_seconds=20)
+        assert await manager.tick_autofill() is None     # 開始算空閒
+        clock["t"] += 10
+        assert await manager.tick_autofill() is None     # 還不到 20 秒
+        assert manager.current_song is None
+        clock["t"] += 11
+        played = await manager.tick_autofill()
+        assert played is not None
+        assert manager.current_song["auto"] is True
+        assert manager.current_song["auto_reason"]
+        assert manager.is_playing is True
+
+    asyncio.run(scenario())
+
+
+def test_auto_song_is_nobody_s_song(tmp_path):
+    """
+    機器接的歌不算任何人的一首（決定二）：不進排行、不進已唱歷史、不佔輪序。
+
+    排行那一條是硬性的 —— 自動接歌照排行挑歌，播出來又計進排行的話，
+    那條排行三個晚上之後就只剩機器自己的回音。
+    """
+    async def scenario():
+        manager, stats, clock = autofill_manager(tmp_path)
+        assert await idle_until_autofill(manager, clock) is not None
+        assert stats.total_plays() == 0
+        assert manager.song_history.total_count() == 0
+        assert manager.rotation.counts() == {}
+        assert manager.current_song["requested_by"] == ""
+
+    asyncio.run(scenario())
+
+
+def test_autofill_does_not_start_the_room_clock(tmp_path):
+    """
+    自動開錶認的是「這一場開始了」，而機器自己接的那一首不算（決定六）。
+
+    不擋的話，最糟的情形是一間沒有人的包廂自己把三小時的錶按下去。
+    """
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path)
+        manager.settings = AutofillSettings(
+            room={"enabled": True, "minutes": 60, "autostart": True,
+                  "warn_minutes": 10, "last_call_minutes": 3,
+                  "expire_action": "finish_song", "extend_minutes": 30})
+        assert await idle_until_autofill(manager, clock) is not None
+        assert manager.room.snapshot()["active"] is False
+        # 但人點的歌照樣會把錶打開
+        await manager.add_song("lib00000002", requested_by="小明")
+        assert manager.room.snapshot()["active"] is True
+
+    asyncio.run(scenario())
+
+
+def test_autofill_stops_after_the_configured_streak(tmp_path):
+    """
+    連著接幾首沒有人接手就停（決定五）：沒有人點歌通常代表沒有人在了。
+
+    有人點了一首，計數歸零，機器重新願意接。
+    """
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path, stop_after=2)
+        assert await idle_until_autofill(manager, clock) is not None
+        await manager.skip_current()                      # 唱完，佇列空了
+        assert await idle_until_autofill(manager, clock) is not None
+        assert manager.autofill_streak == 2
+        await manager.skip_current()
+        assert await idle_until_autofill(manager, clock) is None   # 接滿了，安靜下來
+        assert manager.get_full_state()["autofill"]["stopped"] is True
+
+        # 有人點歌 → 計數歸零 → 機器又願意接
+        await manager.add_song("lib00000001", requested_by="小明")
+        assert manager.autofill_streak == 0
+        await manager.skip_current()
+        assert await idle_until_autofill(manager, clock) is not None
+
+    asyncio.run(scenario())
+
+
+def test_autofill_keeps_quiet_while_the_queue_has_songs(tmp_path):
+    """佇列裡還有歌（就算還在跑流水線）就輪不到機器 —— 那首跑完會自己接上。"""
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path)
+        manager.queue.append({"queue_id": "q1", "song_id": "pending01",
+                              "status": "PENDING", "requested_by": "小明"})
+        assert await manager.tick_autofill() is None
+        clock["t"] += 600
+        assert await manager.tick_autofill() is None
+        assert manager.current_song is None
+
+    asyncio.run(scenario())
+
+
+def test_auto_song_yields_immediately_when_someone_orders(tmp_path):
+    """
+    機器接的歌開播 45 秒內有人點歌 → 立刻讓位（決定三）。
+
+    切掉的是一首沒有人點的歌，不是把誰的演唱打斷。
+    """
+    async def scenario():
+        manager, stats, clock = autofill_manager(tmp_path)
+        assert await idle_until_autofill(manager, clock) is not None
+        auto_id = manager.current_song["song_id"]
+        clock["t"] += 10                                  # 還在前奏
+        await manager.add_song("lib00000002", requested_by="小明")
+        assert manager.current_song["song_id"] == "lib00000002"
+        assert manager.current_song.get("auto") is not True
+        assert manager.current_song["requested_by"] == "小明"
+        # 人點的那一首照樣計入排行（讓位不影響它是誰點的）
+        assert stats.total_plays() == 1
+        assert manager.history[-1]["song_id"] == auto_id
+
+    asyncio.run(scenario())
+
+
+def test_auto_song_finishes_when_someone_is_already_singing_it(tmp_path):
+    """
+    超過 45 秒就讓它唱完再換：已經唱到一半的人被切掉，比點歌的人多等兩分鐘難堪。
+
+    這跟包廂計時的決定一是同一個原則 —— 機器可以決定下一首播什麼，
+    但不該去停一個正在唱歌的人。
+    """
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path)
+        assert await idle_until_autofill(manager, clock) is not None
+        auto_id = manager.current_song["song_id"]
+        clock["t"] += 90                                   # 已經唱進去了
+        await manager.add_song("lib00000002", requested_by="小明")
+        assert manager.current_song["song_id"] == auto_id  # 沒被切掉
+        assert [item["song_id"] for item in manager.queue] == ["lib00000002"]
+        # 唱完就換上人點的那一首
+        await manager.skip_current()
+        assert manager.current_song["song_id"] == "lib00000002"
+
+    asyncio.run(scenario())
+
+
+def test_autofill_does_not_replay_what_it_just_played(tmp_path):
+    """同一晚聽到第二次同一首，包廂就會去按切歌。"""
+    async def scenario():
+        manager, _, clock = autofill_manager(
+            tmp_path, library_ids=("lib00000001", "lib00000002"))
+        assert await idle_until_autofill(manager, clock) is not None
+        first = manager.current_song["song_id"]
+        await manager.skip_current()
+        assert await idle_until_autofill(manager, clock) is not None
+        assert manager.current_song["song_id"] != first
+        assert manager.autofill_recent == [first, manager.current_song["song_id"]]
+
+    asyncio.run(scenario())
+
+
+def test_autofill_never_steals_a_song_from_the_queue(tmp_path):
+    """
+    曲庫只有兩首、其中一首已經排在佇列裡：機器只能接另外那一首。
+
+    偷跑掉別人排好的歌，那個人待會會看到自己點的歌「已經唱過了」。
+    """
+    async def scenario():
+        manager, _, clock = autofill_manager(
+            tmp_path, library_ids=("lib00000001", "lib00000002"))
+        # 先讓一首人點的歌上台，另一首排在佇列裡
+        await manager.add_song("lib00000001", requested_by="小明")
+        await manager.add_song("lib00000002", requested_by="小美")
+        await manager.skip_current()                       # 小美那首上台，佇列空了
+        assert manager.current_song["song_id"] == "lib00000002"
+        assert await idle_until_autofill(manager, clock) is None  # 兩首都在用，不接
+
+    asyncio.run(scenario())
+
+
+def test_autofill_stays_silent_after_the_room_time_is_up(tmp_path):
+    """散場畫面之後自己放歌，是這個功能最難堪的壞法（決定七）。"""
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path)
+        manager.settings = AutofillSettings(
+            room={"enabled": True, "minutes": 60, "autostart": False,
+                  "warn_minutes": 10, "last_call_minutes": 3,
+                  "expire_action": "finish_song", "extend_minutes": 30})
+        manager.room.start(60)
+        manager.room.mark_halted(True)
+        assert await idle_until_autofill(manager, clock) is None
+        assert manager.current_song is None
+
+    asyncio.run(scenario())
+
+
+def test_autofill_state_travels_with_every_broadcast(tmp_path):
+    """點歌台要能標出「現在這首是機器接的」，而那個標記必須跟佇列同一份狀態。"""
+    async def scenario():
+        manager, _, clock = autofill_manager(tmp_path, source="fresh", stop_after=5)
+        state = manager.get_full_state()["autofill"]
+        assert state["enabled"] is True
+        assert state["source"] == "fresh"
+        assert state["playing"] is False
+        assert state["streak"] == 0
+        await idle_until_autofill(manager, clock)
+        state = manager.get_full_state()["autofill"]
+        assert state["playing"] is True
+        assert state["streak"] == 1
+        assert state["last"]["reason"]
+        assert state["last"]["title"].startswith("曲庫歌 ")
+
+    asyncio.run(scenario())
+
+
+# --- 🎲 來一首（隨機點歌）---
+
+def test_random_pick_counts_as_a_human_request(tmp_path):
+    """
+    🎲 用的是同一副挑歌規則，但算人點的：有人按了那顆鍵，就是有人做了決定。
+    """
+    async def scenario():
+        manager, stats, _ = autofill_manager(tmp_path)
+        result = await manager.random_pick(requested_by="小明")
+        assert result is not None
+        assert result["reason"]
+        assert manager.current_song["requested_by"] == "小明"
+        assert manager.current_song.get("auto") is not True
+        assert stats.total_plays() == 1
+        assert manager.song_history.total_count() == 1
+
+    asyncio.run(scenario())
+
+
+def test_random_pick_returns_none_when_the_library_is_empty(tmp_path):
+    """曲庫空的不是錯誤，是「這台機器還沒有歌可以挑」。"""
+    async def scenario():
+        manager, _, _ = autofill_manager(tmp_path, library_ids=())
+        assert await manager.random_pick(requested_by="小明") is None
+
+    asyncio.run(scenario())
+
+
+def test_random_pick_still_obeys_the_pending_limit(tmp_path):
+    """這顆鍵是點歌的捷徑，不是繞過規則的後門。"""
+    async def scenario():
+        manager, _, _ = autofill_manager(tmp_path)
+        await manager.update_controls({"pending_limit": 1})
+        await manager.random_pick(requested_by="小明")     # 上台，不佔額度
+        await manager.random_pick(requested_by="小明")     # 排一首，額度滿
+        with pytest.raises(song_quota.QuotaExceeded):
+            await manager.random_pick(requested_by="小明")
+
+    asyncio.run(scenario())

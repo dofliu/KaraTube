@@ -33,6 +33,10 @@ from backend.services.room_timer import (DEFAULT_EXPIRE_ACTION, DEFAULT_EXTEND_M
 from backend.services.marquee import (DEFAULT_SHOW_SECONDS, DEFAULT_TTL_MINUTES,
                                       MAX_SHOW_SECONDS, MAX_TTL_MINUTES,
                                       MIN_SHOW_SECONDS, MIN_TTL_MINUTES)
+# 自動接歌的挑歌來源與時間上下限同理：規則寫在 autofill，設定頁只是列出來。
+from backend.services.autofill import (DEFAULT_IDLE_SECONDS, DEFAULT_SOURCE,
+                                       DEFAULT_STOP_AFTER, MAX_IDLE_SECONDS, MAX_STOP_AFTER,
+                                       MIN_IDLE_SECONDS, MIN_STOP_AFTER, SOURCE_CHOICES)
 
 logger = logging.getLogger("KaraTube.Settings")
 
@@ -221,6 +225,19 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 那一條，不受這個選項影響 —— 沒有任何訊息重要到可以蓋住正在唱的那個人。
     "marquee_card_when_idle": {"type": "bool", "default": True},
 
+    # --- 自動接歌（沒有人點歌時，機器自己接一首）---
+    # 預設關著：這是一條會讓機器自己發出聲音的規則，包廂要先講好才開
+    # （見 backend/services/autofill.py 決定八）。
+    # 開了之後真正重要的是那兩個數字：空了多久才接（別跟正在找歌的人搶），
+    # 以及連續接幾首沒人接手就停（沒有人點歌通常代表沒有人在了）。
+    "autofill_enabled": {"type": "bool", "default": False},
+    "autofill_source": {"type": "choice", "default": DEFAULT_SOURCE,
+                        "choices": SOURCE_CHOICES},
+    "autofill_idle_seconds": {"type": "int", "default": DEFAULT_IDLE_SECONDS,
+                              "min": MIN_IDLE_SECONDS, "max": MAX_IDLE_SECONDS},
+    "autofill_stop_after": {"type": "int", "default": DEFAULT_STOP_AFTER,
+                            "min": MIN_STOP_AFTER, "max": MAX_STOP_AFTER},
+
     # --- 舞台演出 ---
     "intro_card_enabled": {"type": "bool", "default": True},
     "intro_card_seconds": {"type": "float", "default": 8.0, "min": 2.0, "max": 20.0},
@@ -400,6 +417,23 @@ class SystemSettings:
             "seconds": float(data["marquee_seconds"]),
             "ttl_minutes": int(data["marquee_ttl_minutes"]),
             "card_when_idle": bool(data["marquee_card_when_idle"]),
+        }
+
+    def autofill_policy(self) -> Dict[str, Any]:
+        """
+        自動接歌的規則（QueueManager 與 API 共用）。
+
+        四個欄位一起送，是因為畫面上那句話需要它們全部：「20 秒沒人點歌就
+        自己接一首、最多連著接 3 首」是一句看得懂的話，少講任何一半，
+        使用者都無法預期機器下一步會做什麼 —— 而一台會自己出聲的機器，
+        「可預期」是它唯一能讓人放心的地方。
+        """
+        data = self.all()
+        return {
+            "enabled": bool(data["autofill_enabled"]),
+            "source": data["autofill_source"],
+            "idle_seconds": int(data["autofill_idle_seconds"]),
+            "stop_after": int(data["autofill_stop_after"]),
         }
 
     def stage_options(self) -> Dict[str, Any]:

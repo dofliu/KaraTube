@@ -1659,3 +1659,136 @@ def test_marquee_message_text_is_capped(marquee_clean):
     settings.update({"marquee_enabled": True})
     msg = client.post("/api/marquee", json={"text": "字" * 300}).json()["message"]
     assert len(msg["text"]) == marquee.MAX_TEXT_CHARS
+
+
+# --- 自動接歌（沒有人點歌時，機器自己接一首）---
+
+class StubLibrary:
+    """假曲庫：API 測試不該依賴開發機上真的快取了哪幾首歌。"""
+
+    def __init__(self, entries):
+        self._entries = list(entries)
+
+    def entries(self):
+        return [dict(e) for e in self._entries]
+
+
+class StubProcessor:
+    """假流水線：確保測試絕對不會真的去 YouTube 下載。"""
+
+    async def process_song(self, url, progress_callback=None):
+        return {"title": "測試歌", "artist": "測試", "thumbnail": ""}
+
+
+@pytest.fixture()
+def autofill_clean():
+    """
+    測完把設定、曲庫來源與自動接歌的狀態全部還原。
+
+    自動接歌會動到**共用的佇列**（它真的會讓一首歌上台），不還原的話
+    開發機上會留下一首沒有人點、卻一直顯示在播的歌。
+    """
+    saved_settings = settings.all()
+    saved_library = queue_manager.library
+    saved_processor = queue_manager.processor
+    saved_queue = list(queue_manager.queue)
+    saved_current = queue_manager.current_song
+    entries = [
+        {"song_id": "autofill001", "title": "自動接歌測試 A", "artist": "甲",
+         "thumbnail": "", "plays": 0},
+        {"song_id": "autofill002", "title": "自動接歌測試 B", "artist": "乙",
+         "thumbnail": "", "plays": 7},
+    ]
+    queue_manager.library = StubLibrary(entries)
+    queue_manager.processor = StubProcessor()
+    queue_manager.queue.clear()
+    queue_manager.current_song = None
+    queue_manager.autofill_recent = []
+    queue_manager.autofill_streak = 0
+    queue_manager.autofill_last = None
+    yield entries
+    settings.update(saved_settings)
+    queue_manager.library = saved_library
+    queue_manager.processor = saved_processor
+    queue_manager.queue[:] = saved_queue
+    queue_manager.current_song = saved_current
+    queue_manager.is_playing = bool(saved_current)
+    queue_manager.autofill_recent = []
+    queue_manager.autofill_streak = 0
+    queue_manager.autofill_last = None
+
+
+def test_autofill_endpoint_reports_the_rules(autofill_clean):
+    """
+    規則跟狀態一起回：「20 秒沒人點就接、最多連著接 3 首」是一句看得懂的話，
+    少講任何一半，使用者都無法預期一台會自己出聲的機器下一步要做什麼。
+    """
+    settings.update({"autofill_enabled": True, "autofill_source": "favorites",
+                     "autofill_idle_seconds": 45, "autofill_stop_after": 2})
+    body = client.get("/api/autofill").json()
+    assert body["enabled"] is True
+    assert body["source"] == "favorites"
+    assert body["idle_seconds"] == 45
+    assert body["stop_after"] == 2
+    assert body["streak"] == 0
+    assert body["playing"] is False
+    # 同一份資料也跟著每一次狀態廣播走，畫面不必自己去輪詢
+    assert client.get("/api/queue").json()["autofill"]["idle_seconds"] == 45
+
+
+def test_autofill_is_off_by_default(autofill_clean):
+    """預設關著：會讓機器自己發出聲音的規則，包廂要先講好才開。"""
+    settings.reset()
+    assert client.get("/api/autofill").json()["enabled"] is False
+
+
+def test_autofill_preview_says_which_song_and_why(autofill_clean):
+    """
+    設定頁要能先看一眼「現在接的話會接哪一首」——
+    機器自己放歌時，使用者第一個想問的就是「它為什麼放這首」。
+    """
+    settings.update({"autofill_enabled": True, "autofill_source": "mixed"})
+    body = client.get("/api/autofill/preview").json()
+    assert body["song"]["song_id"] in {"autofill001", "autofill002"}
+    assert body["reason"]
+    assert body["pool"] == 2
+    # 只挑不播：按幾次都不會影響等一下真正接歌的結果
+    assert queue_manager.current_song is None
+    assert queue_manager.autofill_recent == []
+
+
+def test_autofill_preview_is_404_when_the_library_is_empty(autofill_clean):
+    """曲庫空的不是錯誤，是「這台機器還沒有歌可以挑」。"""
+    queue_manager.library = StubLibrary([])
+    assert client.get("/api/autofill/preview").status_code == 404
+
+
+def test_random_pick_adds_a_song_as_a_human_request(autofill_clean):
+    """🎲 來一首：挑法跟自動接歌共用，但挑出來的歌算人點的。"""
+    settings.update({"autofill_enabled": False})     # 這顆鍵不需要先開自動接歌
+    res = client.post("/api/autofill/random", json={"requested_by": "小明"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["item"]["requested_by"] == "小明"
+    assert body["item"].get("auto") is not True
+    assert body["reason"]
+    assert body["placement"]["position"] >= 0
+
+
+def test_random_pick_is_404_when_the_library_is_empty(autofill_clean):
+    queue_manager.library = StubLibrary([])
+    res = client.post("/api/autofill/random", json={})
+    assert res.status_code == 404
+
+
+def test_random_pick_is_refused_when_the_quota_is_full(autofill_clean):
+    """這顆鍵是點歌的捷徑，不是繞過規則的後門。"""
+    queue_manager.pending_limit = 1
+    try:
+        client.post("/api/autofill/random", json={"requested_by": "小明"})  # 上台
+        client.post("/api/autofill/random", json={"requested_by": "小明"})  # 排一首
+        res = client.post("/api/autofill/random", json={"requested_by": "小明"})
+        assert res.status_code == 409
+        assert res.json()["detail"]["error"] == "pending_limit_reached"
+    finally:
+        queue_manager.pending_limit = 0

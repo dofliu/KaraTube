@@ -3,8 +3,8 @@ name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
 progress: 100
 status: active
-last_updated: "2026-09-20"
-next_milestone: "v1.18.0 打標籤發布；商用點歌機功能對照清單已全數完成，選配項目只剩多包廂（一台伺服器帶多組舞台與佇列）見 docs/ROADMAP.md"
+last_updated: "2026-09-21"
+next_milestone: "v1.19.0 打標籤發布；商用點歌機功能對照清單已全數完成，選配項目只剩多包廂（一台伺服器帶多組舞台與佇列）見 docs/ROADMAP.md"
 technologies:
   - Python
   - Docker

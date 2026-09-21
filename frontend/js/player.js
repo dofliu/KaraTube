@@ -1391,9 +1391,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // 機器接的那一首沒有點歌人。這裡刻意講出「自動接歌」而不是留白：
     // 舞台上憑空出現一首沒有人點的歌，看起來像機器壞了 ——
     // 而且它隨時會讓位給真正點的歌，先講出來才預期得到。
-    introRequester.textContent = song.auto
+    const who = song.auto
       ? "🎧 自動接歌・有人點歌就讓開"
       : (song.requested_by ? `點歌：${song.requested_by}` : "");
+    // 歌號印在片頭卡上 —— 這是包廂裡最多人同時看著同一首歌的那三秒鐘，
+    // 也就是一組號碼最有機會被記住的時候（商用點歌機的號碼就印在這個位置）。
+    // 還沒備好的歌沒有號碼，那時候這一行就不出現（不要印成「🔢 」）。
+    const number = window.NumberSearch
+      ? window.NumberSearch.numberLabel(song.number) : "";
+    introRequester.textContent = [who, number ? `🔢 歌號 ${number}` : ""]
+      .filter(Boolean).join("　・　");
     introCard.classList.add("show");
     introCardTimer = setTimeout(hideIntroCard, introCardMs);
   }

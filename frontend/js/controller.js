@@ -1172,6 +1172,101 @@ document.addEventListener("DOMContentLoaded", () => {
     findTypingTimer = setTimeout(() => loadFind(false), 250);
   };
 
+  // --- 歌號點歌（六位數）---
+  // 包廂裡唯一可以用喊的那一條點歌路（「幫我點 100237」）。其他每一條
+  // 都得走過去看螢幕，而這一條只要記得住六個數字 —— 前提是號碼到處印得出來
+  // （見 renderSearchResults 的 numberBadge）且**永遠不會變成別首歌**
+  // （見 backend/services/song_numbers.py）。
+  let numberState = { query: "", nextDigits: [], lookup: null };
+
+  // 數字鍵**永遠可以按**（跟注音鍵盤刻意不同，理由見 number-search.js 的
+  // digitHasSongs）：已下架號碼的數字不會出現在「下一鍵」裡，變灰的話
+  // 使用者就永遠打不完那組號碼，也就永遠看不到「這首歌已經不在曲庫了」。
+  // 標亮是正面提示（按下去會落在現有的歌上），不是許可。
+  function numberKeyHtml(digit, live) {
+    return `<button class="find-key number-key${live ? " number-key-live" : ""}"
+      onclick="window.numberPress('${digit}')">${digit}</button>`;
+  }
+
+  function buildNumberBar(res) {
+    const NS = window.NumberSearch;
+    const data = res || {};
+    const available = !(data.book && data.book.available === false);
+    const digits = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+    // 打滿之後就沒有「下一鍵」可算了，這時候一顆都不標亮。
+    const nextDigits = NS.isComplete(numberState.query) ? [] : numberState.nextDigits;
+    const keysHtml = available
+      ? `<div class="find-key-row">${digits.map(d =>
+          numberKeyHtml(d, NS.digitHasSongs(d, nextDigits))).join("")}</div>`
+      : `<div class="find-keyboard-off">歌號簿讀不出來，歌號點歌暫時停用
+          （其他查歌方式照常可用）。</div>`;
+
+    // 打滿六碼**不**直接點歌，要再按一次確認：按錯一碼在點歌機上是常事，
+    // 直接送出的話那首歌已經排進佇列了，而使用者的下一個動作是去把它刪掉。
+    const msg = numberState.lookup ? NS.lookupMessage(numberState.lookup) : null;
+    const song = (numberState.lookup && numberState.lookup.song) || null;
+    const confirmHtml = song
+      ? `<button class="btn btn-primary number-confirm"
+           onclick="window.addSong('${song.song_id}', '${escapeAttr(song.core_title || song.title)}', '${escapeAttr(song.artist_name || song.artist || "")}', '${song.thumbnail}', false)">
+           🎤 點這首（${escapeHtml(song.core_title || song.title)}）</button>`
+      : "";
+    const msgHtml = msg && msg.text
+      ? `<div class="number-msg number-msg-${msg.tone}">${escapeHtml(msg.text)}</div>`
+      : "";
+
+    return `
+      <div class="find-bar number-bar">
+        <div class="find-row">
+          <span class="facet-label">🔢 歌號</span>
+          <span class="number-display">${escapeHtml(
+            window.NumberSearch.queryDisplay(numberState.query))}</span>
+          <button class="btn btn-secondary find-act" onclick="window.numberBackspace()"
+                  title="退一格">⌫</button>
+          <button class="btn btn-secondary find-act" onclick="window.numberClear()"
+                  title="清掉重打">清除</button>
+        </div>
+        ${msgHtml}
+        ${confirmHtml ? `<div class="find-row">${confirmHtml}</div>` : ""}
+        <div class="find-keyboard">${keysHtml}</div>
+      </div>`;
+  }
+
+  async function loadNumbers() {
+    try {
+      const res = await window.api.getSongNumbers({ prefix: numberState.query, limit: 40 });
+      numberState.nextDigits = res.next_digits || [];
+      // 打滿六碼才去查號：沒打完就查，使用者每按一下都會看到一次
+      // 「沒有這組歌號」—— 那句話在他還在打的時候是騙人的。
+      numberState.lookup = window.NumberSearch.isComplete(numberState.query)
+        ? await window.api.lookupSongNumber(numberState.query)
+        : null;
+      const songs = (res.songs || []).map(s => ({
+        ...s, title: s.core_title || s.title, uploader: s.artist_name }));
+      libSummary.textContent = window.NumberSearch.numberSummary(res);
+      renderSearchResults(songs, "🔢 歌號點歌（打號碼，或按前幾碼看看有哪些歌）",
+        buildNumberBar(res), window.NumberSearch.idleHint(res));
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">歌號讀取失敗</div>`;
+    }
+  }
+
+  window.numberPress = (digit) => {
+    numberState.query = window.NumberSearch.pressDigit(numberState.query, digit);
+    loadNumbers();
+  };
+
+  window.numberBackspace = () => {
+    numberState.query = window.NumberSearch.eraseDigit(numberState.query);
+    numberState.lookup = null;
+    loadNumbers();
+  };
+
+  window.numberClear = () => {
+    numberState.query = "";
+    numberState.lookup = null;
+    loadNumbers();
+  };
+
   // --- 歌星查歌（按歌星名字的注音首字）---
   // 跟上面的「注音查歌」是同一副鍵盤、不同索引：那邊按的是歌名的字，
   // 這邊按的是**歌星名字**的字。包廂裡更常用的其實是這一邊 ——
@@ -1360,6 +1455,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "browse") loadBrowse();
     else if (which === "find") loadFind();
     else if (which === "artists") loadArtists();
+    else if (which === "numbers") loadNumbers();
     else if (which === "new") loadNewAndRecommend();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
@@ -1399,6 +1495,16 @@ document.addEventListener("DOMContentLoaded", () => {
             : ""));
       // 分類瀏覽/新歌榜的歌卡上標語言別與「NEW」，一眼分辨是什麼歌
       const langBadge = s.language_label ? `<div class="lang-badge">${s.language_label}</div>` : "";
+      // 歌號。印在每一張歌卡上是這個功能能不能用起來的全部關鍵 ——
+      // 沒有人會去記一個只出現在「歌號點歌」那一頁的號碼。
+      const numberText = window.NumberSearch
+        ? window.NumberSearch.numberLabel(s.number) : "";
+      // 印在歌名底下那一行而不是縮圖角落：縮圖四個角已經被
+      // 快取秒播／語言別／NEW／收藏星星佔滿了，而歌號要跟**歌名**擺在一起
+      // 才記得起來（商用點歌機的紙本歌本就是這樣排的）。
+      const numberBadge = numberText
+        ? `<span class="number-badge" title="歌號：下次直接打這組數字（它永遠不會變成別首歌）">🔢 ${numberText}</span>`
+        : "";
       const newBadge = s.is_new ? `<div class="new-badge">NEW</div>` : "";
       const isFav = favoriteIds.has(s.id);
       const favBtn = `<button class="fav-btn ${isFav ? "faved" : ""}" data-song-id="${s.id}"
@@ -1417,7 +1523,7 @@ document.addEventListener("DOMContentLoaded", () => {
           </div>
           <div class="song-info">
             <div class="song-title" title="${s.title}">${s.title}</div>
-            <div class="song-artist">${s.uploader || s.artist || 'YouTube'}</div>
+            <div class="song-artist">${s.uploader || s.artist || 'YouTube'}${numberBadge}</div>
             ${playCount}
             <div class="song-actions">
               <button class="btn btn-primary" onclick="window.addSong('${s.id}', '${escapeAttr(s.title)}', '${escapeAttr(s.uploader || s.artist)}', '${s.thumbnail}', false)">
@@ -1900,6 +2006,15 @@ document.addEventListener("DOMContentLoaded", () => {
         ? ` <span class="queue-round" style="color: var(--accent-yellow); background: rgba(255, 222, 89, 0.12);">⚡ 插播</span>`
         : "";
 
+      // 歌號。佇列上標出來是這個功能學得起來的第二個地方：
+      // 剛剛點的那一首就在眼前，號碼跟它擺在一起，下次就喊得出來。
+      // 還在跑流水線的歌還沒有號碼（備好才發），那時候不佔這個位置。
+      const numberText = window.NumberSearch
+        ? window.NumberSearch.numberLabel(item.number) : "";
+      const numberBadge = numberText
+        ? ` <span class="queue-number" title="歌號：下次直接打這組數字">🔢 ${numberText}</span>`
+        : "";
+
       // 一首歌沒得排，兩首以上才給拖曳把手
       const dragHandle = queue.length > 1
         ? `<div class="queue-drag-handle" title="按住拖曳調整順序">⠿</div>`
@@ -1911,7 +2026,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <img class="queue-item-thumb" src="${item.thumbnail}">
           <div class="queue-item-info">
             <div class="queue-item-title" title="${item.title}">${item.title}</div>
-            <div class="queue-item-status">${statusIndicator}${requester}${roundBadge}${priorityBadge}</div>
+            <div class="queue-item-status">${statusIndicator}${numberBadge}${requester}${roundBadge}${priorityBadge}</div>
           </div>
           <div class="queue-item-actions">
             ${retryBtn}

@@ -38,7 +38,8 @@ class QueueManager:
                  broadcast_cb: Optional[Callable] = None, play_stats: Optional[PlayStats] = None,
                  song_history: Optional[SongHistory] = None, settings: Optional[Any] = None,
                  room: Optional[Any] = None, library: Optional[Any] = None,
-                 favorites: Optional[Any] = None):
+                 favorites: Optional[Any] = None,
+                 number_of: Optional[Callable] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
@@ -50,6 +51,10 @@ class QueueManager:
         # 兩個都可為 None —— 沒給就等於這台機器接不了歌（而不是壞掉）。
         self.library = library
         self.favorites = favorites
+        # 歌號查詢（可為 None）：`song_id -> 六位數`，備好的歌才有。
+        # 佇列與片頭卡要印得出號碼，包廂裡的人才學得會「下次直接打這組」——
+        # 一個沒有人看得到的號碼，沒有人會記得。
+        self.number_of = number_of
 
         self.current_song: Optional[Dict[str, Any]] = None
         self.queue: List[Dict[str, Any]] = []
@@ -597,6 +602,8 @@ class QueueManager:
             # 插播的歌。輪唱要認得它才不會插到它前面（現場按下去的決定
             # 不該被機器的規則推翻），拖曳排序之後也還認得出來。
             "priority": bool(priority),
+            # 歌號（備好的歌才有；還在跑流水線的歌是 None，處理完會補上）。
+            "number": self._number_for(song_id, title, artist) if status == "READY" else None,
         }
 
         if priority:
@@ -627,6 +634,17 @@ class QueueManager:
 
         return queue_item
 
+    def _number_for(self, song_id: str, title: str = "",
+                    artist: str = "") -> Optional[int]:
+        """這首歌的歌號。沒接號碼簿、或發號出事，就當成沒有號碼（不是壞掉）。"""
+        if self.number_of is None:
+            return None
+        try:
+            return self.number_of(song_id, title, artist)
+        except Exception as e:
+            logger.warning(f"歌號查詢失敗 {song_id}: {e}")
+            return None
+
     async def _process_queue_item(self, item: Dict[str, Any]):
         song_id = item["song_id"]
 
@@ -649,6 +667,10 @@ class QueueManager:
             item["status"] = "READY"
             item["progress"] = 100
             item["status_text"] = "Ready"
+            # 這一刻這首歌才真的進了曲庫，也才該有歌號 —— 片頭卡要印
+            # 「下次直接打 100237」，而這首歌正是包廂剛剛等了三分鐘的那一首，
+            # 那張卡是它最有可能被記住的時候。
+            item["number"] = self._number_for(song_id, item["title"], item["artist"])
 
             # 剛多了一首歌的磁碟用量，這時候檢查上限最準
             self._cleanup_cache_if_needed()

@@ -205,10 +205,15 @@ class LibraryIndex:
     刪快取就跟著消失，不會留下對不上的孤兒索引。
     """
 
-    def __init__(self, storage, play_stats=None, song_history=None):
+    def __init__(self, storage, play_stats=None, song_history=None, song_numbers=None):
         self.storage = storage
         self.play_stats = play_stats
         self.song_history = song_history
+        # 歌號簿（可選）。掛在這裡而不是各個查歌服務裡，是因為「發號的時機」
+        # 就是「這首歌完整地出現在曲庫清單裡」—— 掛在同一個地方，
+        # 分類瀏覽、注音查歌、歌星查歌、自動接歌拿到的每一筆就都帶著號碼，
+        # 而號碼要有人記得住，前提是它到處都印得出來。
+        self.song_numbers = song_numbers
 
     # --- 分類 ---
 
@@ -270,6 +275,11 @@ class LibraryIndex:
                 "last_played": stat.get("last_played"),
                 "is_cached": True,
             })
+        if self.song_numbers is not None:
+            try:
+                self.song_numbers.assign(result)
+            except Exception as e:  # 發號出事不該讓整個曲庫頁掛掉
+                logger.warning(f"歌號指派失敗: {e}")
         return result
 
     def facets(self) -> Dict[str, Any]:

@@ -2034,3 +2034,98 @@ input[type="range"] {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* --- 歌號點歌（六位數）--- */
+
+/* 歌卡上的歌號。跟歌名擺在一起（不是縮圖角落）是刻意的：
+   縮圖四個角已經被快取秒播／語言別／NEW／收藏星星佔滿，而且號碼要跟歌名
+   長在一起才記得住 —— 商用點歌機的紙本歌本就是這樣排的。 */
+.number-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent-yellow, #ffde59);
+  background: rgba(255, 222, 89, 0.12);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* 佇列上的歌號。剛點的那一首就在眼前，號碼跟它擺在一起，下次就喊得出來。 */
+.queue-number {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-yellow, #ffde59);
+  background: rgba(255, 222, 89, 0.12);
+  padding: 1px 8px;
+  border-radius: 10px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* 打到一半的號碼。固定六格（＿ 佔位）讓人一眼看出還差幾碼 ——
+   包廂的燈是暗的，沒有人會去數自己按了幾下。 */
+.number-display {
+  flex: 1;
+  min-width: 140px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 15, 28, 0.7);
+  color: var(--accent-yellow, #ffde59);
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 數字鍵比注音鍵大一號：這一頁只有十顆鍵，而它是站著點、用一根手指按的。 */
+.number-key {
+  min-width: 56px;
+  font-size: 20px;
+  padding: 12px 0;
+}
+
+/* 「按下去會落在現有的歌上」的鍵標亮。注意是**標亮**不是把其他顆變灰：
+   已下架號碼的數字永遠不會被標亮，變灰的話使用者就打不完那組號碼，
+   也就看不到「這首歌已經不在曲庫了」—— 而他正是為了那句話才來打號碼的。 */
+.number-key-live {
+  border-color: rgba(0, 240, 255, 0.55);
+  color: var(--accent-cyan);
+}
+
+/* 查號的那一句話。四種結果四種語氣（見 number-search.js）：
+   找到了、歌被刪了（號碼沒錯）、號碼記錯了、機器壞了。 */
+.number-msg {
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.number-msg-ok { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+.number-msg-gone { color: var(--accent-yellow, #ffde59); background: rgba(255, 222, 89, 0.1); }
+.number-msg-miss { color: var(--text-muted); }
+.number-msg-error { color: #ff007f; background: rgba(255, 0, 127, 0.1); }
+
+/* 打滿六碼之後的確認鍵。刻意不自動點歌：按錯一碼在點歌機上是常事，
+   直接送出的話那首歌已經排進佇列，而使用者的下一個動作是去把它刪掉。 */
+.number-confirm {
+  width: 100%;
+  padding: 12px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+@media (max-width: 768px) {
+  .number-key { min-width: 44px; font-size: 18px; padding: 10px 0; }
+  .number-display { font-size: 18px; letter-spacing: 2px; }
+}

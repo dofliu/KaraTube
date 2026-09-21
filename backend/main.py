@@ -28,6 +28,7 @@ from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_index import SongFinder
+from backend.services.song_numbers import SongNumberBook, parse_number
 from backend.services.artist_index import ArtistFinder
 from backend.services.song_history import SongHistory
 from backend.services import marquee, room_timer, song_quota
@@ -143,8 +144,15 @@ mp3_gate = TranscodeGate(max_concurrent=1)
 # 整晚打包（一個 zip 帶走一整場）同時只做一份：一包是幾百 MB，而那條網路
 # 正是舞台端串影片與 WebSocket 在走的。第二個人等一下就好，舞台卡住不行。
 night_gate = ExportGate()
-# 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回
-library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history)
+# 歌號簿（六位數點歌）。存在 cache/ 而不是各首歌的資料夾裡是刻意的：
+# 刪掉一首歌的資料夾不該把「那個號碼曾經是誰的」一起刪掉 ——
+# 號碼絕不回收，正是這個功能唯一的價值來源（見 song_numbers.py）。
+song_numbers = SongNumberBook(CACHE_DIR / "song_numbers.json")
+# 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回。
+# 歌號掛在這一層，所以每一份曲庫清單（分類、查歌、歌星、自動接歌）都帶著號碼
+# —— 要有人記得住號碼，前提是它到處都印得出來。
+library = LibraryIndex(storage, play_stats=play_stats, song_history=song_history,
+                       song_numbers=song_numbers)
 # 曲庫查歌（注音首字／歌名字數）。索引建在 library 給的同一份清單上，
 # 才不會出現「分類瀏覽看得到、查歌查不到」這種兩套清單對不起來的狀況。
 song_finder = SongFinder(storage, library)
@@ -190,7 +198,11 @@ queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.br
                              settings=settings, room=room,
                              # 自動接歌只從「已經備好的曲庫」挑（見 autofill 決定一），
                              # 所以它拿的是曲庫索引，不是搜尋服務。
-                             library=library, favorites=favorites)
+                             library=library, favorites=favorites,
+                             # 歌號：佇列與舞台片頭卡要印得出「下次直接打這組號碼」。
+                             # 傳的是函式而不是號碼簿本身 —— 佇列管的是誰排在誰前面，
+                             # 不該連「號碼怎麼發」都認識。
+                             number_of=song_numbers.ensure)
 # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
 queue_manager.apply_control_defaults()
 
@@ -457,6 +469,101 @@ async def find_in_library(
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, lambda: song_finder.search(query=q, chars=chars or None, limit=limit))
+
+
+def _number_keypad(prefix: str = "", limit: int = 40) -> Dict[str, Any]:
+    """歌號鍵盤的一次完整狀態（同步版；呼叫端丟到 executor 去跑）。
+
+    候選只列現在唱得到的歌：列一首點不下去的歌，使用者按下去會以為系統壞了。
+    已下架的號碼要等他打滿整組、明確地問「這一首去哪了」，才由查號那支回答。
+    """
+    # 用 song_finder 而不是 library 拿清單：歌卡上要印的是**歌名本體**
+    # （「稻香」），不是整串 YouTube 標題 —— 跟注音查歌、歌星查歌同一份索引，
+    # 三條查歌路列出來的同一首歌才會長得一樣。
+    entries = song_finder.entries()
+    by_id = {e["song_id"]: e for e in entries}
+    picked = song_numbers.candidates(prefix, ready_ids=by_id.keys(), limit=limit)
+    songs = [by_id[sid] for sid in picked["song_ids"] if sid in by_id]
+    return {
+        "prefix": picked["prefix"],
+        "songs": songs,
+        "total": picked["total"],
+        "next_digits": picked["next_digits"],
+        "library_total": len(entries),
+        "book": song_numbers.stats(by_id.keys()),
+    }
+
+
+def _number_lookup(raw: str) -> Dict[str, Any]:
+    """打滿一組號碼之後的答案（同步版；呼叫端丟到 executor 去跑）。
+
+    四種結果分得很開，因為使用者的下一步完全不同：
+    `ready` 點下去就唱、`gone` 這首已經不在曲庫（去搜尋框重新下載一份就會回到
+    同一個號碼）、`unknown` 號碼打錯了（去查別的號碼）、`unavailable` 是機器
+    的問題（號碼簿讀不出來，叫店員來）。全部揉成「查無此歌號」的話，
+    第二種會被當成第三種 —— 使用者於是反覆確認自己沒記錯，而號碼一直是對的。
+    """
+    book = song_numbers.stats()
+    if not book.get("available", True):
+        return {"input": str(raw or ""), "status": "unavailable",
+                "number": None, "song": None, "book": book}
+    number = parse_number(raw)
+    if number is None:
+        return {"input": str(raw or ""), "status": "invalid",
+                "number": None, "song": None, "book": book}
+    record = song_numbers.lookup(number)
+    if record is None:
+        return {"input": str(raw or ""), "status": "unknown",
+                "number": number, "song": None, "book": book}
+    entries = song_finder.entries()
+    song = next((e for e in entries if e["song_id"] == record["song_id"]), None)
+    return {
+        "input": str(raw or ""),
+        "status": "ready" if song else "gone",
+        "number": number,
+        "song": song,
+        # 下架的那一首也要講得出「原本是哪一首」—— 使用者要的是這個答案，
+        # 不是「查無此歌號」。號碼簿留著墓碑就是為了這一句話。
+        "record": record,
+        "book": book,
+    }
+
+
+@app.get("/api/library/numbers")
+async def get_song_numbers(
+    prefix: str = Query("", description="已經按下去的那幾碼（只取數字）"),
+    limit: int = Query(40, ge=1, le=200),
+):
+    """歌號鍵盤：目前這幾碼的候選歌曲，以及「下一個數字鍵按哪些還有歌」。"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _number_keypad(prefix, limit))
+
+
+@app.get("/api/library/number/{number}")
+async def get_song_by_number(number: str):
+    """查一組歌號。沒發過、已下架、號碼簿壞掉三種情況分開回答（見 _number_lookup）。"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _number_lookup(number))
+
+
+@app.get("/api/library/songbook")
+async def get_songbook(limit: int = Query(500, ge=1, le=5000)):
+    """整本號碼簿，照號碼排 —— 包廂桌上那本紙歌本的資料來源。
+
+    含已經不在曲庫裡的號碼（標 in_library=false）：紙本歌本印出去之後改不了，
+    而那一頁上的號碼永遠不會變成別首歌，所以印著也不會騙人。
+    """
+    loop = asyncio.get_event_loop()
+
+    def build():
+        ready = {e["song_id"] for e in library.entries()}
+        rows = song_numbers.records()[:limit]
+        for row in rows:
+            row["in_library"] = row["song_id"] in ready
+        return {"songs": rows, "count": len(rows),
+                "book": song_numbers.stats(ready)}
+
+    return await loop.run_in_executor(None, build)
 
 
 @app.get("/api/library/artists/keys")

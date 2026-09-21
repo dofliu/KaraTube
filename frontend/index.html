@@ -62,6 +62,7 @@
         <button class="btn btn-secondary lib-tab active" data-lib="cached">📚 快取歌曲</button>
         <button class="btn btn-secondary lib-tab" data-lib="browse" title="依語言別與歌手分類點歌">🎼 分類瀏覽</button>
         <button class="btn btn-secondary lib-tab" data-lib="find" title="只在已備好的曲庫裡查歌：注音首字、歌名字數，查到的每一首都是快取秒播">🔤 注音查歌</button>
+        <button class="btn btn-secondary lib-tab" data-lib="numbers" title="歌號點歌：直接打六位數歌號（每首歌的號碼印在歌卡上，而且永遠不會變成別首歌）">🔢 歌號點歌</button>
         <button class="btn btn-secondary lib-tab" data-lib="artists" title="歌星查歌：按歌星名字的注音首字（周杰倫＝ㄓㄐㄌ），選一位就翻開他的歌單">🎤 歌星查歌</button>
         <button class="btn btn-secondary lib-tab" data-lib="new" title="最近加入曲庫的新歌與為你推薦的歌單">🆕 新歌推薦</button>
         <button class="btn btn-secondary lib-tab" data-lib="favorites">⭐ 我的最愛</button>
@@ -540,6 +541,8 @@
   <!-- 歌星查歌的說法（按英文查到中文名字、按到只剩一位就自動翻開歌單，
        這兩件事不講清楚都會被當成壞掉）。 -->
   <script src="/js/artist-search.js"></script>
+  <!-- 歌號點歌：包廂裡唯一可以用喊的那一條點歌路（「幫我點 100237」） -->
+  <script src="/js/number-search.js"></script>
   <!-- 自動接歌的說法（機器接的那一首要講得出「為什麼是這首」與「有人點歌就讓開」）-->
   <script src="/js/autofill-view.js"></script>
   <script src="/js/room-view.js"></script>

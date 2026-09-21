@@ -256,6 +256,24 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // 歌號鍵盤：這幾碼的候選歌曲 + 「下一個數字按哪些還有歌」。
+  // 候選與下一鍵一起回來是刻意的 —— 分兩支的話，鍵盤變灰與清單更新
+  // 會落在不同的一幀，看起來像鍵盤慢半拍。
+  async getSongNumbers({ prefix = "", limit = 40 } = {}) {
+    const params = new URLSearchParams({ limit });
+    if (prefix) params.set("prefix", prefix);
+    const res = await fetch(`${this.baseUrl}/api/library/numbers?${params}`);
+    return await res.json();
+  }
+
+  // 查一組歌號。打錯、已下架、號碼簿壞掉三種狀況在回覆裡是分開的
+  // （見 backend/main.py 的 _number_lookup），畫面才講得出不同的下一步。
+  async lookupSongNumber(number) {
+    const res = await fetch(
+      `${this.baseUrl}/api/library/number/${encodeURIComponent(number)}`);
+    return await res.json();
+  }
+
   async getArtistKeys() {
     const res = await fetch(`${this.baseUrl}/api/library/artists/keys`);
     return await res.json();

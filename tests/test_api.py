@@ -729,6 +729,109 @@ def test_artist_find_rejects_out_of_range_params():
                       params={"limit": 999}).status_code == 422
 
 
+# --- 歌號點歌（六位數）---
+
+@pytest.fixture()
+def clean_song_numbers():
+    """歌號簿是全域狀態且會寫進本機 cache，測完要原封不動還回去。
+
+    這支 fixture 比其他的嚴格一點：號碼簿被測試污染的後果不是多一筆垃圾，
+    而是本機曲庫的歌號會整批位移 —— 而那正是這個功能承諾不會發生的事。
+    """
+    book = main.song_numbers
+    saved_records = {k: dict(v) for k, v in book._records.items()}
+    saved_by_number = dict(book._by_number)
+    saved_next = book._next
+    yield book
+    book._records = saved_records
+    book._by_number = saved_by_number
+    book._next = saved_next
+    book._save()
+
+
+def test_number_keypad_lists_only_ready_songs(fake_library_song, clean_song_numbers):
+    res = client.get("/api/library/numbers")
+    assert res.status_code == 200
+    data = res.json()
+    song = next(s for s in data["songs"] if s["song_id"] == fake_library_song)
+    assert song["number"] >= 100001
+    assert data["book"]["available"] is True
+    assert data["library_total"] >= 1
+    # 每個候選都是曲庫裡唱得到的歌（列一首點不下去的歌等於騙人）
+    assert all(s["is_cached"] for s in data["songs"])
+
+
+def test_number_keypad_prefix_and_next_digits(fake_library_song, clean_song_numbers):
+    number = str(client.get("/api/library/numbers").json()["songs"][0]["number"])
+    data = client.get("/api/library/numbers", params={"prefix": number[:3]}).json()
+    assert data["prefix"] == number[:3]
+    assert data["total"] >= 1
+    # 還沒打完就要講得出「下一鍵按哪些還有歌」
+    assert number[3] in data["next_digits"]
+    # 打滿之後就沒有下一鍵了
+    assert client.get("/api/library/numbers",
+                      params={"prefix": number}).json()["next_digits"] == []
+
+
+def test_number_lookup_returns_the_song(fake_library_song, clean_song_numbers):
+    number = clean_song_numbers.number_of(fake_library_song)
+    assert number is not None
+    data = client.get(f"/api/library/number/{number}").json()
+    assert data["status"] == "ready"
+    assert data["song"]["song_id"] == fake_library_song
+    assert data["number"] == number
+
+
+def test_number_lookup_tells_gone_from_never_issued(fake_library_song,
+                                                    clean_song_numbers):
+    """已下架與打錯號碼是兩件事：前者該講得出原本是哪一首。"""
+    number = clean_song_numbers.number_of(fake_library_song)
+    storage.delete_song(fake_library_song)
+    data = client.get(f"/api/library/number/{number}").json()
+    assert data["status"] == "gone"
+    assert data["song"] is None
+    assert data["record"]["title"] == "曲庫測試歌"
+
+    unknown = client.get("/api/library/number/999999").json()
+    assert unknown["status"] == "unknown"
+    assert unknown["song"] is None
+
+
+def test_number_lookup_rejects_non_numbers(clean_song_numbers):
+    data = client.get("/api/library/number/10023x").json()
+    assert data["status"] == "invalid"
+    # 五位數不是歌號（號碼從 100001 起跳）
+    assert client.get("/api/library/number/12345").json()["status"] == "invalid"
+
+
+def test_songbook_lists_retired_numbers_too(fake_library_song, clean_song_numbers):
+    number = clean_song_numbers.number_of(fake_library_song)
+    storage.delete_song(fake_library_song)
+    rows = client.get("/api/library/songbook").json()["songs"]
+    row = next(r for r in rows if r["number"] == number)
+    assert row["in_library"] is False
+    assert [r["number"] for r in rows] == sorted(r["number"] for r in rows)
+
+
+def test_queued_cached_song_carries_its_number(fake_library_song, clean_song_numbers):
+    """佇列上要印得出歌號 —— 包廂裡沒有人記得住一個沒被印出來的號碼。"""
+    number = client.get("/api/library/numbers").json()["songs"][0]["number"]
+    try:
+        res = client.post("/api/queue/add", json={"id": fake_library_song,
+                                                  "title": "曲庫測試歌",
+                                                  "artist": "測試歌手"})
+        assert res.status_code == 200
+        # 快取秒播的歌會直接上台（佇列裡不會留），所以看回傳的那一筆
+        item = res.json()["item"]
+        assert item["song_id"] == fake_library_song
+        assert item["number"] == number
+    finally:
+        queue_manager.queue = [i for i in queue_manager.queue
+                               if i["song_id"] != fake_library_song]
+        queue_manager.current_song = None
+        queue_manager.is_playing = False
+
+
 # --- 排程預處理 ---
 
 @pytest.fixture()

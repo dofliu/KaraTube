@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import main
 from backend.config import SONGS_DIR
-from backend.services import marquee, song_quota
+from backend.services import marquee, service_calls, song_quota
 from backend.version import __version__
 from backend.main import (
     app,
@@ -1762,6 +1762,143 @@ def test_marquee_message_text_is_capped(marquee_clean):
     settings.update({"marquee_enabled": True})
     msg = client.post("/api/marquee", json={"text": "字" * 300}).json()["message"]
     assert len(msg["text"]) == marquee.MAX_TEXT_CHARS
+
+
+# --- 服務鈴（包廂呼叫櫃檯）---
+
+@pytest.fixture()
+def service_clean():
+    """
+    測完把單子與紀錄清乾淨、設定還原。
+
+    服務鈴會落地（一張還開著的單是現實世界裡一件還沒做完的事），所以這裡
+    連 `_open` / `_history` 都要親手還原 —— 不然本機 cache 裡會留下
+    測試按出來的單，而下一次開機時它會出現在櫃檯上。
+    """
+    saved_settings = settings.all()
+    saved_open = dict(main.service_desk._open) if main.service_desk._open else None
+    saved_history = [dict(row) for row in main.service_desk._history]
+    main.service_desk._open = None
+    main.service_desk._history = []
+    yield
+    main.service_desk._open = saved_open
+    main.service_desk._history = saved_history
+    main.service_desk._save()
+    settings.update(saved_settings)
+
+
+def test_service_ring_opens_a_call_and_reports_the_menu(service_clean):
+    settings.update({"service_call_enabled": True})
+    res = client.post("/api/service", json={"items": ["food"], "note": "少冰", "by": "阿明"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["merged"] is False
+    assert body["call"]["status"] == service_calls.STATUS_WAITING
+    state = client.get("/api/service").json()
+    assert state["waiting"] is True
+    assert state["enabled"] is True
+    # 規則與品項清單跟著狀態一起送：兩端必須講出同一組詞、同一個過期門檻
+    assert [s["key"] for s in state["items"]] == service_calls.ITEM_KEYS
+    assert state["stale_minutes"] == settings.all()["service_call_stale_minutes"]
+
+
+def test_service_second_press_merges_and_says_so(service_clean):
+    """第二次按下去得到跟第一次一樣的回應，那個人會以為第一次沒送出去。"""
+    settings.update({"service_call_enabled": True})
+    client.post("/api/service", json={"items": ["food"]})
+    res = client.post("/api/service", json={"items": ["drink"]})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["merged"] is True
+    assert body["call"]["presses"] == 2
+    assert body["call"]["items"] == ["food", "drink"]
+    assert body["service"]["history_count"] == 0
+
+
+def test_service_empty_pick_is_409_not_500(service_clean):
+    """擋下來的語氣是「說明」不是「錯誤」—— 跟舞台訊息、點歌額度同一種。"""
+    settings.update({"service_call_enabled": True})
+    res = client.post("/api/service", json={"items": []})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "empty"
+
+
+def test_service_refuses_when_the_feature_is_off(service_clean):
+    settings.update({"service_call_enabled": False})
+    res = client.post("/api/service", json={"items": ["food"]})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "disabled"
+    assert client.get("/api/service").json()["enabled"] is False
+
+
+def test_service_ack_then_resolve_walks_the_state_machine(service_clean):
+    settings.update({"service_call_enabled": True})
+    call = client.post("/api/service", json={"items": ["gear"]}).json()["call"]
+    acked = client.post("/api/service/ack", json={"id": call["id"], "by": "櫃檯"}).json()
+    assert acked["call"]["status"] == service_calls.STATUS_ACKED
+    # 「櫃檯收到了」不結案：現實世界的事還沒做完
+    assert acked["service"]["waiting"] is True
+    done = client.post("/api/service/resolve",
+                       json={"id": call["id"], "reply": "馬上來"}).json()
+    assert done["call"]["status"] == service_calls.STATUS_DONE
+    assert done["call"]["reply"] == "馬上來"
+    assert done["service"]["waiting"] is False
+
+
+def test_service_cancel_counts_as_unserved(service_clean):
+    """「客人自己算了」跟「櫃檯服務完了」在紀錄上必須分得開。"""
+    settings.update({"service_call_enabled": True})
+    call = client.post("/api/service", json={"items": ["drink"]}).json()["call"]
+    res = client.post("/api/service/cancel", json={"id": call["id"]}).json()
+    assert res["call"]["status"] == service_calls.STATUS_CANCELLED
+    assert res["service"]["unserved_count"] == 1
+
+
+def test_service_action_on_a_stale_screen_is_409(service_clean):
+    """畫面停在舊的那一張時，照著按下去不該把新的那一張標成完成。"""
+    settings.update({"service_call_enabled": True})
+    first = client.post("/api/service", json={"items": ["food"]}).json()["call"]
+    client.post("/api/service/cancel", json={"id": first["id"]})
+    second = client.post("/api/service", json={"items": ["bill"]}).json()["call"]
+    res = client.post("/api/service/resolve", json={"id": first["id"]})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "stale"
+    assert res.json()["detail"]["current_id"] == second["id"]
+    # 新的那一張還好好地開著
+    assert client.get("/api/service").json()["call"]["id"] == second["id"]
+
+
+def test_service_action_with_no_open_call_is_409(service_clean):
+    settings.update({"service_call_enabled": True})
+    res = client.post("/api/service/ack", json={})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "none_open"
+
+
+def test_service_clear_history_keeps_the_open_call(service_clean):
+    settings.update({"service_call_enabled": True})
+    client.post("/api/service", json={"items": ["clean"]})
+    client.post("/api/service/resolve", json={})
+    client.post("/api/service", json={"items": ["bill"]})
+    res = client.delete("/api/service/history").json()
+    assert res["removed"] == 1
+    assert res["service"]["history_count"] == 0
+    # 按「清除紀錄」不會讓現實世界裡那件事自己做完
+    assert res["service"]["waiting"] is True
+
+
+def test_service_note_is_capped(service_clean):
+    """櫃檯那一列只有一行，而看的人正在忙。"""
+    settings.update({"service_call_enabled": True})
+    call = client.post("/api/service",
+                       json={"items": ["other"], "note": "字" * 300}).json()["call"]
+    assert len(call["note"]) == service_calls.MAX_NOTE_CHARS
+
+
+def test_service_stale_minutes_setting_takes_effect_without_a_restart(service_clean):
+    """設定頁改完馬上生效（每一次查詢都會把現在的門檻套進去）。"""
+    settings.update({"service_call_enabled": True, "service_call_stale_minutes": 90})
+    assert client.get("/api/service").json()["stale_minutes"] == 90
 
 
 # --- 自動接歌（沒有人點歌時，機器自己接一首）---

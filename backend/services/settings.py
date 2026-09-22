@@ -33,6 +33,9 @@ from backend.services.room_timer import (DEFAULT_EXPIRE_ACTION, DEFAULT_EXTEND_M
 from backend.services.marquee import (DEFAULT_SHOW_SECONDS, DEFAULT_TTL_MINUTES,
                                       MAX_SHOW_SECONDS, MAX_TTL_MINUTES,
                                       MIN_SHOW_SECONDS, MIN_TTL_MINUTES)
+# 服務鈴的「開多久算過期」上下限同理：規則寫在 service_calls，設定頁只是列出來。
+from backend.services.service_calls import (DEFAULT_STALE_MINUTES, MAX_STALE_MINUTES,
+                                            MIN_STALE_MINUTES)
 # 自動接歌的挑歌來源與時間上下限同理：規則寫在 autofill，設定頁只是列出來。
 from backend.services.autofill import (DEFAULT_IDLE_SECONDS, DEFAULT_SOURCE,
                                        DEFAULT_STOP_AFTER, MAX_IDLE_SECONDS, MAX_STOP_AFTER,
@@ -224,6 +227,19 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 沒有在播歌時用置中的大字卡（看一眼就知道）。正在播歌時一律降級成上緣
     # 那一條，不受這個選項影響 —— 沒有任何訊息重要到可以蓋住正在唱的那個人。
     "marquee_card_when_idle": {"type": "bool", "default": True},
+
+    # --- 服務鈴（包廂呼叫櫃檯）---
+    # 跑馬燈的反方向：包廂把一件事丟到櫃檯（送餐、加冰塊、麥克風沒聲音）。
+    # 預設開著，理由跟跑馬燈一樣 —— 它不會自己發生任何事（沒有人按就沒有單），
+    # 而需要用到它的那一刻，沒有人會想到要先去設定頁打開。
+    "service_call_enabled": {"type": "bool", "default": True},
+    # 一張開著的單超過幾分鐘標成過期（見 service_calls.py 決定七）。
+    # 不是「刪掉」：默默刪掉會讓客人以為送出去了。
+    "service_call_stale_minutes": {"type": "int", "default": DEFAULT_STALE_MINUTES,
+                                   "min": MIN_STALE_MINUTES, "max": MAX_STALE_MINUTES},
+    # 有新的單時，點歌台要不要響一聲。預設響 —— 一張沒有人看到的單，
+    # 跟沒有那顆鍵是同一件事（而客人會以為是後者，然後走出包廂）。
+    "service_call_chime": {"type": "bool", "default": True},
 
     # --- 自動接歌（沒有人點歌時，機器自己接一首）---
     # 預設關著：這是一條會讓機器自己發出聲音的規則，包廂要先講好才開
@@ -417,6 +433,21 @@ class SystemSettings:
             "seconds": float(data["marquee_seconds"]),
             "ttl_minutes": int(data["marquee_ttl_minutes"]),
             "card_when_idle": bool(data["marquee_card_when_idle"]),
+        }
+
+    def service_call_policy(self) -> Dict[str, Any]:
+        """
+        服務鈴的規則（API 與兩端畫面共用）。
+
+        `chime` 是點歌台那一聲。放在設定裡而不是寫死，是因為「櫃檯」在這台
+        機器上常常就是包廂裡那台點歌台 —— 自己按的鈴自己響一聲很吵，
+        但一台真的擺在櫃檯的機器不響就等於沒有那顆鍵。
+        """
+        data = self.all()
+        return {
+            "enabled": bool(data["service_call_enabled"]),
+            "stale_minutes": int(data["service_call_stale_minutes"]),
+            "chime": bool(data["service_call_chime"]),
         }
 
     def autofill_policy(self) -> Dict[str, Any]:

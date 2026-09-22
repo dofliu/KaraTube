@@ -2691,6 +2691,11 @@ document.addEventListener("DOMContentLoaded", () => {
                            hint: "要久一點的用「📌 釘住」送" },
     marquee_card_when_idle: { label: "沒在播歌時用大字卡",
                               hint: "播歌中一律降級成上緣那一條，不受此選項影響" },
+    service_call_enabled: { label: "啟用服務鈴", hint: "包廂把一件事丟到櫃檯（跑馬燈的反方向）" },
+    service_call_stale_minutes: { label: "開多久算過期", unit: " 分鐘", step: 5,
+                                  hint: "標成過期而不是刪掉 —— 默默刪掉客人會以為送出去了" },
+    service_call_chime: { label: "有新的單時提示一聲",
+                          hint: "櫃檯與點歌台是同一台時可以關掉（自己按的鈴自己響很吵）" },
     autofill_enabled: { label: "啟用自動接歌", hint: "沒人點歌時，機器自己從曲庫接一首" },
     autofill_source: {
       label: "照什麼挑",
@@ -2856,6 +2861,22 @@ document.addEventListener("DOMContentLoaded", () => {
             "訊息在最上排的「📺 舞台訊息」隨時可以送出與撤掉。",
       keys: ["marquee_enabled", "marquee_seconds", "marquee_ttl_minutes",
              "marquee_card_when_idle"],
+    },
+    {
+      title: "🔔 服務鈴（包廂呼叫櫃檯）",
+      hint: "舞台訊息的反方向：包廂把一件事丟到櫃檯（送餐、加冰塊、清潔、" +
+            "麥克風沒聲音、結帳）。功能本身也是三行就寫得完，難的是**按下去之後**" +
+            "—— 一顆沒有回音的鈴會被按第五次，因為按的人沒有辦法分辨" +
+            "「櫃檯看到了、正在弄」跟「這顆鍵根本沒作用」。所以：" +
+            "同時只有一張未結案的單（再按是**併進去**，櫃檯看到的是一列與" +
+            "「按了 3 次」，不是五列一樣的東西）；併單**不重設等待時間**" +
+            "（等最久的那一桌不該因為按最多次而排到最後面）；" +
+            "狀態分「已送出 / 櫃檯收到了 / 完成 / 取消」四種並且一直留在畫面上" +
+            "（跳一下就消失的「已送出」等於沒有回應）；客人可以自己取消，" +
+            "而且取消與完成在紀錄上分得開（否則「今晚有幾單沒服務到」永遠問不出來）。" +
+            "服務鈴的字**一個都不會上舞台** —— 台上那個人沒有點那份冰塊。" +
+            "在最上排的「🔔 服務鈴」按。",
+      keys: ["service_call_enabled", "service_call_stale_minutes", "service_call_chime"],
     },
     {
       title: "🎧 自動接歌",
@@ -3236,6 +3257,261 @@ document.addEventListener("DOMContentLoaded", () => {
   window.api.getMarquee()
     .then((data) => applyMarqueeState(data))
     .catch(() => { /* 拿不到就當成沒有訊息，下一次 MARQUEE_UPDATE 會補上 */ });
+
+  // --- 服務鈴（包廂呼叫櫃檯）---
+  // 跑馬燈的反方向。說法全在 service-view.js，這裡只負責按、顯示、結案。
+  // 這一段的重點不是那顆鍵（那是最簡單的部分），是**等待中那一張單一直在
+  // 畫面上**：客人分不出「櫃檯在弄」跟「這顆鍵沒作用」的時候，他會再按一次。
+
+  const serviceBtn = document.getElementById("serviceBtn");
+  const serviceModal = document.getElementById("serviceModal");
+  const closeServiceBtn = document.getElementById("closeServiceBtn");
+  const serviceItemsBox = document.getElementById("serviceItems");
+  const serviceNoteInput = document.getElementById("serviceNoteInput");
+  const serviceRingBtn = document.getElementById("serviceRingBtn");
+  const serviceCurrentBox = document.getElementById("serviceCurrent");
+  const serviceCurrentLine = document.getElementById("serviceCurrentLine");
+  const serviceAckBtn = document.getElementById("serviceAckBtn");
+  const serviceDoneBtn = document.getElementById("serviceDoneBtn");
+  const serviceCancelBtn = document.getElementById("serviceCancelBtn");
+  const serviceReplyInput = document.getElementById("serviceReplyInput");
+  const serviceHistoryBox = document.getElementById("serviceHistory");
+  const serviceClearBtn = document.getElementById("serviceClearBtn");
+  const serviceCountBadge = document.getElementById("serviceCountBadge");
+
+  let serviceSnapshot = null;
+  let serviceSnapshotAt = 0;
+  let servicePicked = new Set();
+  // 上一張看到的單是哪一張。用來決定「這是新的一張嗎」——
+  // 響鈴聲要只在第一次響（同一張單響三聲只會讓人把音量關掉）。
+  let serviceLastCallId = "";
+
+  function serviceSince() {
+    return serviceSnapshotAt ? (Date.now() - serviceSnapshotAt) / 1000 : 0;
+  }
+
+  function serviceIsModalOpen() {
+    return !!(serviceModal && serviceModal.classList.contains("open"));
+  }
+
+  function serviceSpec() {
+    return (serviceSnapshot && Array.isArray(serviceSnapshot.items))
+      ? serviceSnapshot.items : [];
+  }
+
+  /**
+   * 最上排那顆鍵。
+   *
+   * 有單等待時它會亮 —— 這是整個功能唯一一個「不必打開任何視窗就看得到」的
+   * 訊號，而櫃檯那一端多半沒有打開視窗。
+   */
+  function paintServiceBell() {
+    if (!serviceBtn) return;
+    const enabled = !serviceSnapshot || serviceSnapshot.enabled !== false;
+    serviceBtn.classList.toggle("is-off", !enabled);
+    const call = serviceSnapshot && serviceSnapshot.call;
+    const waiting = window.ServiceView.serviceIsOpen(call);
+    serviceBtn.classList.toggle("is-ringing", waiting);
+    if (!serviceCountBadge) return;
+    serviceCountBadge.textContent = waiting ? "1" : "";
+    serviceCountBadge.style.display = waiting ? "inline-block" : "none";
+  }
+
+  /** 等待中那一張單的區塊（含等久了變色）。 */
+  function renderServiceCurrent() {
+    if (!serviceCurrentBox) return;
+    const call = serviceSnapshot && serviceSnapshot.call;
+    if (!window.ServiceView.serviceIsOpen(call)) {
+      serviceCurrentBox.style.display = "none";
+      return;
+    }
+    const since = serviceSince();
+    serviceCurrentBox.style.display = "";
+    const urgency = window.ServiceView.serviceUrgency(call, since);
+    serviceCurrentBox.classList.toggle("is-warn", urgency === "warn");
+    serviceCurrentBox.classList.toggle("is-late", urgency === "late");
+    if (serviceCurrentLine) {
+      // textContent 而不是 innerHTML：備註是使用者打進去的字。
+      serviceCurrentLine.textContent =
+        window.ServiceView.serviceDeskLine(call, serviceSpec(), since) +
+        "\n" + window.ServiceView.serviceStatusLabel(call);
+    }
+    // 已經收過的單不必再按一次「櫃檯收到」，但那顆鍵不藏起來（藏起來會讓
+    // 版面在按下去的瞬間跳動），只是停用。
+    if (serviceAckBtn) serviceAckBtn.disabled = String(call.status) === "ACKED";
+  }
+
+  function renderServiceHistory() {
+    if (!serviceHistoryBox) return;
+    const rows = (serviceSnapshot && Array.isArray(serviceSnapshot.history))
+      ? serviceSnapshot.history : [];
+    if (rows.length === 0) {
+      serviceHistoryBox.innerHTML =
+        '<div class="marquee-empty">今晚還沒有叫過櫃檯。</div>';
+      return;
+    }
+    serviceHistoryBox.innerHTML = rows.map(() =>
+      '<div class="marquee-row"><span class="marquee-row-text"></span></div>').join("");
+    serviceHistoryBox.querySelectorAll(".marquee-row-text").forEach((el, idx) => {
+      el.textContent = window.ServiceView.serviceHistoryLine(rows[idx], serviceSpec());
+    });
+  }
+
+  /** 品項按鍵。清單由伺服器給 —— 兩端必須是同一組詞。 */
+  function renderServiceItems() {
+    if (!serviceItemsBox) return;
+    const spec = serviceSpec();
+    const signature = spec.map((s) => s.key).join(",");
+    if (serviceItemsBox.dataset.signature !== signature) {
+      serviceItemsBox.dataset.signature = signature;
+      serviceItemsBox.innerHTML = spec.map((s) => `
+        <button class="btn btn-secondary service-item-btn" data-key="${s.key}"></button>
+      `).join("");
+      serviceItemsBox.querySelectorAll(".service-item-btn").forEach((btn, idx) => {
+        btn.textContent = `${spec[idx].emoji || ""} ${spec[idx].label || ""}`.trim();
+        btn.addEventListener("click", () => {
+          const key = btn.dataset.key;
+          if (servicePicked.has(key)) servicePicked.delete(key);
+          else servicePicked.add(key);
+          renderServiceItems();
+        });
+      });
+    }
+    serviceItemsBox.querySelectorAll(".service-item-btn").forEach((btn) => {
+      btn.classList.toggle("is-on", servicePicked.has(btn.dataset.key));
+    });
+  }
+
+  function applyServiceState(state, opts = {}) {
+    if (!state) return;
+    serviceSnapshot = state;
+    serviceSnapshotAt = Date.now();
+    const call = state.call;
+    const callId = (call && call.id) || "";
+    // 新的一張單才響。併單不響（伺服器那邊也已經把 chime 關掉了），
+    // 自己按的也不響 —— 自己按的鈴自己響一聲只是吵。
+    if (opts.chime && callId && callId !== serviceLastCallId && !serviceIsModalOpen()) {
+      showNotification(`🔔 包廂叫櫃檯：${window.ServiceView.serviceItemsLabel(call, serviceSpec())}`,
+                       8000);
+    }
+    serviceLastCallId = callId;
+    paintServiceBell();
+    if (serviceIsModalOpen()) {
+      renderServiceItems();
+      renderServiceCurrent();
+      renderServiceHistory();
+    }
+  }
+
+  async function ringService() {
+    const items = Array.from(servicePicked);
+    if (items.length === 0) {
+      showNotification(window.ServiceView.serviceRejectNote("empty"), 5000);
+      return;
+    }
+    const res = await window.api.ringService({
+      items,
+      note: serviceNoteInput ? serviceNoteInput.value.trim() : "",
+      by: nickname,
+    });
+    if (res && res.status === "rejected") {
+      showNotification(window.ServiceView.serviceRejectNote(res.reason, res.detail || {}), 6000);
+      applyServiceState(res.service);
+      return;
+    }
+    // 送出之後清掉選項與備註：下一次按的多半是別件事，而留著上一次的勾選，
+    // 按下去會送出一張自己沒有要的單。
+    servicePicked = new Set();
+    if (serviceNoteInput) serviceNoteInput.value = "";
+    applyServiceState(res && res.service);
+    renderServiceItems();
+    showNotification(window.ServiceView.serviceSentNote(res && res.call, serviceSpec()), 6000);
+  }
+
+  async function serviceAction(fn) {
+    const call = serviceSnapshot && serviceSnapshot.call;
+    if (!window.ServiceView.serviceIsOpen(call)) {
+      showNotification(window.ServiceView.serviceRejectNote("none_open"), 5000);
+      return;
+    }
+    const res = await fn(call.id);
+    if (res && res.status === "rejected") {
+      showNotification(window.ServiceView.serviceRejectNote(res.reason, res.detail || {}), 6000);
+      applyServiceState(res.service);
+      return;
+    }
+    applyServiceState(res && res.service);
+  }
+
+  async function openServiceModal() {
+    serviceModal.classList.add("open");
+    try {
+      applyServiceState(await window.api.getServiceCalls());
+    } catch (e) { /* 拿不到就先畫舊的，下一次 SERVICE_UPDATE 會補上 */ }
+    renderServiceItems();
+    renderServiceCurrent();
+    renderServiceHistory();
+  }
+
+  if (serviceBtn) serviceBtn.addEventListener("click", openServiceModal);
+  if (closeServiceBtn) {
+    closeServiceBtn.addEventListener("click", () => serviceModal.classList.remove("open"));
+  }
+  if (serviceModal) {
+    serviceModal.addEventListener("click", (e) => {
+      if (e.target === serviceModal) serviceModal.classList.remove("open");
+    });
+  }
+  if (serviceRingBtn) serviceRingBtn.addEventListener("click", ringService);
+  if (serviceNoteInput) {
+    serviceNoteInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); ringService(); }
+    });
+  }
+  if (serviceAckBtn) {
+    serviceAckBtn.addEventListener("click", () =>
+      serviceAction((id) => window.api.ackServiceCall(id, nickname)));
+  }
+  if (serviceDoneBtn) {
+    serviceDoneBtn.addEventListener("click", () => serviceAction(async (id) => {
+      const reply = serviceReplyInput ? serviceReplyInput.value.trim() : "";
+      const res = await window.api.resolveServiceCall(id, reply, nickname);
+      if (serviceReplyInput) serviceReplyInput.value = "";
+      return res;
+    }));
+  }
+  if (serviceCancelBtn) {
+    serviceCancelBtn.addEventListener("click", () =>
+      serviceAction((id) => window.api.cancelServiceCall(id, nickname)));
+  }
+  if (serviceClearBtn) {
+    serviceClearBtn.addEventListener("click", async () => {
+      const res = await window.api.clearServiceHistory();
+      applyServiceState(res && res.service);
+    });
+  }
+
+  window.api.on("SERVICE_UPDATE", (msg) =>
+    applyServiceState(msg && msg.data, { chime: !!(msg && msg.chime) }));
+
+  // 設定頁把功能關掉（或打開）時，按鈕的樣子要當場跟著變。
+  window.api.on("SETTINGS_UPDATE", (msg) => {
+    const data = (msg && msg.data) || {};
+    if (data.service_call_enabled === undefined || !serviceSnapshot) return;
+    serviceSnapshot = { ...serviceSnapshot, enabled: !!data.service_call_enabled };
+    paintServiceBell();
+  });
+
+  // 「已等 3 分鐘」要自己走。五秒一次就夠（沒有秒數在跳）。
+  setInterval(() => {
+    paintServiceBell();
+    if (serviceIsModalOpen()) renderServiceCurrent();
+  }, 5000);
+
+  // 開機先問一次：中途才打開的點歌台不問的話，會以為現在沒有人在等。
+  window.api.getServiceCalls()
+    .then((data) => applyServiceState(data))
+    .catch(() => { /* 拿不到就當成沒有單，下一次 SERVICE_UPDATE 會補上 */ });
 
   // --- 櫃檯管理鎖 ---
   //

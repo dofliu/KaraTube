@@ -31,7 +31,7 @@ from backend.services.song_index import SongFinder
 from backend.services.song_numbers import SongNumberBook, parse_number
 from backend.services.artist_index import ArtistFinder
 from backend.services.song_history import SongHistory
-from backend.services import access_policy, marquee, room_timer, song_quota
+from backend.services import access_policy, marquee, room_timer, service_calls, song_quota
 from backend.services.staff_lock import StaffLock
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
@@ -76,6 +76,11 @@ async def stage_heartbeat_loop():
             # 不叫十分鐘了），這裡是為了讓點歌台的訊息清單跟舞台看到的同一份。
             if marquee_board.prune():
                 await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": marquee_state()})
+            # 服務鈴：開太久的那張單自己標成過期。掛在心跳上的理由跟過期訊息一樣
+            # —— 一張沒有人理的單，正好是沒有人會去查的那一張，而畫面上一直寫著
+            # 「等待中 47 分鐘」看起來像系統還在處理（見 service_calls.py 決定七）。
+            if service_desk.expire_stale():
+                await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": service_state()})
             # 沒有人點歌時，機器自己接一首。掛在同一個心跳上的理由跟計時一樣：
             # 「空了二十秒」這件事必須有人發現，而包廂最安靜的時候正是
             # 沒有人會去按任何按鈕的時候。
@@ -223,6 +228,13 @@ room = room_timer.RoomTimer(CACHE_DIR / "room_timer.json")
 # 舞台訊息（跑馬燈）。刻意不落地：伺服器重開之後最可能的狀況是「那件事早就
 # 處理完了」，而一則沒有人記得的舊訊息自己跳到螢幕上，看起來就像機器壞了。
 marquee_board = marquee.MarqueeBoard()
+# 服務鈴（包廂呼叫櫃檯）。跟舞台訊息相反，這一支**要存檔**：一張還開著的單
+# 對應的是現實世界裡一件還沒做完的事，伺服器重開不會讓那杯冰塊自己送到
+# （見 service_calls.py 決定七）。
+service_desk = service_calls.ServiceDesk(
+    CACHE_DIR / "service_calls.json",
+    stale_minutes=settings.service_call_policy()["stale_minutes"],
+)
 queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
                              play_stats=play_stats, song_history=song_history,
                              settings=settings, room=room,
@@ -921,6 +933,134 @@ async def clear_marquee(include_pinned: bool = Query(default=True)):
     state = marquee_state()
     await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
     return {"status": "success", "removed": removed, "marquee": state}
+
+
+def service_state() -> Dict[str, Any]:
+    """
+    廣播給所有裝置的服務鈴狀態 = 現在那張單 + 紀錄 + 現在生效的規則。
+
+    規則跟著送的理由跟舞台訊息一樣：客人那支手機要知道「按幾分鐘後會過期」，
+    櫃檯那一端要知道要不要響一聲。分兩支端點拿的話，兩邊會有一邊拿到的是舊的。
+
+    每一次都先把設定頁的「開多久算過期」套進去 —— 設定改完不必重開伺服器，
+    而且**只影響還開著的那一張**（已經結案的不會自己亮回來，
+    見 service_calls.py `set_stale_minutes`）。
+    """
+    policy = settings.service_call_policy()
+    service_desk.set_stale_minutes(policy["stale_minutes"])
+    return {
+        **service_desk.snapshot(),
+        "enabled": policy["enabled"],
+        "chime": policy["chime"],
+    }
+
+
+@app.get("/api/service")
+async def get_service_calls():
+    """
+    服務鈴：現在有沒有人在叫櫃檯。
+
+    跟舞台訊息同一個道理：中途才打開的點歌台要先問一次（WebSocket 只推
+    「有變動」的那一刻），之後靠 SERVICE_UPDATE 更新。
+    """
+    return service_state()
+
+
+@app.post("/api/service")
+async def post_service_call(payload: Dict[str, Any] = Body(...)):
+    """
+    按下服務鈴。
+
+    已經有一張開著就併進去（見 service_calls.py 決定一），回傳的 `merged`
+    讓畫面講得出「已經併進剛剛那一張」而不是再講一次「已送出」——
+    第二次按下去得到跟第一次一模一樣的回應，那個人會以為第一次沒送出去。
+    """
+    policy = settings.service_call_policy()
+    if not policy["enabled"]:
+        raise HTTPException(status_code=409, detail={"error": "disabled",
+                                                     "service": service_state()})
+    try:
+        call = service_desk.ring(payload.get("items"),
+                                 note=payload.get("note", "") or "",
+                                 by=payload.get("by", "") or "")
+    except service_calls.ServiceCallRejected as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail,
+                                    "service": service_state()}) from exc
+    state = service_state()
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state,
+                                # 併單不再響一次：櫃檯已經看到那一列了，
+                                # 而同一張單響三聲只會讓人把音量關掉。
+                                "chime": bool(policy["chime"]) and not call.get("merged")})
+    return {"status": "success", "call": call, "merged": bool(call.get("merged")),
+            "service": state}
+
+
+@app.post("/api/service/ack")
+async def ack_service_call(payload: Dict[str, Any] = Body(default=None)):
+    """
+    櫃檯收到了。不改變現實世界，卻是整個功能最重要的一步 ——
+    它把「等待中」變成「有人看到了」，而那正是客人還會不會再按一次的分水嶺。
+    """
+    data = payload or {}
+    try:
+        call = service_desk.ack(call_id=data.get("id"), by=data.get("by", "") or "")
+    except service_calls.ServiceCallRejected as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail,
+                                    "service": service_state()}) from exc
+    state = service_state()
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+    return {"status": "success", "call": call, "service": state}
+
+
+@app.post("/api/service/resolve")
+async def resolve_service_call(payload: Dict[str, Any] = Body(default=None)):
+    """櫃檯處理完了。`reply` 是回給包廂的那一句（「餐點五分鐘後到」）。"""
+    data = payload or {}
+    try:
+        call = service_desk.resolve(call_id=data.get("id"),
+                                    reply=data.get("reply", "") or "",
+                                    by=data.get("by", "") or "")
+    except service_calls.ServiceCallRejected as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail,
+                                    "service": service_state()}) from exc
+    state = service_state()
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+    return {"status": "success", "call": call, "service": state}
+
+
+@app.post("/api/service/cancel")
+async def cancel_service_call(payload: Dict[str, Any] = Body(default=None)):
+    """
+    包廂自己取消（「不用了，我們自己去拿」）。
+
+    跟「完成」分成兩個狀態是刻意的：按不掉的鈴大家就不敢按，而兩者在紀錄上
+    長得一樣的話，「今晚有幾單沒服務到」就永遠問不出來。
+    """
+    data = payload or {}
+    try:
+        call = service_desk.cancel(call_id=data.get("id"), by=data.get("by", "") or "")
+    except service_calls.ServiceCallRejected as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail,
+                                    "service": service_state()}) from exc
+    state = service_state()
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+    return {"status": "success", "call": call, "service": state}
+
+
+@app.delete("/api/service/history")
+async def clear_service_history():
+    """
+    清掉紀錄（換一桌客人）。**開著的那一張不動** ——
+    它對應的是現實世界裡還沒做完的事，不會因為按了「清除紀錄」就做完了。
+    """
+    removed = service_desk.clear_history()
+    state = service_state()
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+    return {"status": "success", "removed": removed, "service": state}
 
 
 @app.post("/api/queue/skip")

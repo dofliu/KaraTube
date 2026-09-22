@@ -31,6 +31,13 @@
       <button class="btn btn-secondary" id="marqueeBtn" title="把一句話打到舞台螢幕上（餐點到了、生日祝福）">
         📺 舞台訊息<span id="marqueeCountBadge" class="marquee-count" style="display: none;"></span>
       </button>
+      <!-- 服務鈴（包廂呼叫櫃檯）：跑馬燈的反方向。同樣放在最上排 ——
+           要按它的時候（麥克風沒聲音、餐點還沒來）翻三層選單才找得到，
+           那個人會直接推開門走出去，而這顆鍵存在的意義就是讓他不必。
+           等待中的單會讓這顆鍵一直亮著（見 controller.js renderServiceBell）。 -->
+      <button class="btn btn-secondary" id="serviceBtn" title="叫櫃檯：送餐、加冰塊、清潔、麥克風／音響、結帳">
+        🔔 服務鈴<span id="serviceCountBadge" class="marquee-count" style="display: none;"></span>
+      </button>
       <button class="btn btn-secondary" id="nickBtn" title="設定顯示在佇列上的暱稱，讓大家知道是誰點的歌">
         👤 <span id="nickText">設定暱稱</span>
       </button>
@@ -528,6 +535,54 @@
     </div>
   </div>
 
+  <!-- 服務鈴：包廂把一件事丟到櫃檯 -->
+  <div id="serviceModal" class="modal-overlay">
+    <div class="modal-content mixer-content">
+      <div class="mixer-header">
+        <h3>🔔 服務鈴</h3>
+        <button id="closeServiceBtn" class="btn btn-secondary" style="padding: 4px 12px;">關閉</button>
+      </div>
+
+      <!-- 等待中的那一張單。**一直在畫面上**直到結案，不是跳三秒就消失的提示：
+           客人沒有辦法分辨「櫃檯在弄」跟「這顆鍵沒作用」的時候，他會再按一次。 -->
+      <div id="serviceCurrent" class="service-current" style="display: none;">
+        <div class="service-current-line" id="serviceCurrentLine"></div>
+        <div class="service-current-actions">
+          <button class="btn btn-secondary" id="serviceAckBtn"
+                  title="櫃檯用：讓包廂看到「我們收到了」。這一步不改變任何事，卻是客人還會不會再按一次的分水嶺">👀 櫃檯收到</button>
+          <input type="text" id="serviceReplyInput" class="search-input service-reply"
+                 maxlength="40" placeholder="回一句話（例如：餐點五分鐘後到）">
+          <button class="btn btn-primary" id="serviceDoneBtn" title="櫃檯用：這件事處理完了">✅ 完成</button>
+          <button class="btn btn-secondary" id="serviceCancelBtn"
+                  title="包廂用：不用了，我們自己去拿。跟「完成」是兩種結案，紀錄上分得開">↩️ 取消</button>
+        </div>
+      </div>
+
+      <p class="mixer-hint" style="margin-top: 0;" id="serviceHint">
+        選一項（可複選）再按「叫櫃檯」。<strong>已經有一張在等的時候再按是併進同一張</strong>
+        —— 櫃檯看到的是一列、按了幾次，不是五列一樣的單，這樣才有辦法一趟送完。
+        這幾個字<strong>不會出現在舞台螢幕上</strong>：唱歌的人沒有點那份冰塊。
+      </p>
+
+      <div class="service-items" id="serviceItems">
+        <!-- 品項按鈕由 controller.js 依伺服器給的清單產生（兩端必須是同一組詞） -->
+      </div>
+
+      <div class="marquee-compose">
+        <input type="text" id="serviceNoteInput" class="search-input marquee-input"
+               maxlength="40" placeholder="備註（例如：少冰、兩杯、3 號麥克風）">
+        <button class="btn btn-primary" id="serviceRingBtn">🔔 叫櫃檯</button>
+      </div>
+
+      <div class="mixer-header" style="margin-top: 18px;">
+        <h3 style="font-size: 15px;">今晚的服務紀錄</h3>
+        <button id="serviceClearBtn" class="btn btn-secondary" style="padding: 4px 12px;"
+                title="清掉紀錄（換一桌客人）。等待中的那一張不會被清掉">清除紀錄</button>
+      </div>
+      <div id="serviceHistory" class="marquee-list"></div>
+    </div>
+  </div>
+
   <!-- Phone Pairing QR Modal -->
   <div id="qrModal" class="modal-overlay">
     <div class="modal-content">
@@ -586,6 +641,10 @@
        而大家會相信對自己有利的那一個。 -->
   <!-- 舞台訊息的說法（舞台端載的是同一支）：哪一則、剩多久、送不出去時說什麼 -->
   <script src="/js/marquee-view.js"></script>
+  <!-- 服務鈴的說法（等多久了、這一列該不該變紅、按第二次要說什麼）。
+       客人那支手機與櫃檯那一端載的是同一支：同一張單在兩個畫面上講出不同的
+       等待時間的話，接下來那段對話不會有好結果。 -->
+  <script src="/js/service-view.js"></script>
   <!-- 曲庫查歌的說法（按了什麼、為什麼查不到）。查得到什麼由伺服器決定，
        這一支只負責把「空白畫面」講成一句有用的話 —— 講不出來的話，
        使用者會回去用搜尋框把已經在曲庫裡的歌再下載一次。 -->

@@ -74,6 +74,14 @@ PROTECTED_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     # 「重新排」是換一批客人的動作：它會把每個人「今晚唱過幾首」歸零，
     # 也就是把還沒輪到的那幾位排回隊伍後面。做這件事的人是櫃檯。
     ("POST", "/api/rotation/reset", "重設輪唱順序"),
+
+    # --- 服務鈴：櫃檯那一端 ---
+    # 「收到了」與「處理完了」是**櫃檯在回答**，不是包廂在請求。包廂那一端
+    # 自己按（叫櫃檯、取消）在下面的 OPEN 表上 —— 這兩張表的分界剛好就是
+    # 服務鈴那條路的兩頭。
+    ("POST", "/api/service/ack", "回覆「櫃檯收到了」"),
+    ("POST", "/api/service/resolve", "把服務需求標成完成"),
+    ("DELETE", "/api/service/history", "清除服務紀錄"),
 )
 
 # 明確**不鎖**的（列出來是為了讓新路由必須二選一，而不是預設落進某一邊）。
@@ -104,6 +112,12 @@ OPEN_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     ("POST", "/api/recordings/{rec_id}/pin", "標記保留錄音"),
     ("POST", "/api/recordings/{rec_id}/share", "產生分享連結"),
     ("DELETE", "/api/share/{token}", "撤銷分享連結"),
+    # --- 服務鈴：包廂那一端 ---
+    # 叫櫃檯絕對不能鎖（那正是這顆鍵存在的理由：不必有人推開門走出去），
+    # 取消也不能 —— 按不掉的鈴大家就不敢按，而一張取消不掉的單最後會變成
+    # 一通電話。
+    ("POST", "/api/service", "叫櫃檯"),
+    ("POST", "/api/service/cancel", "取消服務需求"),
     # --- 鎖自己：解鎖要 PIN、上鎖不需要任何東西（見 staff_lock.py 第 3 點），
     #     所以這幾條一定不能被自己擋住，否則鎖上之後連解鎖的門都敲不了。 ---
     ("POST", "/api/staff-lock/unlock", "解鎖"),

@@ -634,6 +634,64 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // --- 服務鈴（包廂呼叫櫃檯）---
+  // 跑馬燈的反方向。每一支同樣回傳最新的整份狀態，並以 SERVICE_UPDATE 廣播 ——
+  // 客人那支手機與櫃檯那一端看到的必須是同一張單、同一個等待時間。
+
+  async getServiceCalls() {
+    const res = await fetch(`${this.baseUrl}/api/service`);
+    return await res.json();
+  }
+
+  async ringService({ items = [], note = '', by = '' } = {}) {
+    const res = await fetch(`${this.baseUrl}/api/service`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, note, by })
+    });
+    const body = await res.json().catch(() => ({}));
+    // 409 = 規則擋下來了（沒選品項、功能關著）。跟舞台訊息一樣**不丟例外**：
+    // 一顆按了之後畫面什麼都沒發生的服務鈴，下一步是有人推開包廂的門。
+    if (res.status === 409) {
+      const detail = (body && body.detail) || {};
+      return { status: 'rejected', reason: detail.error || 'rejected', detail,
+               service: detail.service || null };
+    }
+    return body;
+  }
+
+  async _serviceAction(action, payload) {
+    // 「收到了」與「完成」是**櫃檯在回答**，受櫃檯管理鎖保護（見
+    // backend/services/access_policy.py）；包廂自己按的「取消」不鎖，
+    // 走 staffFetch 也不會多問一次密碼（沒被擋就不會問）。
+    const res = await this.staffFetch(`${this.baseUrl}/api/service/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {})
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      const detail = (body && body.detail) || {};
+      return { status: 'rejected', reason: detail.error || 'rejected', detail,
+               service: detail.service || null };
+    }
+    return body;
+  }
+
+  async ackServiceCall(id, by = '') { return this._serviceAction('ack', { id, by }); }
+
+  async resolveServiceCall(id, reply = '', by = '') {
+    return this._serviceAction('resolve', { id, reply, by });
+  }
+
+  async cancelServiceCall(id, by = '') { return this._serviceAction('cancel', { id, by }); }
+
+  async clearServiceHistory() {
+    const res = await this.staffFetch(`${this.baseUrl}/api/service/history`,
+                                      { method: 'DELETE' });
+    return await res.json();
+  }
+
   async reorderQueue(fromIdx, toIdx) {
     const res = await fetch(`${this.baseUrl}/api/queue/reorder`, {
       method: 'POST',

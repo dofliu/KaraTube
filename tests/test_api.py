@@ -1895,3 +1895,169 @@ def test_random_pick_is_refused_when_the_quota_is_full(autofill_clean):
         assert res.json()["detail"]["error"] == "pending_limit_reached"
     finally:
         queue_manager.pending_limit = 0
+
+
+# --- 櫃檯管理鎖（staff lock）---
+#
+# 這一組測的不是「鎖得起來」，是**鎖起來之後包廂裡照樣唱得了歌**：
+# 這個功能唯一真正的失敗模式是鎖錯一條，而那件事在包廂裡的樣子是
+# 「客人按切歌，跳出一個要密碼的視窗，而櫃檯在別的樓層」。
+
+
+@pytest.fixture()
+def staff_lock_clean(tmp_path, monkeypatch):
+    """每一條都用自己的鎖檔，不碰開發機上的 cache/staff_lock.json。"""
+    from backend.services.staff_lock import ENV_PIN, StaffLock
+    monkeypatch.delenv(ENV_PIN, raising=False)
+    monkeypatch.setattr(main, "staff_lock", StaffLock(tmp_path / "staff_lock.json"))
+    yield main.staff_lock
+
+
+def staff_unlock(pin="1234"):
+    """解鎖並回傳可以直接丟進 headers 的 token。"""
+    res = client.post("/api/staff-lock/unlock", json={"pin": pin})
+    assert res.status_code == 200, res.text
+    return {"X-Staff-Token": res.json()["token"]}
+
+
+def test_staff_lock_defaults_to_off(staff_lock_clean):
+    """家用不受影響：沒設密碼之前，每一條路都跟以前一樣通。"""
+    body = client.get("/api/staff-lock").json()["lock"]
+    assert body["enabled"] is False and body["locked"] is False
+    assert client.delete("/api/rankings").status_code == 200
+
+
+def test_setting_a_pin_locks_the_machine_actions(staff_lock_clean):
+    assert client.post("/api/staff-lock/pin", json={"pin": "1234"}).status_code == 200
+    res = client.delete("/api/rankings")
+    assert res.status_code == 403
+    body = res.json()
+    assert body["code"] == "staff_locked"
+    assert body["action"] == "清空點唱排行"      # 說得出被擋的是哪一個動作
+    assert "櫃檯" in body["detail"]              # 以及要怎麼過去
+    assert body["lock"]["locked"] is True
+
+
+def test_unlock_then_the_same_action_goes_through(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    headers = staff_unlock()
+    assert client.delete("/api/rankings", headers=headers).status_code == 200
+    # 上鎖之後又擋回去（上鎖不需要密碼）
+    assert client.post("/api/staff-lock/lock").status_code == 200
+    assert client.delete("/api/rankings", headers=headers).status_code == 403
+
+
+@pytest.mark.parametrize("method,path,payload", [
+    ("post", "/api/settings", {"loudness_target_lufs": -12.0}),
+    ("delete", "/api/settings", None),
+    ("delete", "/api/history", None),
+    ("post", "/api/room/start", {}),
+    ("post", "/api/marquee", {"text": "您的餐點到了"}),
+    ("post", "/api/rotation/reset", {}),
+    ("delete", "/api/cache/whatever", None),
+])
+def test_machine_level_endpoints_are_blocked_while_locked(staff_lock_clean, method, path,
+                                                          payload):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    call = getattr(client, method)
+    res = call(path, json=payload) if payload is not None else call(path)
+    assert res.status_code == 403
+    assert res.json()["code"] == "staff_locked"
+
+
+@pytest.mark.parametrize("method,path,payload", [
+    ("get", "/api/settings", None),
+    ("get", "/api/rankings", None),
+    ("get", "/api/queue", None),
+    ("get", "/api/cache", None),
+    ("post", "/api/control", {"music_volume": 0.5}),
+    ("post", "/api/queue/skip", None),
+    ("post", "/api/queue/restart", None),
+    ("post", "/api/sound-effect", {"effect": "applause"}),
+    ("post", "/api/favorites/toggle", {"song_id": "test_lock", "title": "鎖不住的歌"}),
+])
+def test_singing_and_reading_never_need_the_pin(staff_lock_clean, method, path, payload):
+    """鎖著的時候，唱歌與看清單的每一條都要照常回 2xx。"""
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    call = getattr(client, method)
+    res = call(path, json=payload) if payload is not None else call(path)
+    assert res.status_code < 400, f"{method.upper()} {path} 被鎖住了：{res.text}"
+
+
+def test_wrong_pin_is_403_then_429(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    for _ in range(3):
+        assert client.post("/api/staff-lock/unlock", json={"pin": "0000"}).status_code == 403
+    res = client.post("/api/staff-lock/unlock", json={"pin": "0000"})
+    assert res.status_code == 403
+    cooled = client.post("/api/staff-lock/unlock", json={"pin": "1234"})
+    assert cooled.status_code == 429
+    assert int(cooled.headers["Retry-After"]) > 0
+
+
+def test_unlock_response_never_carries_the_pin(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "246813"})
+    body = client.post("/api/staff-lock/unlock", json={"pin": "246813"}).json()
+    assert "246813" not in json.dumps(body, ensure_ascii=False)
+    assert client.get("/api/staff-lock").text.find("246813") == -1
+
+
+def test_changing_the_pin_requires_the_current_one(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    assert client.post("/api/staff-lock/pin", json={"pin": "5678"}).status_code == 403
+    ok = client.post("/api/staff-lock/pin", json={"pin": "5678", "current_pin": "1234"})
+    assert ok.status_code == 200
+    assert ok.json()["lock"]["locked"] is True       # 換完密碼立刻回到上鎖
+    assert client.post("/api/staff-lock/unlock", json={"pin": "5678"}).status_code == 200
+
+
+def test_pin_format_is_rejected_with_400(staff_lock_clean):
+    res = client.post("/api/staff-lock/pin", json={"pin": "12"})
+    assert res.status_code == 400
+    assert client.get("/api/staff-lock").json()["lock"]["enabled"] is False
+
+
+def test_disable_returns_to_home_mode(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    headers = staff_unlock()
+    assert client.post("/api/staff-lock/disable", headers=headers).status_code == 200
+    assert client.get("/api/staff-lock").json()["lock"]["enabled"] is False
+    assert client.delete("/api/rankings").status_code == 200
+
+
+def test_disable_without_credentials_is_403(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    assert client.post("/api/staff-lock/disable", json={}).status_code == 403
+    assert client.get("/api/staff-lock").json()["lock"]["enabled"] is True
+
+
+def test_auto_lock_minutes_can_be_tuned_and_is_clamped(staff_lock_clean):
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    headers = staff_unlock()
+    res = client.post("/api/staff-lock/auto-lock", json={"minutes": 9999}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["auto_lock_minutes"] == 240
+    assert client.post("/api/staff-lock/auto-lock", json={"minutes": 30}).status_code == 403
+
+
+def test_env_pin_rescues_a_forgotten_password(staff_lock_clean, monkeypatch):
+    """忘記密碼一定要有解，而那條解法需要實體碰得到伺服器 —— 這正是安全邊界。"""
+    from backend.services.staff_lock import ENV_PIN
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    monkeypatch.setenv(ENV_PIN, "778899")
+    headers = staff_unlock("778899")
+    assert client.delete("/api/rankings", headers=headers).status_code == 200
+
+
+def test_unlock_on_a_machine_without_a_lock_is_not_an_error(staff_lock_clean):
+    res = client.post("/api/staff-lock/unlock", json={"pin": "1234"})
+    assert res.status_code == 200 and res.json()["status"] == "not_enabled"
+
+
+def test_stale_token_is_refused_after_restart(staff_lock_clean, tmp_path, monkeypatch):
+    """重開伺服器＝有人碰得到機器，那時候的正確狀態是鎖著。"""
+    from backend.services.staff_lock import StaffLock
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    headers = staff_unlock()
+    monkeypatch.setattr(main, "staff_lock", StaffLock(staff_lock_clean.path))
+    assert client.delete("/api/rankings", headers=headers).status_code == 403

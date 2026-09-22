@@ -2129,3 +2129,86 @@ input[type="range"] {
   .number-key { min-width: 44px; font-size: 18px; padding: 10px 0; }
   .number-display { font-size: 18px; letter-spacing: 2px; }
 }
+
+/* --- 櫃檯管理鎖 --- */
+/* 鎖頭的顏色分三種狀態（包廂的燈是暗的，只靠圖示看不出來，所以字也要跟著變）：
+   鎖著＝安靜的灰藍、解鎖中＝綠、密碼檔壞掉＝紅。 */
+.staff-lock-btn[data-tone="locked"] { border-color: rgba(255, 255, 255, 0.18); }
+.staff-lock-btn[data-tone="open"] {
+  border-color: #10b981;
+  color: #10b981;
+}
+.staff-lock-btn[data-tone="error"] {
+  border-color: #ff007f;
+  color: #ff007f;
+}
+
+.staff-lock-content { max-width: 520px; }
+
+.staff-lock-pane { padding-top: 6px; }
+
+/* 密碼用 ●○ 顯示而不是數字：櫃檯輸入的時候，點歌台的畫面常常就鏡射在
+   包廂那面大螢幕上（見 staff-lock.js staffPinMask）。 */
+.staff-pin-display {
+  text-align: center;
+  font-size: 26px;
+  letter-spacing: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 15, 28, 0.7);
+  color: var(--accent-cyan);
+}
+
+.staff-pin-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.staff-pin-key {
+  padding: 14px 0;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.staff-pin-actions { margin-top: 12px; }
+.staff-pin-actions .btn { width: 100%; padding: 12px; font-size: 16px; font-weight: 800; }
+
+.staff-lock-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.staff-lock-row label { font-size: 13px; color: var(--text-muted); min-width: 130px; }
+.staff-pin-input { flex: 1; min-width: 110px; padding: 8px 12px; font-size: 15px; }
+
+.staff-lock-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.staff-lock-note { min-height: 20px; }
+.staff-lock-note[data-tone="ok"] { color: #10b981; }
+.staff-lock-note[data-tone="error"] { color: #ff007f; }
+
+/* 「忘記密碼怎麼辦」。平常是雜訊，半夜的店裡是唯一有用的資訊，
+   所以不藏進第二層 —— 但字級壓小，讓它不跟輸入框搶。 */
+.staff-lock-recovery {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+@media (max-width: 768px) {
+  .staff-pin-key { padding: 16px 0; font-size: 22px; }
+  .staff-lock-row label { min-width: 100%; }
+}

@@ -26,6 +26,10 @@ services:
       # AI 模型（也可以之後在設定頁改，改完重啟這個容器即可）
       WHISPER_MODEL: "${WHISPER_MODEL:-small}"
       DEMUCS_MODEL: "${DEMUCS_MODEL:-htdemucs}"
+      # 櫃檯管理鎖的**救援**密碼（4–8 位數字，選填）。設了它本身不會啟用那把鎖 ——
+      # 鎖是在點歌台右上角 🔒 設密碼才啟用的，這一行是「忘記密碼時還進得去」。
+      # 放到店裡之前建議先設好：需要它的那一刻通常是半夜、店裡、客人在等。
+      KARATUBE_STAFF_PIN: "${KARATUBE_STAFF_PIN:-}"
     volumes:
       # 曲庫、設定、統計、評分紀錄全都在這裡。刪掉這個 volume = 清空整台機器。
       - karatube-cache:/data

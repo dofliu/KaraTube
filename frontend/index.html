@@ -43,6 +43,11 @@
       <button class="btn btn-secondary" id="settingsBtn" title="開機預設音效、自動音量平衡、快取上限、AI 模型">
         ⚙️ 系統設定
       </button>
+      <!-- 櫃檯管理鎖：機器層級的動作（刪曲庫、改設定、包廂計時）要櫃檯密碼。
+           沒設密碼時整顆不出現 —— 家裡唱歌不需要看到一把用不到的鎖。
+           點歌、切歌、調音效永遠不受它影響（見 backend/services/access_policy.py）。 -->
+      <button class="btn btn-secondary staff-lock-btn" id="staffLockBtn" style="display: none;"
+              title="櫃檯管理鎖">🔒 <span id="staffLockText">櫃檯管理</span></button>
     </div>
   </header>
 
@@ -476,6 +481,53 @@
     </div>
   </div>
 
+  <!-- 櫃檯管理鎖：解鎖、設定密碼、自動上鎖 -->
+  <div id="staffLockModal" class="modal-overlay">
+    <div class="modal-content mixer-content staff-lock-content">
+      <div class="mixer-header">
+        <h3>🔒 櫃檯管理鎖</h3>
+        <button id="closeStaffLockBtn" class="btn btn-secondary" style="padding: 4px 12px;">關閉</button>
+      </div>
+      <p class="mixer-hint" id="staffLockScope" style="margin-top: 0;"></p>
+
+      <!-- 解鎖：已經設了密碼、目前鎖著 -->
+      <div id="staffLockUnlock" class="staff-lock-pane">
+        <div class="staff-pin-display" id="staffPinDisplay">○ ○ ○ ○</div>
+        <div class="staff-pin-pad" id="staffPinPad">
+          <!-- 數字鍵由 controller.js 產生 -->
+        </div>
+        <div class="staff-pin-actions">
+          <button class="btn btn-primary" id="staffUnlockBtn">🔓 解鎖</button>
+        </div>
+        <p class="mixer-hint staff-lock-note" id="staffUnlockNote"></p>
+      </div>
+
+      <!-- 已解鎖 / 尚未啟用：管理這把鎖 -->
+      <div id="staffLockManage" class="staff-lock-pane" style="display: none;">
+        <div class="staff-lock-row">
+          <label for="staffNewPin">櫃檯密碼</label>
+          <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8"
+                 id="staffNewPin" class="search-input staff-pin-input" placeholder="4–8 位數字">
+          <button class="btn btn-primary" id="staffSetPinBtn">設定密碼</button>
+        </div>
+        <div class="staff-lock-row">
+          <label for="staffAutoLock">閒置多久自動上鎖</label>
+          <input type="number" id="staffAutoLock" class="search-input staff-pin-input"
+                 min="1" max="240" step="1">
+          <span class="mixer-hint" style="margin: 0;">分鐘</span>
+          <button class="btn btn-secondary" id="staffAutoLockBtn">儲存</button>
+        </div>
+        <div class="staff-lock-actions">
+          <button class="btn btn-secondary" id="staffLockNowBtn" title="做完事馬上鎖回去（上鎖不需要密碼）">🔒 立刻上鎖</button>
+          <button class="btn btn-secondary" id="staffDisableBtn" title="回到家用模式：所有動作都不需要密碼">停用管理鎖</button>
+        </div>
+        <p class="mixer-hint staff-lock-note" id="staffManageNote"></p>
+      </div>
+
+      <p class="mixer-hint staff-lock-recovery" id="staffLockRecovery"></p>
+    </div>
+  </div>
+
   <!-- Phone Pairing QR Modal -->
   <div id="qrModal" class="modal-overlay">
     <div class="modal-content">
@@ -543,6 +595,8 @@
   <script src="/js/artist-search.js"></script>
   <!-- 歌號點歌：包廂裡唯一可以用喊的那一條點歌路（「幫我點 100237」） -->
   <script src="/js/number-search.js"></script>
+  <!-- 櫃檯管理鎖的說法與狀態（有單元測試），要在 controller 之前載入 -->
+  <script src="/js/staff-lock.js"></script>
   <!-- 自動接歌的說法（機器接的那一首要講得出「為什麼是這首」與「有人點歌就讓開」）-->
   <script src="/js/autofill-view.js"></script>
   <script src="/js/room-view.js"></script>

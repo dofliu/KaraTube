@@ -3513,6 +3513,245 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((data) => applyServiceState(data))
     .catch(() => { /* 拿不到就當成沒有單，下一次 SERVICE_UPDATE 會補上 */ });
 
+  // --- 櫃檯管理鎖 ---
+  //
+  // 三件事：右上角那顆鎖頭、輸入密碼的面板，以及**被擋下來時自動把密碼問完、
+  // 再把剛剛那個動作接著做完**（api.js 的 staffFetch 會回頭呼叫這裡的 onStaffLocked）。
+  //
+  // 鎖頭顯示的是「這台裝置」的狀態：解鎖綁 token，櫃檯的平板解開了，
+  // 包廂裡的手機照樣是鎖著的 —— 畫面不能說它已經解鎖（見 staff-lock.js 檔頭）。
+
+  const SL = window.StaffLockView;
+  const staffLockBtn = document.getElementById("staffLockBtn");
+  const staffLockText = document.getElementById("staffLockText");
+  const staffLockModal = document.getElementById("staffLockModal");
+  const staffLockScope = document.getElementById("staffLockScope");
+  const staffLockRecovery = document.getElementById("staffLockRecovery");
+  const staffUnlockPane = document.getElementById("staffLockUnlock");
+  const staffManagePane = document.getElementById("staffLockManage");
+  const staffPinDisplay = document.getElementById("staffPinDisplay");
+  const staffPinPad = document.getElementById("staffPinPad");
+  const staffUnlockNote = document.getElementById("staffUnlockNote");
+  const staffManageNote = document.getElementById("staffManageNote");
+  const staffNewPin = document.getElementById("staffNewPin");
+  const staffAutoLock = document.getElementById("staffAutoLock");
+
+  let staffState = { enabled: false, locked: false };
+  let staffPin = "";
+  // 被擋下來的那個動作在等：解鎖成功就 resolve(true)，關掉面板就 resolve(false)
+  let staffPendingResolve = null;
+
+  function staffHasToken() {
+    return !!(window.api.staffToken && window.api.staffToken());
+  }
+
+  function paintStaffLock() {
+    if (!SL || !staffLockBtn) return;
+    const badge = SL.lockBadge(staffState, staffHasToken());
+    staffLockBtn.style.display = badge.show ? "" : "none";
+    staffLockBtn.title = badge.title;
+    staffLockBtn.dataset.tone = badge.tone;
+    staffLockBtn.firstChild.nodeValue = `${badge.icon} `;
+    if (staffLockText) staffLockText.textContent = badge.text;
+  }
+
+  function renderStaffPin() {
+    if (staffPinDisplay && SL) staffPinDisplay.textContent = SL.staffPinMask(staffPin);
+  }
+
+  function staffNote(el, message) {
+    if (!el) return;
+    el.textContent = message ? message.text || "" : "";
+    el.dataset.tone = message ? message.tone || "" : "";
+  }
+
+  function paintStaffModal() {
+    if (!staffLockModal || !SL) return;
+    const managing = !staffState.enabled || (staffHasToken() && !staffState.locked);
+    staffUnlockPane.style.display = managing ? "none" : "";
+    staffManagePane.style.display = managing ? "" : "none";
+    staffLockScope.textContent = SL.scopeSummary(staffState);
+    staffLockRecovery.textContent = staffState.enabled ? SL.recoveryHint(staffState) : "";
+    staffLockRecovery.style.display = staffState.enabled ? "" : "none";
+    if (staffNewPin) staffNewPin.placeholder = staffState.enabled ? "換一組新密碼" : "4–8 位數字";
+    if (staffAutoLock && document.activeElement !== staffAutoLock) {
+      staffAutoLock.value = staffState.auto_lock_minutes || 15;
+    }
+    if (managing && staffState.enabled) {
+      staffNote(staffManageNote, { tone: "ok", text: SL.autoLockText(staffState.unlock_seconds_left) });
+    }
+    renderStaffPin();
+  }
+
+  function applyStaffLock(state) {
+    if (!state) return;
+    // 伺服器說鎖上了（有人按了上鎖、或閒置到自動上鎖）：手上那把鑰匙同時作廢，
+    // 留著只會讓下一個動作跳出一個「已解鎖」卻被擋的畫面。
+    if (state.locked && window.api.setStaffToken) window.api.setStaffToken("");
+    staffState = state;
+    paintStaffLock();
+    if (staffLockModal && staffLockModal.classList.contains("open")) paintStaffModal();
+  }
+
+  function openStaffLockModal() {
+    staffPin = "";
+    staffNote(staffUnlockNote, null);
+    staffNote(staffManageNote, null);
+    if (staffNewPin) staffNewPin.value = "";
+    paintStaffModal();
+    staffLockModal.classList.add("open");
+  }
+
+  function closeStaffLockModal(unlocked = false) {
+    staffLockModal.classList.remove("open");
+    staffPin = "";
+    if (staffPendingResolve) {
+      const resolve = staffPendingResolve;
+      staffPendingResolve = null;
+      resolve(!!unlocked);
+    }
+  }
+
+  async function refreshStaffLock() {
+    try {
+      const data = await window.api.getStaffLock();
+      applyStaffLock(data && data.lock);
+    } catch (e) { /* 問不到就照現況畫，下一次 STAFF_LOCK 廣播會補上 */ }
+  }
+
+  async function submitStaffPin() {
+    if (!SL.staffPinComplete(staffPin)) {
+      staffNote(staffUnlockNote, { tone: "error", text: "密碼至少 4 位數" });
+      return false;
+    }
+    const result = await window.api.unlockStaff(staffPin);
+    staffNote(staffUnlockNote, SL.unlockMessage(result));
+    staffPin = "";
+    renderStaffPin();
+    if (result && (result.status === "success" || result.status === "not_enabled")) {
+      applyStaffLock(result.lock || staffState);
+      closeStaffLockModal(true);
+      return true;
+    }
+    await refreshStaffLock();
+    paintStaffModal();
+    return false;
+  }
+
+  if (staffPinPad) {
+    // 數字鍵盤：包廂的燈是暗的，而櫃檯常常是站著單手操作
+    staffPinPad.innerHTML = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "✓"]
+      .map(key => `<button class="btn btn-secondary staff-pin-key" data-key="${key}">${key}</button>`)
+      .join("");
+    staffPinPad.addEventListener("click", async (e) => {
+      const btn = e.target.closest(".staff-pin-key");
+      if (!btn) return;
+      const key = btn.dataset.key;
+      if (key === "⌫") staffPin = SL.staffPinErase(staffPin);
+      else if (key === "✓") { await submitStaffPin(); return; }
+      else staffPin = SL.staffPinPress(staffPin, key);
+      staffNote(staffUnlockNote, null);
+      renderStaffPin();
+    });
+  }
+
+  if (staffLockBtn) staffLockBtn.addEventListener("click", openStaffLockModal);
+  const closeStaffLockBtn = document.getElementById("closeStaffLockBtn");
+  if (closeStaffLockBtn) closeStaffLockBtn.addEventListener("click", () => closeStaffLockModal(false));
+  if (staffLockModal) {
+    staffLockModal.addEventListener("click", (e) => {
+      if (e.target === staffLockModal) closeStaffLockModal(false);
+    });
+  }
+  const staffUnlockBtn = document.getElementById("staffUnlockBtn");
+  if (staffUnlockBtn) staffUnlockBtn.addEventListener("click", () => submitStaffPin());
+
+  const staffSetPinBtn = document.getElementById("staffSetPinBtn");
+  if (staffSetPinBtn) {
+    staffSetPinBtn.addEventListener("click", async () => {
+      const pin = SL.staffPinDigits(staffNewPin.value);
+      if (!SL.staffPinComplete(pin)) {
+        staffNote(staffManageNote, { tone: "error", text: "密碼要 4–8 位數字" });
+        return;
+      }
+      try {
+        const res = await window.api.setStaffPin(pin);
+        staffNewPin.value = "";
+        applyStaffLock(res.lock);
+        // 設完立刻回到上鎖：設密碼的人已經知道密碼，重打一次是三秒鐘的事
+        showNotification("櫃檯密碼已設定，機器層級的動作現在需要解鎖", 4000);
+        paintStaffModal();
+      } catch (err) {
+        staffNote(staffManageNote, { tone: "error", text: err.message });
+      }
+    });
+  }
+
+  const staffAutoLockBtn = document.getElementById("staffAutoLockBtn");
+  if (staffAutoLockBtn) {
+    staffAutoLockBtn.addEventListener("click", async () => {
+      try {
+        const res = await window.api.setStaffAutoLock(Number(staffAutoLock.value));
+        applyStaffLock(res.lock);
+        staffNote(staffManageNote, { tone: "ok", text: `閒置 ${res.auto_lock_minutes} 分鐘後自動上鎖` });
+      } catch (err) {
+        staffNote(staffManageNote, { tone: "error", text: err.message });
+      }
+    });
+  }
+
+  const staffLockNowBtn = document.getElementById("staffLockNowBtn");
+  if (staffLockNowBtn) {
+    staffLockNowBtn.addEventListener("click", async () => {
+      const res = await window.api.lockStaff();
+      applyStaffLock(res.lock);
+      closeStaffLockModal(false);
+      showNotification("已上鎖", 2000);
+    });
+  }
+
+  const staffDisableBtn = document.getElementById("staffDisableBtn");
+  if (staffDisableBtn) {
+    staffDisableBtn.addEventListener("click", async () => {
+      if (!confirm("停用櫃檯管理鎖？之後每一支連進來的手機都可以刪曲庫、改設定。")) return;
+      try {
+        const res = await window.api.disableStaffLock();
+        applyStaffLock(res.lock);
+        closeStaffLockModal(false);
+        showNotification("櫃檯管理鎖已停用（回到家用模式）", 3500);
+      } catch (err) {
+        staffNote(staffManageNote, { tone: "error", text: err.message });
+      }
+    });
+  }
+
+  // 被鎖擋下來時：把密碼面板叫出來，解開就回 true（api.js 會把那個動作重送一次）。
+  window.api.onStaffLocked = (body) => new Promise((resolve) => {
+    // 連著被擋兩次（設定頁拉了兩格滑桿）：前一個動作先放掉，
+    // 不然它會永遠停在那裡等一個不會來的答案。
+    if (staffPendingResolve) {
+      const previous = staffPendingResolve;
+      staffPendingResolve = null;
+      previous(false);
+    }
+    applyStaffLock(body && body.lock);
+    openStaffLockModal();
+    staffNote(staffUnlockNote, { tone: "", text: SL.blockedMessage(body) });
+    staffPendingResolve = resolve;
+  });
+
+  // 密碼沒解開（按了關閉、或打錯放棄）：那個動作沒有發生，要講出來 ——
+  // 靜靜地沒反應會讓人以為機器壞了，然後再按五次。
+  window.api.onStaffBlocked = (body) => showNotification(SL.blockedMessage(body), 4000);
+
+  window.api.on("STAFF_LOCK", (msg) => applyStaffLock(msg && msg.data));
+  // 解鎖中的那一顆鎖頭要自己走（「閒置 3 分鐘後自動上鎖」）。
+  setInterval(() => {
+    if (!staffState.enabled || !staffHasToken()) return;
+    refreshStaffLock();
+  }, 30000);
+  refreshStaffLock();
+
   // Sound FX Buttons
   document.querySelectorAll(".sfx-btn").forEach(btn => {
     btn.addEventListener("click", () => {

@@ -30,7 +30,7 @@ class KaraTubeAPI {
   }
 
   async resetRankings() {
-    const res = await fetch(`${this.baseUrl}/api/rankings`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/rankings`, { method: 'DELETE' });
     return await res.json();
   }
 
@@ -54,7 +54,7 @@ class KaraTubeAPI {
   }
 
   async clearHistory() {
-    const res = await fetch(`${this.baseUrl}/api/history`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/history`, { method: 'DELETE' });
     return await res.json();
   }
 
@@ -160,13 +160,13 @@ class KaraTubeAPI {
 
   /** 把轉好的 MP3 全部丟掉。錄音一個都不會動（MP3 隨時可以重轉）。 */
   async clearMp3Cache() {
-    const res = await fetch(`${this.baseUrl}/api/recordings/mp3`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/recordings/mp3`, { method: 'DELETE' });
     return await res.json();
   }
 
   /** 重新偵測 ffmpeg（裝好之後不用重開伺服器）。 */
   async recheckMp3Support() {
-    const res = await fetch(`${this.baseUrl}/api/recordings/mp3/recheck`, { method: 'POST' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/recordings/mp3/recheck`, { method: 'POST' });
     return await res.json();
   }
 
@@ -185,7 +185,7 @@ class KaraTubeAPI {
   }
 
   async clearRecordings(includePinned = false) {
-    const res = await fetch(
+    const res = await this.staffFetch(
       `${this.baseUrl}/api/recordings${includePinned ? "?include_pinned=1" : ""}`,
       { method: 'DELETE' });
     return await res.json();
@@ -305,14 +305,14 @@ class KaraTubeAPI {
   }
 
   async deleteCachedSong(songId) {
-    const res = await fetch(`${this.baseUrl}/api/cache/${songId}`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/cache/${songId}`, { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
   }
 
   async reprocessSong(songId) {
-    const res = await fetch(`${this.baseUrl}/api/cache/${songId}/reprocess`, { method: 'POST' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/cache/${songId}/reprocess`, { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
@@ -332,7 +332,7 @@ class KaraTubeAPI {
   }
 
   async createBatchJob({ sources, name = "", startNow = false, requestedBy = "" }) {
-    const res = await fetch(`${this.baseUrl}/api/batch`, {
+    const res = await this.staffFetch(`${this.baseUrl}/api/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sources, name, start_now: startNow, requested_by: requestedBy })
@@ -343,7 +343,7 @@ class KaraTubeAPI {
   }
 
   async setBatchForce(force) {
-    const res = await fetch(`${this.baseUrl}/api/batch/force`, {
+    const res = await this.staffFetch(`${this.baseUrl}/api/batch/force`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ force })
@@ -356,14 +356,14 @@ class KaraTubeAPI {
     const url = isDelete
       ? `${this.baseUrl}/api/batch/${jobId}`
       : `${this.baseUrl}/api/batch/${jobId}/${action}`;
-    const res = await fetch(url, { method: isDelete ? 'DELETE' : 'POST' });
+    const res = await this.staffFetch(url, { method: isDelete ? 'DELETE' : 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
   }
 
   async clearFinishedBatchJobs() {
-    const res = await fetch(`${this.baseUrl}/api/batch`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/batch`, { method: 'DELETE' });
     return await res.json();
   }
 
@@ -374,7 +374,7 @@ class KaraTubeAPI {
   }
 
   async updateSettings(patch) {
-    const res = await fetch(`${this.baseUrl}/api/settings`, {
+    const res = await this.staffFetch(`${this.baseUrl}/api/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
@@ -385,12 +385,12 @@ class KaraTubeAPI {
   }
 
   async resetSettings() {
-    const res = await fetch(`${this.baseUrl}/api/settings`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/settings`, { method: 'DELETE' });
     return await res.json();
   }
 
   async applyDefaultSettings() {
-    const res = await fetch(`${this.baseUrl}/api/settings/apply-defaults`, { method: 'POST' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/settings/apply-defaults`, { method: 'POST' });
     return await res.json();
   }
 
@@ -426,6 +426,132 @@ class KaraTubeAPI {
     return body;
   }
 
+  // --- 櫃檯管理鎖 ---
+  //
+  // 機器層級的動作（刪曲庫、改設定、包廂計時…）要帶 `X-Staff-Token`。
+  // token 存在 **sessionStorage**：關掉那一頁就沒了，而櫃檯的平板重新整理
+  // 不會被踢出去。放 localStorage 的話，那支借給客人查歌的手機會一直帶著
+  // 櫃檯的權限；伺服器端另有閒置自動上鎖，兩邊都失手才會留著一把鑰匙。
+
+  staffToken() {
+    try { return sessionStorage.getItem('karatube_staff_token') || ''; } catch (e) { return ''; }
+  }
+
+  setStaffToken(token) {
+    try {
+      if (token) sessionStorage.setItem('karatube_staff_token', token);
+      else sessionStorage.removeItem('karatube_staff_token');
+    } catch (e) { /* 無痕視窗寫不進去：那就每次動作重打一次密碼，功能照樣成立 */ }
+  }
+
+  staffHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const token = this.staffToken();
+    if (token) headers['X-Staff-Token'] = token;
+    return headers;
+  }
+
+  /**
+   * 受櫃檯管理鎖保護的請求。
+   *
+   * 被擋下來時**先問密碼，解開之後把剛剛那個動作接著做完** —— 不自動重送的話，
+   * 使用者解完鎖會回到一個什麼都沒發生的畫面，然後得自己想起剛剛按的是哪一顆。
+   * （重送的是他本來就按下去的那個動作，不是機器自己決定要做的事。）
+   */
+  async staffFetch(url, options = {}) {
+    const send = () => fetch(url, Object.assign({}, options, {
+      headers: this.staffHeaders(options.headers),
+    }));
+
+    let res = await send();
+    if (res.status !== 403) return res;
+
+    const body = await res.clone().json().catch(() => null);
+    if (!body || body.code !== 'staff_locked') return res;
+
+    // 這台裝置手上那把鑰匙已經不管用了（過期、被上鎖、或伺服器重開過）
+    this.setStaffToken('');
+    if (typeof this.onStaffLocked === 'function') {
+      let unlocked = false;
+      try { unlocked = await this.onStaffLocked(body); } catch (e) { unlocked = false; }
+      if (unlocked) {
+        res = await send();
+        if (res.status !== 403) return res;
+      }
+    }
+    if (typeof this.onStaffBlocked === 'function') this.onStaffBlocked(body);
+    return res;
+  }
+
+  async getStaffLock() {
+    const res = await fetch(`${this.baseUrl}/api/staff-lock`);
+    return await res.json();
+  }
+
+  /** 打密碼解鎖。回傳統一形狀給 staff-lock.js 的 unlockMessage() 說話。 */
+  async unlockStaff(pin) {
+    const res = await fetch(`${this.baseUrl}/api/staff-lock/unlock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 429) {
+      return { status: 'cooldown', retry_after: Number(res.headers.get('Retry-After')) || 5,
+               message: body.detail };
+    }
+    if (res.status === 403) {
+      const lock = (await this.getStaffLock().catch(() => ({}))).lock || {};
+      return { status: 'denied', message: body.detail, attempts_left: lock.attempts_left,
+               broken: lock.broken, env_var: lock.env_var };
+    }
+    if (body.token) this.setStaffToken(body.token);
+    return body;
+  }
+
+  /** 上鎖。刻意不需要任何憑據 —— 關門不需要鑰匙。 */
+  async lockStaff() {
+    const res = await fetch(`${this.baseUrl}/api/staff-lock/lock`, { method: 'POST' });
+    this.setStaffToken('');
+    return await res.json();
+  }
+
+  async setStaffPin(pin, currentPin = '') {
+    const res = await fetch(`${this.baseUrl}/api/staff-lock/pin`, {
+      method: 'POST',
+      headers: this.staffHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ pin, current_pin: currentPin })
+    });
+    const body = await res.json().catch(() => ({}));
+    // 設完密碼伺服器一律回到上鎖狀態，手上那把舊鑰匙跟著作廢
+    this.setStaffToken('');
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    return body;
+  }
+
+  async disableStaffLock(currentPin = '') {
+    const res = await fetch(`${this.baseUrl}/api/staff-lock/disable`, {
+      method: 'POST',
+      headers: this.staffHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ current_pin: currentPin })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    this.setStaffToken('');
+    return body;
+  }
+
+  async setStaffAutoLock(minutes, currentPin = '') {
+    const res = await fetch(`${this.baseUrl}/api/staff-lock/auto-lock`, {
+      method: 'POST',
+      headers: this.staffHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ minutes, current_pin: currentPin })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    return body;
+  }
+
   // --- 包廂計時（歡唱時間）---
   // 每一支都回傳最新的計時狀態，畫面不必再問一次；同一份資料也會跟著
   // STATE_UPDATE 廣播給包廂裡所有裝置（倒數要是同一個數字）。
@@ -456,7 +582,7 @@ class KaraTubeAPI {
   }
 
   async _roomAction(action, minutes) {
-    const res = await fetch(`${this.baseUrl}/api/room/${action}`, {
+    const res = await this.staffFetch(`${this.baseUrl}/api/room/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(minutes === undefined || minutes === null ? {} : { minutes })
@@ -478,7 +604,7 @@ class KaraTubeAPI {
     const payload = { text, sender, urgent, pinned };
     if (seconds !== undefined && seconds !== null) payload.seconds = seconds;
     if (ttlMinutes !== undefined && ttlMinutes !== null) payload.ttl_minutes = ttlMinutes;
-    const res = await fetch(`${this.baseUrl}/api/marquee`, {
+    const res = await this.staffFetch(`${this.baseUrl}/api/marquee`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -497,12 +623,12 @@ class KaraTubeAPI {
   }
 
   async deleteMarquee(messageId) {
-    const res = await fetch(`${this.baseUrl}/api/marquee/${messageId}`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/marquee/${messageId}`, { method: 'DELETE' });
     return await res.json();
   }
 
   async clearMarquee(includePinned = true) {
-    const res = await fetch(
+    const res = await this.staffFetch(
       `${this.baseUrl}/api/marquee?include_pinned=${includePinned ? 'true' : 'false'}`,
       { method: 'DELETE' });
     return await res.json();
@@ -535,7 +661,10 @@ class KaraTubeAPI {
   }
 
   async _serviceAction(action, payload) {
-    const res = await fetch(`${this.baseUrl}/api/service/${action}`, {
+    // 「收到了」與「完成」是**櫃檯在回答**，受櫃檯管理鎖保護（見
+    // backend/services/access_policy.py）；包廂自己按的「取消」不鎖，
+    // 走 staffFetch 也不會多問一次密碼（沒被擋就不會問）。
+    const res = await this.staffFetch(`${this.baseUrl}/api/service/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload || {})
@@ -558,7 +687,8 @@ class KaraTubeAPI {
   async cancelServiceCall(id, by = '') { return this._serviceAction('cancel', { id, by }); }
 
   async clearServiceHistory() {
-    const res = await fetch(`${this.baseUrl}/api/service/history`, { method: 'DELETE' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/service/history`,
+                                      { method: 'DELETE' });
     return await res.json();
   }
 
@@ -599,7 +729,7 @@ class KaraTubeAPI {
   // 公平輪唱：輪序歸零（換一批客人時用）。開關本身走 updateControl，
   // 因為它是共享狀態 —— 一支手機打開，包廂裡每一台都要看到規則變了。
   async resetRotation() {
-    const res = await fetch(`${this.baseUrl}/api/rotation/reset`, { method: 'POST' });
+    const res = await this.staffFetch(`${this.baseUrl}/api/rotation/reset`, { method: 'POST' });
     return await res.json();
   }
 

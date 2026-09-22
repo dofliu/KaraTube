@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from urllib.parse import quote
 
-from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException,
-                     Request)
+from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Header,
+                     HTTPException, Request)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import Response, FileResponse, StreamingResponse
+from fastapi.responses import Response, FileResponse, StreamingResponse, JSONResponse
 import qrcode
 
 from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, RECORDINGS_DIR, PUBLIC_HOST,
@@ -31,7 +31,8 @@ from backend.services.song_index import SongFinder
 from backend.services.song_numbers import SongNumberBook, parse_number
 from backend.services.artist_index import ArtistFinder
 from backend.services.song_history import SongHistory
-from backend.services import marquee, room_timer, service_calls, song_quota
+from backend.services import access_policy, marquee, room_timer, service_calls, song_quota
+from backend.services.staff_lock import StaffLock
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
                                            find_session, group_sessions, iter_session_zip,
@@ -84,6 +85,11 @@ async def stage_heartbeat_loop():
             # 「空了二十秒」這件事必須有人發現，而包廂最安靜的時候正是
             # 沒有人會去按任何按鈕的時候。
             await queue_manager.tick_autofill()
+            # 櫃檯管理鎖的自動上鎖，同樣是「時間自己過去了要有人發現」：
+            # 不主動廣播的話，那顆鎖頭會在每支手機上一直亮著「已解鎖」，
+            # 直到有人按下一個受保護的動作才發現自己早就被鎖在外面。
+            if staff_lock.tick():
+                await ws_manager.broadcast({"type": "STAFF_LOCK", "data": staff_lock.state()})
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -115,6 +121,26 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="KaraTube KTV Server", version=__version__, lifespan=lifespan)
 
+
+# 櫃檯管理鎖的守門（見 backend/services/access_policy.py）。
+#
+# 刻意寫在 CORS 前面：Starlette 的中介層是**後加的包在外面**，所以 CORS 要晚一步
+# 註冊才會把標頭補到這裡回出去的 403 上 —— 順序反過來的話，外掛的櫃檯看板
+# 收到的會是一個沒有 CORS 標頭的錯誤（瀏覽器連狀態碼都不給它看）。
+#
+# 做成中介層而不是每條路由掛 Depends，是為了讓「哪些要鎖」只有一份清單：
+# 掛在路由上的話，新加的端點忘記掛就是默默沒保護，而那件事沒有任何測試看得到。
+@app.middleware("http")
+async def staff_lock_guard(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and access_policy.requires_unlock(request.method, path):
+        if not staff_lock.authorize(request.headers.get("X-Staff-Token", "")):
+            info = access_policy.describe(request.method, path)
+            return JSONResponse(status_code=403,
+                                content={**info, "lock": staff_lock.state()})
+    return await call_next(request)
+
+
 # Enable CORS for local network and mobile devices
 app.add_middleware(
     CORSMiddleware,
@@ -125,6 +151,10 @@ app.add_middleware(
 )
 
 # Initialize Services
+# 櫃檯管理鎖。放在最前面是因為上面那道中介層每一個請求都會問它 ——
+# 存在 cache/ 而不是 settings.json 裡：系統設定本身正是被它保護的東西
+# （見 staff_lock.set_auto_lock_minutes）。
+staff_lock = StaffLock(CACHE_DIR / "staff_lock.json")
 # 設定要先讀起來 —— 模型選擇與響度目標在建構流水線時就要用到
 settings = SystemSettings(CACHE_DIR / "settings.json")
 storage = SongStorage(SONGS_DIR)
@@ -1765,6 +1795,99 @@ async def clear_recordings(include_pinned: int = Query(0, ge=0, le=1)):
             "stats": recordings.stats(**_recording_quota())}
 
 
+# --- 櫃檯管理鎖 ---
+#
+# 這幾條路由自己**不受鎖保護**（access_policy 的 OPEN 表上列著）：
+# 鎖上之後連敲門的那扇門都鎖住的話，就沒有人解得開了。
+# 每一條各自驗自己的憑據 —— 解鎖要 PIN，改設定要 PIN 或已解鎖的 token，
+# 上鎖什麼都不要。
+
+
+async def _broadcast_staff_lock() -> Dict[str, Any]:
+    """鎖的狀態變了要讓每一支手機都知道（鎖頭要跟著變色）。回傳那份狀態。"""
+    state = staff_lock.state()
+    await ws_manager.broadcast({"type": "STAFF_LOCK", "data": state})
+    return state
+
+
+@app.get("/api/staff-lock")
+async def get_staff_lock():
+    """
+    鎖的目前狀態。**不含 PIN 也不含 token**。
+
+    前端每一頁載入時都問一次，好決定那些按鈕要不要掛上鎖頭圖示 ——
+    按下去才發現要密碼，跟按下去才發現沒有權限，是兩種不同的難堪。
+    """
+    return {"lock": staff_lock.state()}
+
+
+@app.post("/api/staff-lock/unlock")
+async def unlock_staff_lock(payload: Dict[str, Any] = Body(...)):
+    """打櫃檯密碼解鎖。成功回一組 token，之後的受保護動作帶 `X-Staff-Token`。"""
+    result = staff_lock.unlock(payload.get("pin"))
+    status = result.get("status")
+    if status == "cooldown":
+        raise HTTPException(status_code=429, detail=result.get("message", "請稍後再試"),
+                            headers={"Retry-After": str(result.get("retry_after", 5))})
+    if status == "denied":
+        raise HTTPException(status_code=403, detail=result.get("message", "密碼錯誤"))
+    if status == "not_enabled":
+        # 沒啟用不是錯誤：問「要不要解鎖」的答案是「這台機器沒有鎖」。
+        return {"status": "not_enabled", "lock": staff_lock.state()}
+    state = await _broadcast_staff_lock()
+    return {"status": "success", "token": result["token"],
+            "expires_in": result["expires_in"], "lock": state}
+
+
+@app.post("/api/staff-lock/lock")
+async def lock_staff_lock():
+    """立刻上鎖。刻意不需要任何憑據 —— 關門不需要鑰匙（見 staff_lock.py 第 3 點）。"""
+    staff_lock.lock()
+    return {"status": "success", "lock": await _broadcast_staff_lock()}
+
+
+@app.post("/api/staff-lock/pin")
+async def set_staff_pin(payload: Dict[str, Any] = Body(...),
+                        staff_token: str = Header("", alias="X-Staff-Token")):
+    """
+    設定或更換櫃檯密碼（第一次設定就等於啟用這把鎖）。設完立刻回到上鎖狀態。
+
+    還沒啟用時不需要憑據（那時候還沒有東西可保護）；已啟用要現行密碼
+    或已解鎖的 token。
+    """
+    result = staff_lock.set_pin(payload.get("pin"),
+                                current_pin=payload.get("current_pin"),
+                                token=staff_token)
+    if result.get("status") == "invalid":
+        raise HTTPException(status_code=400, detail=result.get("message", "密碼格式不對"))
+    if result.get("status") == "denied":
+        raise HTTPException(status_code=403, detail=result.get("message", "要先解鎖"))
+    return {"status": "success", "lock": await _broadcast_staff_lock()}
+
+
+@app.post("/api/staff-lock/disable")
+async def disable_staff_lock(payload: Dict[str, Any] = Body(default={}),
+                             staff_token: str = Header("", alias="X-Staff-Token")):
+    """停用這把鎖（回到家用模式）。要現行密碼或已解鎖的 token。"""
+    result = staff_lock.disable(current_pin=payload.get("current_pin"), token=staff_token)
+    if result.get("status") == "denied":
+        raise HTTPException(status_code=403, detail=result.get("message", "要先解鎖"))
+    return {"status": "success", "lock": await _broadcast_staff_lock()}
+
+
+@app.post("/api/staff-lock/auto-lock")
+async def set_staff_auto_lock(payload: Dict[str, Any] = Body(...),
+                              staff_token: str = Header("", alias="X-Staff-Token")):
+    """調整「閒置多久自動上鎖」。越界的分鐘數夾回範圍，不回 500。"""
+    result = staff_lock.set_auto_lock_minutes(payload.get("minutes"),
+                                              current_pin=payload.get("current_pin"),
+                                              token=staff_token)
+    if result.get("status") == "denied":
+        raise HTTPException(status_code=403, detail=result.get("message", "要先解鎖"))
+    return {"status": "success", "auto_lock_minutes": result["auto_lock_minutes"],
+            "lock": await _broadcast_staff_lock()}
+
+
 @app.get("/api/settings")
 async def get_settings():
     """系統設定：目前值、預設值，以及讓前端長出表單的欄位規格。"""
@@ -1892,6 +2015,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.send_text(json.dumps({
         "type": "SETTINGS_UPDATE",
         "data": settings.all()
+    }))
+    # 櫃檯管理鎖的狀態同理：一連上就要拿到，不然新開的那一頁會先畫一個
+    # 「沒有鎖」的畫面，幾秒後才跳成上鎖 —— 而那幾秒裡按下去的動作全部會被擋。
+    await websocket.send_text(json.dumps({
+        "type": "STAFF_LOCK",
+        "data": staff_lock.state()
     }))
 
     try:

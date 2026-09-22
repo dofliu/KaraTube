@@ -2035,6 +2035,90 @@ input[type="range"] {
   color: var(--text-muted);
 }
 
+/* ===== 服務鈴（包廂呼叫櫃檯）=====
+   跑馬燈的反方向。這裡全部的視覺重量都押在「等待中那一張單」上：
+   一顆按了之後畫面看不出差別的服務鈴，會被按第二次、第三次。 */
+
+/* 等待中的那一張。粗框、亮色、擺在整個對話框最上面 ——
+   打開這個視窗的人如果剛按過，他要找的就是這一塊。 */
+.service-current {
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(0, 240, 255, 0.10);
+  border: 1px solid rgba(0, 240, 255, 0.35);
+}
+
+/* 等久了變色。前兩級是提示，第三級（沒人應聲超過十分鐘）才是紅的 ——
+   每一列都紅的清單等於沒有顏色。 */
+.service-current.is-warn {
+  background: rgba(255, 193, 7, 0.12);
+  border-color: rgba(255, 193, 7, 0.45);
+}
+
+.service-current.is-late {
+  background: rgba(255, 0, 127, 0.14);
+  border-color: rgba(255, 0, 127, 0.5);
+}
+
+.service-current-line {
+  /* 狀態自成一行（「等待中」跟「櫃檯收到了」是這一塊唯一要一眼看到的字），
+     所以內容裡的換行要留著。 */
+  white-space: pre-line;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.6;
+  color: var(--text-main);
+  word-break: break-word;
+}
+
+.service-current-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.service-current-actions .btn { font-size: 12px; padding: 5px 12px; }
+
+.service-reply {
+  flex: 1;
+  min-width: 140px;
+  font-size: 13px;
+}
+
+/* 品項按鍵。做得比一般按鈕大一點：按它的人常常一手拿著麥克風，
+   而且包廂是暗的。 */
+.service-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.service-item-btn {
+  font-size: 13px;
+  padding: 9px 14px;
+  border-radius: 16px;
+}
+
+/* 選起來的那幾項。選了什麼一定要看得出來 —— 看不出來的話，
+   按下「叫櫃檯」得到「還沒選要什麼」的人會以為這顆鍵壞了。 */
+.service-item-btn.is-on {
+  background: rgba(0, 240, 255, 0.22);
+  border-color: var(--accent-cyan);
+  color: #fff;
+  font-weight: 800;
+}
+
+/* 最上排那顆鍵在有單等待時會亮。這是整個功能唯一一個
+   「不必打開任何視窗就看得到」的訊號，而櫃檯那一端多半沒有打開視窗。 */
+#serviceBtn.is-ringing {
+  border-color: var(--accent-pink);
+  box-shadow: 0 0 12px rgba(255, 0, 127, 0.5);
+}
+
 /* --- 歌號點歌（六位數）--- */
 
 /* 歌卡上的歌號。跟歌名擺在一起（不是縮圖角落）是刻意的：

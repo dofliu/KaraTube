@@ -1497,6 +1497,26 @@ document.addEventListener("DOMContentLoaded", () => {
    * 落盤則 debounce —— 連按六下右鍵不該變成六次寫檔＋六次全狀態廣播。
    */
   let songOffsetSaveTimer = null;
+  // 在途（還沒送出）的那一筆：`{songId, ms}`。**歌名與值都要快照。**
+  // 只快照 songId 的話，timer 開火時讀到的是**當下**的 songOffsetMs ——
+  // 中間換了歌，那一筆就會把新歌的值寫到上一首身上（值是 0 的話，
+  // 更是直接把上一首校了一整晚的偏移從號碼簿上刪掉，而且畫面上一聲不響）。
+  let songOffsetPending = null;
+
+  /**
+   * 立刻把在途的那一筆送出去，回傳那個 Promise（沒有就回 resolved）。
+   *
+   * 換歌與「升級成本機基準」之前都要先走這一步：直接 clearTimeout 會把
+   * 使用者剛按的那一下整個丟掉，而那一下正是他花時間聽出來的。
+   */
+  function flushSongOffset() {
+    if (songOffsetSaveTimer) { clearTimeout(songOffsetSaveTimer); songOffsetSaveTimer = null; }
+    const pending = songOffsetPending;
+    songOffsetPending = null;
+    if (!pending) return Promise.resolve();
+    return window.api.setSongLyricOffset(pending.songId, pending.ms).catch(() => { });
+  }
+
   function setSongOffset(ms, { persist = true, toast = true } = {}) {
     if (!currentSongId) {
       if (toast) showSyncToast("song");   // 待機時只說明，不偷偷改裝置值
@@ -1507,13 +1527,19 @@ document.addEventListener("DOMContentLoaded", () => {
     songOffsetMs = next;
     if (persist && changed) {
       recordSongAdjustment(currentSongId, next);
-      const songId = currentSongId;      // 抓當下這一首，晚到的寫入不該落到下一首
-      if (songOffsetSaveTimer) clearTimeout(songOffsetSaveTimer);
+      // 在途的那一筆如果是**上一首**的，先送出去再排新的（clearTimeout 會丟掉它）
+      if (songOffsetPending && songOffsetPending.songId !== currentSongId) flushSongOffset();
+      else if (songOffsetSaveTimer) clearTimeout(songOffsetSaveTimer);
+      songOffsetPending = { songId: currentSongId, ms: next };
       songOffsetSaveTimer = setTimeout(() => {
-        window.api.setSongLyricOffset(songId, songOffsetMs).catch(() => { });
+        songOffsetSaveTimer = null;
+        const pending = songOffsetPending;
+        songOffsetPending = null;
+        if (pending) window.api.setSongLyricOffset(pending.songId, pending.ms).catch(() => { });
       }, 400);
     }
     if (toast) showSyncToast("song");
+    updateDeviceOffsetUI();   // 「升級成本機基準」那顆鍵的出現條件跟著這個值走
   }
 
   /** 音訊面板那一列的數字與說明。兩個數字都在這裡講清楚，避免只看到一半。 */
@@ -1552,6 +1578,10 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const delta = songOffsetMs;
+    // 先把在途的那一筆落地：rebase 是照**伺服器上的值**整批減的，
+    // 而且做完之後那一筆晚到的寫入會把剛被清掉的偏移復活 ——
+    // 結果就是這首歌被補償兩次（裝置 +X 又加上歌的 +X）。
+    await flushSongOffset();
     let tunedCount = 0;
     try {
       tunedCount = (await window.api.getLyricOffsets()).count || 0;
@@ -1783,6 +1813,9 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (e.key === "s" || e.key === "S") {
       e.preventDefault();
       toggleAudioSetup();
+      // 面板可能是在偏移變動之後才打開的：那一列的數字與「升級成本機基準」
+      // 按鈕都得是現在的狀態，不是上次關掉時的狀態。
+      updateDeviceOffsetUI();
     } else if (e.key === "d" || e.key === "D") {
       // 對唱一鍵開關：舞台前面的人不會回去點歌台按（第二支麥克風常常是臨時遞過來的）
       e.preventDefault();
@@ -1974,9 +2007,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     // 這首歌的字幕偏移：跟 current_song 在同一則訊息裡，所以換歌時不會有
     // 「新的歌配上一首的偏移」那半秒鐘。值相同就不動（防迴圈同上）。
-    if (state.song_lyric_offset_ms !== undefined
+    //
+    // **在途寫入期間要放著不動**：落盤是 debounce 的，那 400ms 裡任何一則廣播
+    // （別支手機拖了音量滑桿、下一首跑完一段流水線）帶回來的都還是舊值。
+    // 直接套用的話，使用者剛按的那一下會當場彈回去 —— 然後 400ms 後那個舊值
+    // 又被寫回伺服器，他連按五次會得出「這台機器的方向鍵壞了」。
+    // 歌換了（song_id 不同）則一律採用：換歌一定要重設，那是這個功能的本體。
+    const pendingForThisSong = songOffsetPending
+      && songOffsetPending.songId === (song ? song.song_id : null);
+    if (state.song_lyric_offset_ms !== undefined && !pendingForThisSong
         && state.song_lyric_offset_ms !== songOffsetMs) {
       songOffsetMs = window.LyricSync.clampSyncMs(state.song_lyric_offset_ms);
+      updateDeviceOffsetUI();
     }
 
     if (state.show_pitch !== undefined) {
@@ -2018,8 +2060,10 @@ document.addEventListener("DOMContentLoaded", () => {
       resetDuet();
       // 這首歌的字幕偏移跟著歌走，沒有歌就歸零（本機基準保留）——
       // 不清的話，下一首在拿到自己的值之前會沿用上一首的，
-      // 那正是這個功能要修掉的 bug。
+      // 那正是這個功能要修掉的 bug。歸零之前先把在途的那一筆送出去。
+      flushSongOffset();
       songOffsetMs = 0;
+      updateDeviceOffsetUI();
       // 待機畫面一樣走情境背景（商用機的待機情境畫面），只是能量固定在低檔
       ambientStage.clearSong();
     }
@@ -2036,6 +2080,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // 這首歌的字幕偏移。**同步**設定（在任何 await 之前）：值跟著 current_song
     // 一起在同一則 STATE_UPDATE 裡到，所以第一幀就是對的；用另一支 API 補抓的話，
     // 第一句歌詞會在畫面上跳一下。沒有值就是 0，絕不沿用上一首。
+    // 上一首如果還有沒落地的校正，先送出去（它自己帶著 songId 與值，
+    // 不會落到新歌身上），再換成這一首的值。
+    flushSongOffset();
     songOffsetMs = window.LyricSync.clampSyncMs(song.lyric_offset_ms || 0);
     titleEl.textContent = song.title;
     artistEl.textContent = song.artist || "YouTube Music";

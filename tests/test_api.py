@@ -2404,3 +2404,78 @@ def test_rebuild_lyrics_failure_is_503_not_500(fake_song_with_alignment, monkeyp
     assert res.status_code == 503
     # 失敗不該動到原本的診斷
     assert storage.get_song_alignment(fake_song_with_alignment)["score"] == 0.577
+
+
+def test_rebuild_lyrics_aborts_if_the_song_starts_playing_midway(fake_song_with_alignment,
+                                                                 lyric_offsets_clean,
+                                                                 monkeypatch):
+    """
+    端點那一道 409 是幾十秒前問的：抓 LRC 要等網路、掉進 Whisper 更久，
+    這段時間裡那首歌完全可能被點播。真正動手之前要再問一次 ——
+    就地覆寫 lyrics.json 會讓台上的人下一次載入時換成另一份詞。
+    """
+    song_id = fake_song_with_alignment
+    queue_manager.queue.append({"queue_id": "test-q-midway", "status": "READY",
+                                "song_id": song_id})
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("有人開始唱了還是跑了對齊")
+
+    monkeypatch.setattr(main.song_processor.lyrics_aligner, "align", should_not_run)
+    try:
+        # 端點的第一道守門就會擋下來，但真正要守的是 worker 裡那一道：
+        # 直接呼叫 worker 才測得到（端點那一道在這個情境下先攔截）
+        result = main._rebuild_song_lyrics(song_id)
+        assert result["status"] == "in_use"
+        assert "取消" in result["message"]
+    finally:
+        queue_manager.queue[:] = [i for i in queue_manager.queue
+                                  if i.get("queue_id") != "test-q-midway"]
+
+
+def test_rebuild_lyrics_writes_are_atomic(fake_song_with_alignment, lyric_offsets_clean,
+                                          monkeypatch):
+    """
+    半份 lyrics.json 比沒有更糟：讀取端把 JSONDecodeError 吞掉回 []，
+    而快取清單只看檔案存不存在 —— 那首歌會永遠「完整但沒有歌詞」。
+    """
+    from backend.pipeline import lyrics_aligner as aligner_mod
+    song_dir = SONGS_DIR / fake_song_with_alignment
+    written = []
+
+    real_replace = aligner_mod.os.replace
+
+    def spy_replace(src, dst):
+        written.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(aligner_mod.os, "replace", spy_replace)
+    aligner_mod._write_json_atomic(song_dir / "lyrics.json", [{"start": 0, "end": 1, "text": "x"}])
+    # 一定要經過 tmp + os.replace，不是直接覆寫
+    assert written and written[0][0].endswith(".tmp")
+    assert json.loads((song_dir / "lyrics.json").read_text(encoding="utf-8"))[0]["text"] == "x"
+    assert not list(song_dir.glob("*.tmp"))       # 換檔之後不留暫存
+
+
+def test_rebuild_lyrics_broadcasts_after_clearing_the_offset(fake_song_with_alignment,
+                                                             lyric_offsets_clean, monkeypatch):
+    """清掉偏移要廣播：不然每一台裝置上的滑桿還停在那個已經不存在的值。"""
+    song_id = fake_song_with_alignment
+    client.post(f"/api/songs/{song_id}/lyric-offset", json={"offset_ms": 300})
+    broadcasts = []
+
+    async def spy_broadcast():
+        broadcasts.append(queue_manager.get_full_state())
+
+    def fake_align(voc_path, title, artist, output_json=None):
+        output_json.write_text("[]", encoding="utf-8")
+        (output_json.parent / "alignment.json").write_text(
+            json.dumps({"source": "lrc", "score": 0.9, "lines": 1}), encoding="utf-8")
+        return []
+
+    monkeypatch.setattr(main.song_processor.lyrics_aligner, "align", fake_align)
+    monkeypatch.setattr(queue_manager, "broadcast_state", spy_broadcast)
+    res = client.post(f"/api/cache/{song_id}/rebuild-lyrics")
+    assert res.status_code == 200
+    assert res.json()["cleared_offset_ms"] == 300
+    assert broadcasts, "清掉偏移之後沒有廣播，其他裝置不會知道"

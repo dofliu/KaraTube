@@ -14,6 +14,7 @@
 import re
 import json
 import logging
+import os
 import requests
 import urllib.parse
 import numpy as np
@@ -50,6 +51,15 @@ COPYRIGHT_PATTERN = re.compile(
 )
 # 舊版沿用的名稱，僅保留給純聲學轉錄的雜訊過濾使用
 DISCLAIMER_PATTERN = METADATA_LINE_PATTERN
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    """先寫 .tmp 再 os.replace：中途失敗不會留下半份 JSON 給下一個讀的人。"""
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 class LyricsAligner:
@@ -752,10 +762,12 @@ class LyricsAligner:
         if output_json:
             output_json = Path(output_json)
             output_json.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(lyrics, f, ensure_ascii=False, indent=2)
+            # 先寫暫存檔再 rename。直接覆寫的話，中途斷電／磁碟滿會留下半份
+            # lyrics.json —— 而 storage.get_song_lyrics 把 JSONDecodeError 吞掉回 []，
+            # 快取清單又只看檔案存不存在，所以那首歌會永遠「完整但沒有歌詞」。
+            # （「重算歌詞」讓覆寫這件事從一輩子一次變成隨時可按，風險跟著上升。）
+            _write_json_atomic(output_json, lyrics)
             # 對齊診斷另存一份，方便事後查為什麼某首歌會歪
-            with open(output_json.parent / "alignment.json", 'w', encoding='utf-8') as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
+            _write_json_atomic(output_json.parent / "alignment.json", report)
 
         return lyrics

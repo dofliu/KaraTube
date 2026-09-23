@@ -2105,6 +2105,10 @@ document.addEventListener("DOMContentLoaded", () => {
       // 等下面那個「值不同才寫」的守衛處理的話，滑桿會有一瞬間停在上一首的值。
       songOffsetMs = Number(state.song_lyric_offset_ms) || 0;
       lyricOffsetSlider.value = songOffsetMs;
+      // 正在拖曳的那一下已經失效（它是為上一首調的）。放掉焦點讓 change 早點
+      // 發生；dragSongId 留著 —— 那是 change 事件說得出「歌換了、那一下沒有
+      // 套用」的唯一依據。
+      lyricOffsetSlider.blur();
       onCurrentSongChanged();
     }
 
@@ -2482,7 +2486,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 拖曳中只動畫面（每一格都寫一次伺服器＝拖一次滑桿就是幾十次寫檔＋廣播），
   // 放開才落地。舞台端的 ← → 是同一個道理，那邊用 400ms debounce。
+  // `dragSongId` 記的是**開始拖的時候在唱哪一首**：拖到一半歌換了（唱完、
+  // 被切歌、輪到下一首），放開時的 currentSongId 已經是新歌 —— 那一下就會
+  // 把為上一首聽出來的值寫到一首他根本還沒聽過的歌上。
+  let dragSongId = null;
+
   lyricOffsetSlider.addEventListener("input", (e) => {
+    if (dragSongId === null) dragSongId = currentSongId;
     songOffsetMs = parseInt(e.target.value, 10);
     updateLyricOffsetLabel(songOffsetMs);
   });
@@ -2493,10 +2503,18 @@ document.addEventListener("DOMContentLoaded", () => {
   updateLyricOffsetLabel(0);
 
   lyricOffsetSlider.addEventListener("change", (e) => {
-    if (!currentSongId) return;
-    const ms = parseInt(e.target.value, 10);
-    const songId = currentSongId;    // 抓當下這一首：換歌之後這次寫入不該落到新歌上
-    window.api.setSongLyricOffset(songId, ms)
+    const songId = dragSongId || currentSongId;
+    dragSongId = null;
+    if (!songId) return;
+    if (songId !== currentSongId) {
+      // 歌在拖曳途中換掉了：這一下不寫（寫了是落在沒聽過的那首歌上），
+      // 而且要講出來 —— 靜靜不做事會讓人以為已經調好了。
+      showNotification("🎬 歌換了，剛剛那一下字幕校正沒有套用", 3500);
+      lyricOffsetSlider.value = songOffsetMs;
+      updateLyricOffsetLabel(songOffsetMs);
+      return;
+    }
+    window.api.setSongLyricOffset(songId, parseInt(e.target.value, 10))
       .catch((err) => showNotification(`字幕校正失敗：${err.message}`, 3500));
   });
 

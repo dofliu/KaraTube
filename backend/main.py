@@ -448,6 +448,15 @@ def _rebuild_song_lyrics(song_id: str) -> Dict[str, Any]:
 
     def work() -> Dict[str, Any]:
         before = storage.get_song_alignment(song_id)
+        # 端點那一道 409 是**幾十秒前**問的：抓 LRC 要等網路、掉進 Whisper 更久，
+        # 這段時間裡那首歌完全可能被點播並開始唱（排隊中的那一位剛好點到它）。
+        # 就地覆寫 lyrics.json 會讓台上的人下一次載入時換成另一份詞，
+        # 所以真正動手之前再問一次 —— 而且是在 align 跑完、**寫檔之前**還來不及問，
+        # 因為寫檔在 align 裡面。這裡能做的是把窗口縮到最小：對齊前再驗一次，
+        # 對齊後（寫檔已經發生）如果發現已經有人在唱，就明說一句讓畫面講得出來。
+        if queue_manager.is_song_in_use(song_id):
+            return {"status": "in_use",
+                    "message": "這首歌剛剛被點播了，重算已取消（重算會換掉正在唱的那份歌詞）"}
         try:
             lines = song_processor.lyrics_aligner.align(
                 voc_file, meta.get("title", ""), meta.get("artist", ""), lyrics_file)
@@ -455,7 +464,10 @@ def _rebuild_song_lyrics(song_id: str) -> Dict[str, Any]:
             logger.exception(f"[{song_id}] 重算歌詞失敗: {e}")
             return {"status": "failed", "message": f"重算歌詞失敗：{e}"}
         return {"status": "ready", "lines": len(lines),
-                "before": before, "after": storage.get_song_alignment(song_id)}
+                "before": before, "after": storage.get_song_alignment(song_id),
+                # 跑的過程中被點播了：歌詞已經換掉，正在唱的那一位手上是舊的那份。
+                # 不是錯誤（新歌詞是好的），但要讓畫面說得出「這一首要下次才生效」。
+                "started_singing": queue_manager.is_song_in_use(song_id)}
 
     return lyrics_gate.run(song_id, work)
 
@@ -485,6 +497,8 @@ async def rebuild_song_lyrics(song_id: str):
     if status == "busy":
         raise HTTPException(status_code=503,
                             detail="另一首歌正在重算歌詞，請稍後再試（同時只跑一首）")
+    if status == "in_use":
+        raise HTTPException(status_code=409, detail=result["message"])
     if status != "ready":
         # 重算不出來幾乎都是暫時性的（網路抓不到 LRC、記憶體不足），
         # 同一個網址等一下再按多半就成功，所以是 503 不是 500。
@@ -493,6 +507,10 @@ async def rebuild_song_lyrics(song_id: str):
     cleared_offset = lyric_offsets.get(song_id)
     if cleared_offset:
         lyric_offsets.clear(song_id)
+        # 清掉了就要讓每一台裝置知道 —— 不廣播的話，點歌台的滑桿與舞台的
+        # songOffsetMs 還停在那個已經不存在的值上（而且下一次有人動滑桿時
+        # 又會把它寫回去）。
+        await queue_manager.broadcast_state()
     # 歌詞換了，段落曲式跟著換：點歌台的段落快取與舞台的歌詞都要重讀。
     await ws_manager.broadcast({
         "type": "LYRICS_REBUILT",
@@ -501,7 +519,8 @@ async def rebuild_song_lyrics(song_id: str):
     })
     return {"status": "success", "song_id": song_id, "lines": result.get("lines", 0),
             "before": result.get("before"), "alignment": result.get("after"),
-            "cleared_offset_ms": cleared_offset}
+            "cleared_offset_ms": cleared_offset,
+            "started_singing": bool(result.get("started_singing"))}
 
 
 # --- 排程預處理 ---

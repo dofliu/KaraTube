@@ -411,12 +411,18 @@
 
       <div class="mixer-section">
         <div class="mixer-section-title">🖥️ 舞台顯示</div>
+        <!-- 字幕同步拆成兩個數字（見 frontend/js/lyric-sync.js）：
+             這一條調的是**正在唱的這一首**（存伺服器、綁 song_id、下次唱還在），
+             舞台那台機器的喇叭延遲則在舞台按 S 的音訊面板調。
+             以前兩者混在同一個數字裡，為某一首爛 LRC 調的值會跟著機器走，
+             下一首歌反而多錯一樣的量。 -->
         <div class="mixer-row">
-          <label>🎬 字幕同步<small>雙擊歸零</small></label>
-          <input type="range" id="lyricOffsetSlider" min="-1000" max="1000" step="10" value="0"
-                 title="往左＝字幕提前，往右＝字幕延後">
+          <label>🎬 這首歌的字幕<small>雙擊歸零</small></label>
+          <input type="range" id="lyricOffsetSlider" min="-2000" max="2000" step="10" value="0"
+                 title="往左＝字幕提前，往右＝字幕延後。只影響正在唱的這一首">
           <span id="lyricOffsetText" class="slider-value">0 ms</span>
         </div>
+        <p id="lyricOffsetHint" class="mixer-hint" style="margin-top: 0;"></p>
         <div class="mixer-row">
           <label>🎯 音準導唱線<small>舞台可按 P</small></label>
           <button id="pitchToggleBtn" class="btn btn-secondary" style="margin-left: auto;">顯示中</button>
@@ -656,6 +662,11 @@
   <script src="/js/number-search.js"></script>
   <!-- 櫃檯管理鎖的說法與狀態（有單元測試），要在 controller 之前載入 -->
   <script src="/js/staff-lock.js"></script>
+  <!-- 字幕同步的兩個數字（這首歌 vs 這台裝置）的說法。舞台也載同一支：
+       同一件事在兩個畫面上必須講出同一句話 -->
+  <script src="/js/lyric-sync.js"></script>
+  <!-- 歌詞對齊品質的判讀（分數→徽章文字）。只有快取管理頁用得到 -->
+  <script src="/js/alignment-view.js"></script>
   <!-- 自動接歌的說法（機器接的那一首要講得出「為什麼是這首」與「有人點歌就讓開」）-->
   <script src="/js/autofill-view.js"></script>
   <script src="/js/room-view.js"></script>

@@ -311,6 +311,61 @@ class KaraTubeAPI {
     return data;
   }
 
+  // --- 字幕對齊 ---
+  //
+  // 「這首歌的偏移」走自己的路由（帶 song_id），不擠進 updateControl：
+  // control 是「寄給現在」，而這個值要寄給**那一首歌** —— 每一次換歌都會開一個
+  // 讓遲到的寫入落到新歌上的窗口，而那正是這個功能要修掉的 bug。
+
+  async setSongLyricOffset(songId, offsetMs) {
+    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offset_ms: offsetMs })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async clearSongLyricOffset(songId) {
+    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`,
+                            { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async getLyricOffsets() {
+    const res = await fetch(`${this.baseUrl}/api/lyric-offsets`);
+    return await res.json();
+  }
+
+  /** 升級成本機基準的另一半：所有已校正的歌各減掉 delta。 */
+  async rebaseLyricOffsets(deltaMs) {
+    const res = await fetch(`${this.baseUrl}/api/lyric-offsets/rebase`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delta_ms: deltaMs })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  /**
+   * 只重算這首歌的歌詞時間軸（不重新下載、不跑人聲分離）。
+   * 是機器層級的動作（會改寫曲庫檔案、吃掉整台機器唯一那個重算名額），
+   * 所以走 staffFetch。
+   */
+  async rebuildLyrics(songId) {
+    const res = await this.staffFetch(`${this.baseUrl}/api/cache/${songId}/rebuild-lyrics`,
+                                      { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
   async reprocessSong(songId) {
     const res = await this.staffFetch(`${this.baseUrl}/api/cache/${songId}/reprocess`, { method: 'POST' });
     const data = await res.json();

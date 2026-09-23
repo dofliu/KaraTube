@@ -244,6 +244,19 @@
         <select id="outputDeviceSelect"></select>
       </div>
       <p id="outputHint" class="stage-panel-hint"></p>
+
+      <!-- 這台機器的延遲補償。放在音訊裝置面板裡是刻意的：調它的成因是
+           「我換了喇叭」，不是「這句字幕慢了」—— 後者是每首歌自己的事，
+           用 ← → 當場調（見 frontend/js/lyric-sync.js）。 -->
+      <div class="stage-panel-row">
+        <label>🕐 本機延遲補償</label>
+        <button id="deviceOffsetDown" class="stage-panel-step" title="字幕提前 10ms">−</button>
+        <span id="deviceOffsetValue" class="stage-panel-value">0 ms</span>
+        <button id="deviceOffsetUp" class="stage-panel-step" title="字幕延後 10ms">＋</button>
+        <button id="deviceOffsetReset" class="stage-panel-step" title="歸零">歸零</button>
+      </div>
+      <p id="deviceOffsetHint" class="stage-panel-hint"></p>
+      <button id="promoteOffsetBtn" class="stage-panel-promote" style="display: none;"></button>
     </div>
   </div>
 
@@ -279,6 +292,8 @@
        兩邊各算一次就會有兩個，而大家會相信對自己有利的那一個。 -->
   <!-- 歌號：片頭卡要印「🔢 歌號 100237」（舞台端只用到格式化那幾行） -->
   <script src="/js/number-search.js"></script>
+  <!-- 字幕同步的兩個數字（這首歌 vs 這台裝置）的說法。與點歌台共用同一支 -->
+  <script src="/js/lyric-sync.js"></script>
   <script src="/js/room-view.js"></script>
   <script src="/js/player.js"></script>
 </body>

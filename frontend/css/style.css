@@ -2296,3 +2296,41 @@ input[type="range"] {
   .staff-pin-key { padding: 16px 0; font-size: 22px; }
   .staff-lock-row label { min-width: 100%; }
 }
+
+/* --- 快取管理：對齊品質與字幕校正徽章 --- */
+/* 色票沿用專案既有語意（成功綠 / 警告黃 / 錯誤紅 / 次要灰），
+   文字才是主體 —— 對齊分數沒有對人校準過，把 0.577 印出來只會引來
+   「這樣算好還是壞」（見 frontend/js/alignment-view.js）。 */
+.cache-badge.align-ok {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.cache-badge.align-warn {
+  color: var(--accent-yellow, #ffde59);
+  background: rgba(255, 222, 89, 0.12);
+  border: 1px solid rgba(255, 222, 89, 0.3);
+}
+
+.cache-badge.align-bad {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* 「未知」是灰的，不是紅的：舊歌沒有診斷檔不代表它有問題，
+   畫成警示會讓人去重算一堆本來就對的歌詞。 */
+.cache-badge.align-muted {
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* 這首歌被人工校正過字幕。標出來是因為它在「重算歌詞」之後最可能變錯。 */
+.cache-badge.tuned {
+  color: var(--accent-cyan);
+  background: rgba(0, 240, 255, 0.1);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  font-variant-numeric: tabular-nums;
+}

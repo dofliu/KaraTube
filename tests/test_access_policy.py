@@ -73,6 +73,9 @@ def test_no_read_only_method_is_protected():
     ("POST", "/api/favorites/toggle"),
     ("POST", "/api/recordings"),
     ("DELETE", "/api/recordings/rec-1"),
+    # 字幕對不上是包廂裡當場要修的東西，鎖起來等於「字幕歪了要先找櫃檯」
+    ("POST", "/api/songs/abc123/lyric-offset"),
+    ("DELETE", "/api/songs/abc123/lyric-offset"),
 ])
 def test_singing_is_never_locked(method, path):
     """鎖錯一條的代價不是多按一次密碼，是整個晚上沒有人能唱歌。"""
@@ -91,6 +94,7 @@ def test_singing_is_never_locked(method, path):
     ("POST", "/api/marquee"),
     ("POST", "/api/batch"),
     ("POST", "/api/rotation/reset"),
+    ("POST", "/api/cache/abc123/rebuild-lyrics"),
 ])
 def test_machine_level_actions_are_locked(method, path):
     assert requires_unlock(method, path) is True

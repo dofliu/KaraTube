@@ -29,6 +29,7 @@ from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_index import SongFinder
 from backend.services.song_numbers import SongNumberBook, parse_number
+from backend.services.lyric_offsets import MAX_OFFSET_MS, LyricOffsets
 from backend.services.artist_index import ArtistFinder
 from backend.services.song_history import SongHistory
 from backend.services import access_policy, marquee, room_timer, service_calls, song_quota
@@ -183,6 +184,14 @@ night_gate = ExportGate()
 # 刪掉一首歌的資料夾不該把「那個號碼曾經是誰的」一起刪掉 ——
 # 號碼絕不回收，正是這個功能唯一的價值來源（見 song_numbers.py）。
 song_numbers = SongNumberBook(CACHE_DIR / "song_numbers.json")
+# 每首歌的字幕偏移（人用耳朵校出來的那個數字）。放 cache/ 的理由跟歌號一樣：
+# 「重新處理」會 rmtree 整個歌資料夾、快取自動清理也會無聲刪掉它，
+# 而人花時間校出來的偏移不該被流水線洗掉（見 lyric_offsets.py）。
+lyric_offsets = LyricOffsets(CACHE_DIR / "lyric_offsets.json")
+# 重算歌詞的關卡：同一首同時只重算一次、整台機器同時只跑一個。
+# 「只跑一個」跟 MP3 轉檔同一個理由 —— 那顆 CPU 正在放歌、算音準，
+# 而重算可能會掉進 Whisper 轉錄（幾分鐘、吃滿核心）。
+lyrics_gate = TranscodeGate(max_concurrent=1)
 # 曲庫分類瀏覽（語言/歌手）、新歌榜與推薦歌單，全部從快取資料夾即算即回。
 # 歌號掛在這一層，所以每一份曲庫清單（分類、查歌、歌星、自動接歌）都帶著號碼
 # —— 要有人記得住號碼，前提是它到處都印得出來。
@@ -244,7 +253,11 @@ queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.br
                              # 歌號：佇列與舞台片頭卡要印得出「下次直接打這組號碼」。
                              # 傳的是函式而不是號碼簿本身 —— 佇列管的是誰排在誰前面，
                              # 不該連「號碼怎麼發」都認識。
-                             number_of=song_numbers.ensure)
+                             number_of=song_numbers.ensure,
+                             # 這首歌的字幕偏移。跟歌號同樣傳函式不傳物件，
+                             # 而且是每次廣播現查 —— 唱到一半校正的值要立刻
+                             # 跟著 current_song 送到每一台裝置上。
+                             lyric_offset_of=lyric_offsets.get)
 # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
 queue_manager.apply_control_defaults()
 
@@ -349,10 +362,29 @@ async def get_cached_songs():
     songs = storage.list_cached_songs()
     return {"songs": songs}
 
+def _cache_overview() -> Dict[str, Any]:
+    """
+    快取管理總覽的實際工作（會掃整個 songs/ 目錄，所以是同步函式、丟到執行緒跑）。
+
+    刻意只掃一次：`cache_stats()` 自己也會呼叫 `list_cache_entries()`，
+    不把結果傳進去的話整個目錄會被 rglob 兩遍，而每一首歌現在還多讀一份
+    alignment.json —— 曲庫幾百首時那是舞台 WebSocket 卡一下的量。
+
+    每一筆再補上「這首歌的字幕偏移」：快取管理頁要能看出哪幾首被人工校正過
+    （校正過的歌在重算歌詞之後最可能變錯，見 rebuild-lyrics 端點）。
+    """
+    entries = storage.list_cache_entries()
+    offsets = lyric_offsets.all()
+    for entry in entries:
+        entry["lyric_offset_ms"] = offsets.get(entry["song_id"], 0)
+    return {"songs": entries, **storage.cache_stats(entries),
+            "tuned_count": sum(1 for e in entries if e["lyric_offset_ms"])}
+
+
 @app.get("/api/cache")
 async def get_cache_overview():
-    """快取管理總覽：每首歌的磁碟用量與完整性 + 磁碟剩餘空間。"""
-    return {"songs": storage.list_cache_entries(), **storage.cache_stats()}
+    """快取管理總覽：每首歌的磁碟用量、完整性、對齊品質與字幕偏移 + 磁碟剩餘空間。"""
+    return await asyncio.to_thread(_cache_overview)
 
 
 @app.delete("/api/cache/{song_id}")
@@ -383,6 +415,112 @@ async def reprocess_cached_song(song_id: str):
         thumbnail=meta.get("thumbnail", ""),
     )
     return {"status": "success", "item": item}
+
+
+# --- 重算歌詞（便宜的那一條路）---
+#
+# 「字幕整首都歪」有兩種修法，成本差一個數量級：
+#   * 重新處理：砍掉整個資料夾，重新下載 + Demucs + Whisper + 音準 + 響度，
+#     有 GPU 也要幾分鐘，而且那首歌會從曲庫上消失再長回來。
+#   * 重算歌詞：只用已經存在的 vocals.mp3 重跑一次對齊（抓 LRC → 仿射校正 →
+#     起唱點吸附），不下載、不跑分離模型。走 LRC 的話十幾秒就好。
+#
+# 以前只有 CLI（rebuild_lyrics.py）做得到後者，所以畫面上唯一的選擇是那顆貴的。
+
+
+def _rebuild_song_lyrics(song_id: str) -> Dict[str, Any]:
+    """
+    只重算一首歌的歌詞時間軸。**會阻塞**（網路抓 LRC、可能載入 Whisper），
+    所以呼叫端一律走 `asyncio.to_thread`。
+
+    重用 `song_processor.lyrics_aligner`（跟流水線同一個實例）是為了共用已經
+    載入的模型；也因為如此，它跟正在跑的流水線會搶同一個 aligner ——
+    `lyrics_gate` 的「整台機器同時只跑一個」擋的就是自己人打自己人。
+    """
+    song_dir = SONGS_DIR / song_id
+    voc_file = song_dir / "vocals.mp3"
+    lyrics_file = song_dir / "lyrics.json"
+    if not voc_file.exists():
+        return {"status": "missing_vocals",
+                "message": "這首歌缺人聲軌，只能用「重新處理」重跑整條流水線"}
+
+    meta = storage.get_song_metadata(song_id) or {}
+
+    def work() -> Dict[str, Any]:
+        before = storage.get_song_alignment(song_id)
+        # 端點那一道 409 是**幾十秒前**問的：抓 LRC 要等網路、掉進 Whisper 更久，
+        # 這段時間裡那首歌完全可能被點播並開始唱（排隊中的那一位剛好點到它）。
+        # 就地覆寫 lyrics.json 會讓台上的人下一次載入時換成另一份詞，
+        # 所以真正動手之前再問一次 —— 而且是在 align 跑完、**寫檔之前**還來不及問，
+        # 因為寫檔在 align 裡面。這裡能做的是把窗口縮到最小：對齊前再驗一次，
+        # 對齊後（寫檔已經發生）如果發現已經有人在唱，就明說一句讓畫面講得出來。
+        if queue_manager.is_song_in_use(song_id):
+            return {"status": "in_use",
+                    "message": "這首歌剛剛被點播了，重算已取消（重算會換掉正在唱的那份歌詞）"}
+        try:
+            lines = song_processor.lyrics_aligner.align(
+                voc_file, meta.get("title", ""), meta.get("artist", ""), lyrics_file)
+        except Exception as e:
+            logger.exception(f"[{song_id}] 重算歌詞失敗: {e}")
+            return {"status": "failed", "message": f"重算歌詞失敗：{e}"}
+        return {"status": "ready", "lines": len(lines),
+                "before": before, "after": storage.get_song_alignment(song_id),
+                # 跑的過程中被點播了：歌詞已經換掉，正在唱的那一位手上是舊的那份。
+                # 不是錯誤（新歌詞是好的），但要讓畫面說得出「這一首要下次才生效」。
+                "started_singing": queue_manager.is_song_in_use(song_id)}
+
+    return lyrics_gate.run(song_id, work)
+
+
+@app.post("/api/cache/{song_id}/rebuild-lyrics")
+async def rebuild_song_lyrics(song_id: str):
+    """
+    只重算這首歌的歌詞時間軸（不重新下載、不跑人聲分離）。
+
+    守門跟刪除／重新處理一致：演唱中或還在佇列裡就 409 —— 重算會就地覆寫
+    `lyrics.json`，而那首歌可能正被唱著（更糟的是佇列裡那首的流水線稍後會
+    再寫一次，把重算結果蓋掉）。
+
+    **順手清掉這首歌的人工字幕偏移**：那個數字是為「舊的那份歌詞」調出來的，
+    歌詞換了之後它最有可能變成錯的。回應裡會講清楚清掉了多少，
+    前端的確認框也會先講一次（不靜默清，也不靜默留）。
+    """
+    if queue_manager.is_song_in_use(song_id):
+        raise HTTPException(status_code=409, detail="歌曲演唱中或在佇列裡，不能重算歌詞")
+    if not (SONGS_DIR / song_id).exists():
+        raise HTTPException(status_code=404, detail="快取中沒有這首歌")
+
+    result = await asyncio.to_thread(_rebuild_song_lyrics, song_id)
+    status = result.get("status")
+    if status == "missing_vocals":
+        raise HTTPException(status_code=409, detail=result["message"])
+    if status == "busy":
+        raise HTTPException(status_code=503,
+                            detail="另一首歌正在重算歌詞，請稍後再試（同時只跑一首）")
+    if status == "in_use":
+        raise HTTPException(status_code=409, detail=result["message"])
+    if status != "ready":
+        # 重算不出來幾乎都是暫時性的（網路抓不到 LRC、記憶體不足），
+        # 同一個網址等一下再按多半就成功，所以是 503 不是 500。
+        raise HTTPException(status_code=503, detail=result.get("message", "重算歌詞失敗"))
+
+    cleared_offset = lyric_offsets.get(song_id)
+    if cleared_offset:
+        lyric_offsets.clear(song_id)
+        # 清掉了就要讓每一台裝置知道 —— 不廣播的話，點歌台的滑桿與舞台的
+        # songOffsetMs 還停在那個已經不存在的值上（而且下一次有人動滑桿時
+        # 又會把它寫回去）。
+        await queue_manager.broadcast_state()
+    # 歌詞換了，段落曲式跟著換：點歌台的段落快取與舞台的歌詞都要重讀。
+    await ws_manager.broadcast({
+        "type": "LYRICS_REBUILT",
+        "data": {"song_id": song_id, "alignment": result.get("after"),
+                 "cleared_offset_ms": cleared_offset},
+    })
+    return {"status": "success", "song_id": song_id, "lines": result.get("lines", 0),
+            "before": result.get("before"), "alignment": result.get("after"),
+            "cleared_offset_ms": cleared_offset,
+            "started_singing": bool(result.get("started_singing"))}
 
 
 # --- 排程預處理 ---
@@ -1978,8 +2116,71 @@ async def get_song_loudness(song_id: str):
 
 @app.get("/api/songs/{song_id}/lyrics")
 async def get_lyrics(song_id: str):
+    # 偏移跟著歌詞一起回：舞台換歌時本來就會抓這一支，多一個欄位就不必多打一次
+    # 請求（不過真正沒有空窗的那條路是 STATE_UPDATE 上的 song_lyric_offset_ms ——
+    # 那一份跟 current_song 同一則訊息抵達）。
     lyrics = storage.get_song_lyrics(song_id)
-    return {"song_id": song_id, "lyrics": lyrics}
+    return {"song_id": song_id, "lyrics": lyrics,
+            "offset_ms": lyric_offsets.get(song_id)}
+
+
+# --- 每首歌的字幕偏移 ---
+#
+# 「這首歌的 LRC 偏差」與「這台裝置的延遲」是兩個數字（見 lyric_offsets.py）：
+# 這一區只管前者。後者留在舞台那台的 localStorage 與音訊設定面板，
+# 並以唯讀的姿態出現在共享狀態的 `lyric_offset_ms` 上（讓點歌台印得出來）。
+#
+# 這幾條**不鎖**（access_policy 的 OPEN 表）：字幕對不上時，包廂裡的人必須
+# 能當場修好那一首，而它只影響一首歌的顯示、隨時可以歸零。
+
+
+@app.get("/api/songs/{song_id}/lyric-offset")
+async def get_song_lyric_offset(song_id: str):
+    """這首歌的字幕偏移。沒校正過回 0，並附上 entry=null 讓前端分得出「沒調過」。"""
+    return {"song_id": song_id, "offset_ms": lyric_offsets.get(song_id),
+            "entry": lyric_offsets.entry(song_id), "max_offset_ms": MAX_OFFSET_MS}
+
+
+@app.post("/api/songs/{song_id}/lyric-offset")
+async def set_song_lyric_offset(song_id: str, payload: Dict[str, Any] = Body(...)):
+    """
+    校正這首歌的字幕偏移（毫秒，正值＝字幕延後）。越界夾回 ±2000，不回 500。
+
+    寫完廣播一次完整狀態，包廂裡每一支手機與舞台同一刻換值 —— 五個人看著
+    同一面螢幕，偏移只有一個版本。
+    """
+    applied = lyric_offsets.set(song_id, payload.get("offset_ms"))
+    await queue_manager.broadcast_state()
+    return {"status": "success", "song_id": song_id, "offset_ms": applied}
+
+
+@app.delete("/api/songs/{song_id}/lyric-offset")
+async def clear_song_lyric_offset(song_id: str):
+    """把這首歌的字幕偏移歸零（回到「沒有校正過」）。"""
+    lyric_offsets.clear(song_id)
+    await queue_manager.broadcast_state()
+    return {"status": "success", "song_id": song_id, "offset_ms": 0}
+
+
+@app.get("/api/lyric-offsets")
+async def list_lyric_offsets():
+    """校正過的歌一覽（快取管理頁與「升級成本機基準」的確認框要用）。"""
+    return {"offsets": lyric_offsets.all(), "count": lyric_offsets.count(),
+            "max_offset_ms": MAX_OFFSET_MS}
+
+
+@app.post("/api/lyric-offsets/rebase")
+async def rebase_lyric_offsets(payload: Dict[str, Any] = Body(...)):
+    """
+    「把這首歌的偏移升級成本機基準」的另一半：所有已校正的歌各減掉 `delta_ms`。
+
+    裝置延遲 +X 之後，每一首已經校正過的歌都會多出 X 的誤差；不一起減掉的話
+    會冒出一批「昨天好好的、今天突然歪了」的歌，而那是最難查的故障。
+    裝置那一半是舞台自己寫進 localStorage 的，伺服器只負責這一半。
+    """
+    result = lyric_offsets.rebase(payload.get("delta_ms"))
+    await queue_manager.broadcast_state()
+    return {"status": "success", **result, "count": lyric_offsets.count()}
 
 @app.get("/api/songs/{song_id}/pitch")
 async def get_pitch(song_id: str):

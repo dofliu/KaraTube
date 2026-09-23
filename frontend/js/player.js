@@ -81,6 +81,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const inputDeviceSelect = document.getElementById("inputDeviceSelect");
   const outputDeviceSelect = document.getElementById("outputDeviceSelect");
   const outputHint = document.getElementById("outputHint");
+  // 本機延遲補償（音訊面板裡那一列）與「升級成本機基準」的按鈕
+  const deviceOffsetValue = document.getElementById("deviceOffsetValue");
+  const deviceOffsetHint = document.getElementById("deviceOffsetHint");
+  const deviceOffsetDown = document.getElementById("deviceOffsetDown");
+  const deviceOffsetUp = document.getElementById("deviceOffsetUp");
+  const deviceOffsetReset = document.getElementById("deviceOffsetReset");
+  const promoteOffsetBtn = document.getElementById("promoteOffsetBtn");
   const micMeterFill = document.getElementById("micMeterFill");
   const micMeterText = document.getElementById("micMeterText");
   const micAgcBadge = document.getElementById("micAgcBadge");
@@ -158,13 +165,42 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastTimeBroadcast = 0;
   let isAudioUnlocked = false;
 
-  // 字幕微調（毫秒，正值 = 字幕延後）。這台機器的喇叭延遲是固定的，
-  // 所以記在 localStorage，下次開機直接沿用。
-  let lyricOffsetMs = 0;
+  // 字幕微調拆成**兩個數字**（見 frontend/js/lyric-sync.js 檔頭）：
+  //
+  //   deviceOffsetMs —— 這台機器的喇叭延遲（藍牙、HDMI、外接混音器）。
+  //     每一首歌都一樣，所以記在 localStorage、只有這台裝置自己改得動（S 面板）。
+  //   songOffsetMs   —— 正在唱的這一首歌的 LRC 偏差。跟著 song_id 存在伺服器，
+  //     隨 current_song 一起從 STATE_UPDATE 來，換歌時一定重設。
+  //
+  // 合起來才是舊的那個 lyricOffsetMs。拆開的理由很具體：以前為了某一首爛 LRC
+  // 調的 +300ms 會留在機器上，下一首歌反而多錯 300ms，而且沒有任何畫面說得出
+  // 「上一首的修正還套著」。
+  let deviceOffsetMs = 0;
+  // 這台裝置有沒有自己的意見。有的話，伺服器上那份**永遠不准覆蓋它** ——
+  // 共享狀態裡的 lyric_offset_ms 只活在記憶體（QueueManager 的欄位），伺服器一重開
+  // 就是 0；沒有這道守門的話，重開伺服器之後每一台舞台都會被那個 0 洗掉自己的
+  // 喇叭延遲補償，然後解鎖時再把 0 推回去 —— 一次靜悄悄的全機歸零。
+  let hasLocalDeviceOffset = false;
   try {
     const saved = parseInt(localStorage.getItem(OFFSET_STORAGE_KEY), 10);
-    if (!Number.isNaN(saved)) lyricOffsetMs = Math.max(-2000, Math.min(2000, saved));
+    if (!Number.isNaN(saved)) {
+      deviceOffsetMs = Math.max(-2000, Math.min(2000, saved));
+      hasLocalDeviceOffset = true;
+    }
   } catch (e) { /* 無痕模式沒有 localStorage，忽略 */ }
+  let songOffsetMs = 0;
+  // 「連續同方向」偵測用的樣本：`{songId, ms}`，**一首歌只佔一格**（同一首的
+  // 後續微調是在修飾同一個判斷，各記一筆會讓一首歌投好幾票；而且只記第一下的話
+  // 拿到的是「按了一次 +50」而不是他最後停在的 +300）。只存在記憶體，重整就忘。
+  const songAdjustments = [];
+
+  /** 記下「這首歌最後被調到多少」。同一首更新原本那一格，不排到最後面。 */
+  function recordSongAdjustment(songId, ms) {
+    const found = songAdjustments.find(a => a.songId === songId);
+    if (found) { found.ms = ms; return; }
+    songAdjustments.push({ songId, ms });
+    if (songAdjustments.length > 12) songAdjustments.shift();
+  }
 
   let showPitch = true;
   try {
@@ -268,12 +304,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     isAudioUnlocked = true;
     outputLatency = window.audioEngine.getOutputLatency();
-    console.log(`[KaraTube] 輸出延遲 ${(outputLatency * 1000).toFixed(0)}ms，字幕微調 ${lyricOffsetMs}ms`);
+    console.log(`[KaraTube] 輸出延遲 ${(outputLatency * 1000).toFixed(0)}ms，本機字幕補償 ${deviceOffsetMs}ms`);
     if (audioPromptOverlay) {
       audioPromptOverlay.classList.add("hidden");
     }
-    // 把本機記住的微調值推回共享狀態，讓點歌台的滑桿顯示一致
-    window.api.send("CONTROL", { data: { lyric_offset_ms: lyricOffsetMs, show_pitch: showPitch } });
+    // 把本機的**裝置延遲**推回共享狀態，讓點歌台印得出「舞台裝置延遲 +80ms」。
+    // 只推這一個數字：每首歌的偏移存在伺服器上，舞台推自己的記憶只會蓋掉它。
+    window.api.send("CONTROL", { data: { lyric_offset_ms: deviceOffsetMs, show_pitch: showPitch } });
     await refreshAudioDevices();
     // 解鎖前點歌台就已經打開對唱的話，現在才輪得到第二支麥克風
     if (duetEnabled && !duetActive) await startDuetAudio();
@@ -1415,22 +1452,122 @@ document.addEventListener("DOMContentLoaded", () => {
                                 Math.max(1000, Number(ms) || 2600));
   }
 
-  function showSyncToast() {
-    const sign = lyricOffsetMs > 0 ? "+" : "";
-    const desc = lyricOffsetMs === 0 ? "自動補償" : (lyricOffsetMs > 0 ? "字幕延後" : "字幕提前");
-    showToast(
-      `🎬 字幕同步 ${sign}${lyricOffsetMs} ms（${desc}）` +
-      `<span class="sync-hint">← → 調整 50ms ・ Shift+← → 微調 10ms ・ 0 歸零 ・ P 開關音準線 ` +
-      `・ D 對唱模式 ・ 自動補償 ${(outputLatency * 1000).toFixed(0)}ms</span>`);
+  /**
+   * 字幕同步的 toast。第一行只講**剛剛被改動的那個數字**（大字），
+   * 另一個退到第二行的小灰字 —— 按一下就看到哪個數字在動，toast 本身就是教學。
+   * 文案在 lyric-sync.js（純邏輯、有測試），這裡只負責畫。
+   */
+  function showSyncToast(changed = "song") {
+    const lines = window.LyricSync.syncToastLines({
+      songMs: songOffsetMs, deviceMs: deviceOffsetMs,
+      autoMs: Math.round(outputLatency * 1000), changed,
+      hasSong: !!currentSongId,
+      songTitle: (currentSongMeta && currentSongMeta.title) ? "" : "",
+    });
+    const suggestion = changed === "song"
+      ? window.LyricSync.baselineSuggestion(songAdjustments.map(a => a.ms)) : null;
+    const hint = window.LyricSync.baselineHint(suggestion);
+    showToast(`${lines.main}<span class="sync-hint">${lines.hint}` +
+              `${hint ? `<br>💡 ${hint}` : ""}</span>`,
+              hint ? 5200 : 2600);
   }
 
-  function setLyricOffset(ms, broadcast = true) {
-    lyricOffsetMs = Math.max(-2000, Math.min(2000, Math.round(ms)));
-    try { localStorage.setItem(OFFSET_STORAGE_KEY, String(lyricOffsetMs)); } catch (e) { }
-    showSyncToast();
+  /**
+   * 這台機器的延遲補償（藍牙喇叭、HDMI 電視）。只寫本機 ——
+   * 它是「這條音訊路徑」的屬性，不是包廂的共識。
+   *
+   * 仍然廣播到共享狀態，但那是**唯讀顯示用**：點歌台要印得出「舞台裝置延遲
+   * +80ms」，否則手機上的人看到字幕晚了卻不知道有這個數字存在。
+   */
+  function setDeviceOffset(ms, broadcast = true) {
+    deviceOffsetMs = window.LyricSync.clampSyncMs(ms);
+    hasLocalDeviceOffset = true;      // 這台機器從此有自己的意見（見宣告處）
+    try { localStorage.setItem(OFFSET_STORAGE_KEY, String(deviceOffsetMs)); } catch (e) { }
+    updateDeviceOffsetUI();
+    showSyncToast("device");
     if (broadcast) {
-      window.api.send("CONTROL", { data: { lyric_offset_ms: lyricOffsetMs } });
+      window.api.send("CONTROL", { data: { lyric_offset_ms: deviceOffsetMs } });
     }
+  }
+
+  /**
+   * 這首歌的字幕偏移。寫伺服器（綁 song_id），所有裝置與下一次演唱都跟著。
+   *
+   * 本地立刻套用、不等 round-trip：調字幕是聽覺回饋的動作，慢半拍就對不準。
+   * 落盤則 debounce —— 連按六下右鍵不該變成六次寫檔＋六次全狀態廣播。
+   */
+  let songOffsetSaveTimer = null;
+  function setSongOffset(ms, { persist = true, toast = true } = {}) {
+    if (!currentSongId) {
+      if (toast) showSyncToast("song");   // 待機時只說明，不偷偷改裝置值
+      return;
+    }
+    const next = window.LyricSync.clampSyncMs(ms);
+    const changed = next !== songOffsetMs;
+    songOffsetMs = next;
+    if (persist && changed) {
+      recordSongAdjustment(currentSongId, next);
+      const songId = currentSongId;      // 抓當下這一首，晚到的寫入不該落到下一首
+      if (songOffsetSaveTimer) clearTimeout(songOffsetSaveTimer);
+      songOffsetSaveTimer = setTimeout(() => {
+        window.api.setSongLyricOffset(songId, songOffsetMs).catch(() => { });
+      }, 400);
+    }
+    if (toast) showSyncToast("song");
+  }
+
+  /** 音訊面板那一列的數字與說明。兩個數字都在這裡講清楚，避免只看到一半。 */
+  function updateDeviceOffsetUI() {
+    if (!deviceOffsetValue) return;
+    const LS = window.LyricSync;
+    deviceOffsetValue.textContent = LS.offsetLabel(deviceOffsetMs);
+    if (deviceOffsetHint) {
+      const auto = Math.round(outputLatency * 1000);
+      deviceOffsetHint.textContent =
+        `瀏覽器已自動補償 ${auto} ms（藍牙與外接混音器量不到，剩下的在這裡補）。` +
+        `這一個數字對每一首歌都一樣；某一首歌自己對不上請在播放時按 ← →。`;
+    }
+    if (promoteOffsetBtn) {
+      // 只有「這首歌真的調過」才給升級按鈕：沒有值可以升級的時候，
+      // 一顆按不下去的按鈕只會讓人以為壞了。
+      const show = !!currentSongId && songOffsetMs !== 0;
+      promoteOffsetBtn.style.display = show ? "block" : "none";
+      if (show) {
+        promoteOffsetBtn.textContent =
+          `⚓ 把這首的 ${LS.offsetLabel(songOffsetMs)} 設成本機基準（L）`;
+      }
+    }
+  }
+
+  /**
+   * 「把這首歌的偏移升級成本機基準」。
+   *
+   * 兩半一起做才會正確：本機 +X、而且伺服器上**所有已校正的歌各 −X**。
+   * 只做前半的話，昨天校好的每一首歌今天都會偏掉 X —— 那是最難查的故障。
+   */
+  async function promoteSongOffsetToDevice() {
+    if (!currentSongId || songOffsetMs === 0) {
+      showToast("這首歌沒有校正過，沒有可以升級的數字" +
+                `<span class="sync-hint">本機基準目前 ${window.LyricSync.offsetLabel(deviceOffsetMs)}</span>`);
+      return;
+    }
+    const delta = songOffsetMs;
+    let tunedCount = 0;
+    try {
+      tunedCount = (await window.api.getLyricOffsets()).count || 0;
+    } catch (e) { /* 問不到就少講一句，不擋這個動作 */ }
+    if (!confirm(window.LyricSync.rebaseConfirmText(
+      { deltaMs: delta, deviceMs: deviceOffsetMs, tunedCount }))) return;
+
+    try {
+      await window.api.rebaseLyricOffsets(delta);
+    } catch (e) {
+      showToast(`升級失敗：${e.message}`);
+      return;
+    }
+    // 伺服器那半做完了（含這一首歸零，廣播會把 songOffsetMs 帶回 0），
+    // 本機這半自己加上去。兩半的總效果對這首歌是 0，對其他歌也是 0。
+    setDeviceOffset(deviceOffsetMs + delta);
   }
 
   // 音準導唱線顯示切換。關掉後 MV 畫面完整露出來。
@@ -1589,21 +1726,56 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  audioSetupBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleAudioSetup(); });
+  if (deviceOffsetDown) {
+    deviceOffsetDown.addEventListener("click", (e) => {
+      e.stopPropagation(); setDeviceOffset(deviceOffsetMs - 10);
+    });
+  }
+  if (deviceOffsetUp) {
+    deviceOffsetUp.addEventListener("click", (e) => {
+      e.stopPropagation(); setDeviceOffset(deviceOffsetMs + 10);
+    });
+  }
+  if (deviceOffsetReset) {
+    deviceOffsetReset.addEventListener("click", (e) => {
+      e.stopPropagation(); setDeviceOffset(0);
+    });
+  }
+  if (promoteOffsetBtn) {
+    promoteOffsetBtn.addEventListener("click", (e) => {
+      e.stopPropagation(); promoteSongOffsetToDevice();
+    });
+  }
+  updateDeviceOffsetUI();
+
+  audioSetupBtn.addEventListener("click", (e) => {
+    e.stopPropagation(); toggleAudioSetup(); updateDeviceOffsetUI();
+  });
   closeAudioSetup.addEventListener("click", (e) => { e.stopPropagation(); toggleAudioSetup(false); });
   audioSetupPanel.addEventListener("click", (e) => e.stopPropagation());
 
   document.addEventListener("keydown", (e) => {
+    // 音訊設定面板裡有 <select> 與數字欄位：那裡取得焦點時的左右鍵是在換裝置，
+    // 不是在調字幕（以前這一段沒有守門，按一下右鍵會同時做兩件事）。
+    const tag = (e.target && e.target.tagName) || "";
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+
     const step = e.shiftKey ? 10 : 50;
+    // ← → 0 調的是**這首歌**（見 lyric-sync.js：失敗模式大聲、有界、可自救）。
+    // 這台機器的延遲補償要按 S 進音訊設定面板改 —— 那個動作的成因是
+    // 「我換了喇叭」，不是「這句字幕慢了」。
     if (e.key === "ArrowLeft") {
       e.preventDefault();
-      setLyricOffset(lyricOffsetMs - step);      // 字幕提前
+      setSongOffset(songOffsetMs - step);       // 字幕提前
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
-      setLyricOffset(lyricOffsetMs + step);      // 字幕延後
+      setSongOffset(songOffsetMs + step);       // 字幕延後
     } else if (e.key === "0") {
       e.preventDefault();
-      setLyricOffset(0);
+      setSongOffset(0);                          // 只歸零這一首，本機基準不動
+    } else if (e.key === "l" || e.key === "L") {
+      e.preventDefault();
+      promoteSongOffsetToDevice();
     } else if (e.key === "p" || e.key === "P") {
       e.preventDefault();
       setShowPitch(!showPitch);
@@ -1786,9 +1958,25 @@ document.addEventListener("DOMContentLoaded", () => {
       applyDuetState(state).catch((e) => console.warn("對唱模式切換失敗:", e));
     }
 
-    // 點歌台（含手機）調整字幕同步時同步套用，但不要再廣播回去造成迴圈
-    if (state.lyric_offset_ms !== undefined && state.lyric_offset_ms !== lyricOffsetMs) {
-      setLyricOffset(state.lyric_offset_ms, false);
+    // 這台機器的延遲補償：**只有在這台裝置還沒有自己的意見時**才採用伺服器上
+    // 那一份（全新的裝置、清過瀏覽器資料的櫃檯機 —— 那是一個起始值，不是命令）。
+    // 已經調過的裝置一律以自己的 localStorage 為準：那個數字是「這條音訊路徑」
+    // 的屬性，別台舞台機的喇叭跟我這台沒有關係。
+    // 也刻意不在這裡寫回 localStorage（只有 setDeviceOffset 會寫），
+    // 否則別人的值會變成我的記憶。
+    const adopted = window.LyricSync.adoptDeviceOffset({
+      serverMs: state.lyric_offset_ms, localMs: deviceOffsetMs,
+      hasLocal: hasLocalDeviceOffset, unlocked: isAudioUnlocked,
+    });
+    if (adopted !== null) {
+      deviceOffsetMs = adopted;
+      updateDeviceOffsetUI();
+    }
+    // 這首歌的字幕偏移：跟 current_song 在同一則訊息裡，所以換歌時不會有
+    // 「新的歌配上一首的偏移」那半秒鐘。值相同就不動（防迴圈同上）。
+    if (state.song_lyric_offset_ms !== undefined
+        && state.song_lyric_offset_ms !== songOffsetMs) {
+      songOffsetMs = window.LyricSync.clampSyncMs(state.song_lyric_offset_ms);
     }
 
     if (state.show_pitch !== undefined) {
@@ -1828,6 +2016,10 @@ document.addEventListener("DOMContentLoaded", () => {
       resetHarmony([]);
       resetGuideDuck();
       resetDuet();
+      // 這首歌的字幕偏移跟著歌走，沒有歌就歸零（本機基準保留）——
+      // 不清的話，下一首在拿到自己的值之前會沿用上一首的，
+      // 那正是這個功能要修掉的 bug。
+      songOffsetMs = 0;
       // 待機畫面一樣走情境背景（商用機的待機情境畫面），只是能量固定在低檔
       ambientStage.clearSong();
     }
@@ -1841,6 +2033,10 @@ document.addEventListener("DOMContentLoaded", () => {
     flushTake();
     currentSongId = song.song_id;
     currentSongMeta = song;
+    // 這首歌的字幕偏移。**同步**設定（在任何 await 之前）：值跟著 current_song
+    // 一起在同一則 STATE_UPDATE 裡到，所以第一幀就是對的；用另一支 API 補抓的話，
+    // 第一句歌詞會在畫面上跳一下。沒有值就是 0，絕不沿用上一首。
+    songOffsetMs = window.LyricSync.clampSyncMs(song.lyric_offset_ms || 0);
     titleEl.textContent = song.title;
     artistEl.textContent = song.artist || "YouTube Music";
     showIntroCard(song);
@@ -2019,9 +2215,21 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // 字幕要對齊的是「現在聽到的聲音」，不是「已經送進音效卡的位置」，
-    // 所以要扣掉輸出延遲；lyricOffsetMs 讓使用者再補場地差異。
-    const displayTime = audioTime - outputLatency - lyricOffsetMs / 1000;
+    // 這裡有**兩條時間軸**，而且它們不一樣：
+    //
+    //   scoreTime —— 「現在從喇叭出來的是哪一刻的聲音」。扣掉輸出延遲與這台
+    //     機器的延遲補償。導唱音符（pitch.json）是從 vocals.mp3 抽的，活在
+    //     音訊時間軸上，所以評分與音準線一律用它。
+    //   lyricTime —— scoreTime 再扣掉「這首歌的 LRC 偏差」。歌詞檔對不對得上
+    //     音訊是那份 LRC 自己的問題，只有字幕該跟著它移動。
+    //
+    // 把 LRC 偏差也減進評分時間，就是把計分視窗整段搬離真實人聲：為某一首歌
+    // 調 +300ms 等於那一首的音準率與 Combo 無聲下降，而畫面上看不出任何異狀。
+    // 算式本身抽在 lyric-sync.js（renderLoop 沒有單元測試，而這一段算錯的後果
+    // 是「那首歌的分數無聲下降」—— 正是最需要被測試釘住的那一種）。
+    const { scoreTime, lyricTime } = window.LyricSync.syncTimes({
+      audioTime, outputLatency, deviceMs: deviceOffsetMs, songMs: songOffsetMs,
+    });
 
     const nowMs = performance.now();
 
@@ -2044,7 +2252,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    karaokeRenderer.update(displayTime);
+    karaokeRenderer.update(lyricTime);
 
     // 評分心跳與畫面分離：音準線隱藏時照樣計分，唱畢結算才公平
     let frame;
@@ -2053,14 +2261,16 @@ document.addEventListener("DOMContentLoaded", () => {
       // 對唱：先量兩支麥克風的電平判定這一幀算誰的，再各自計分
       // （tick 帶 reuseRms，同一幀不會重抓兩次波形）
       const credit = decideDuetCredit(nowMs);
-      frame = pitchEngine.tick(displayTime, { credit: credit.a, reuseRms: true });
-      frameB = pitchEngineB.tick(displayTime, { credit: credit.b, reuseRms: true });
+      // 段落統計的邊界來自歌詞（lyrics.json），所以 sectionTime 走 lyricTime；
+      // 音符比對走 scoreTime。tick 收兩個時間就是為了這件事。
+      frame = pitchEngine.tick(scoreTime, { credit: credit.a, reuseRms: true, sectionTime: lyricTime });
+      frameB = pitchEngineB.tick(scoreTime, { credit: credit.b, reuseRms: true, sectionTime: lyricTime });
       lastMidiA = frame.userMidi;
       lastMidiB = frameB.userMidi;
       updateMicAgcB(frameB.rms, nowMs);
       renderDuetBoard(nowMs);
     } else {
-      frame = pitchEngine.tick(displayTime);
+      frame = pitchEngine.tick(scoreTime, { sectionTime: lyricTime });
     }
 
     // 同一份判定直接餵給自動 ducking，不重新偵測一次音高。
@@ -2079,7 +2289,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // 再疊機器和聲會變成四個聲部混在一起，誰都聽不清楚。
     updateHarmony(frame, nowMs);
     if (showPitch) {
-      pitchEngine.updateAndRender(displayTime,
+      pitchEngine.updateAndRender(scoreTime,
         duetActive ? [{ engine: pitchEngineB, color: DUET_B_COLOR }] : []);
     }
 

@@ -2198,3 +2198,209 @@ def test_stale_token_is_refused_after_restart(staff_lock_clean, tmp_path, monkey
     headers = staff_unlock()
     monkeypatch.setattr(main, "staff_lock", StaffLock(staff_lock_clean.path))
     assert client.delete("/api/rankings", headers=headers).status_code == 403
+
+
+# --- 每首歌的字幕偏移（A）與對齊診斷／重算歌詞（C）---
+#
+# 這一組守的是那條界線：**偏移是「這首歌」的，不是「這台機器」的**。
+# 混在一起的後果很具體 —— 為某一首爛 LRC 調了 +300ms，下一首反而多錯 300ms。
+
+
+@pytest.fixture()
+def lyric_offsets_clean(tmp_path, monkeypatch):
+    """每一條都用自己的偏移檔，不碰開發機上的 cache/lyric_offsets.json。"""
+    from backend.services.lyric_offsets import LyricOffsets
+    store = LyricOffsets(tmp_path / "lyric_offsets.json")
+    monkeypatch.setattr(main, "lyric_offsets", store)
+    monkeypatch.setattr(queue_manager, "lyric_offset_of", store.get)
+    yield store
+
+
+def test_song_offset_defaults_to_zero(lyric_offsets_clean):
+    res = client.get("/api/songs/never_tuned/lyric-offset")
+    assert res.status_code == 200
+    body = res.json()
+    # 「沒校正過」與「校正結果是 0」要分得出來
+    assert body["offset_ms"] == 0 and body["entry"] is None
+
+
+def test_song_offset_set_and_read_back(lyric_offsets_clean):
+    assert client.post("/api/songs/song_a/lyric-offset",
+                       json={"offset_ms": 300}).json()["offset_ms"] == 300
+    assert client.get("/api/songs/song_a/lyric-offset").json()["offset_ms"] == 300
+    # 歌詞那一支也要帶著它（舞台換歌時本來就會抓這支）
+    assert client.get("/api/songs/song_a/lyrics").json()["offset_ms"] == 300
+
+
+def test_song_offset_is_per_song(lyric_offsets_clean):
+    """整個功能的重點：調了 A 不該動到 B。"""
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": 300})
+    assert client.get("/api/songs/song_b/lyric-offset").json()["offset_ms"] == 0
+
+
+def test_song_offset_clamps_instead_of_500(lyric_offsets_clean):
+    assert client.post("/api/songs/song_a/lyric-offset",
+                       json={"offset_ms": 999999}).json()["offset_ms"] == 2000
+    assert client.post("/api/songs/song_a/lyric-offset",
+                       json={"offset_ms": "abc"}).json()["offset_ms"] == 0
+
+
+def test_song_offset_delete(lyric_offsets_clean):
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": 300})
+    assert client.delete("/api/songs/song_a/lyric-offset").status_code == 200
+    assert client.get("/api/songs/song_a/lyric-offset").json()["offset_ms"] == 0
+
+
+def test_song_offset_rides_along_with_current_song(lyric_offsets_clean):
+    """
+    偏移必須跟 current_song 在**同一份狀態**裡，否則舞台換歌會有
+    「新的歌配上一首的偏移」那半秒鐘。
+    """
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": 250})
+    queue_manager.current_song = {"song_id": "song_a", "title": "測試"}
+    try:
+        state = queue_manager.get_full_state()
+        assert state["song_lyric_offset_ms"] == 250
+        # 裝置延遲是另一個數字，不受影響
+        assert state["lyric_offset_ms"] == queue_manager.lyric_offset_ms
+        queue_manager.current_song = {"song_id": "song_b", "title": "另一首"}
+        assert queue_manager.get_full_state()["song_lyric_offset_ms"] == 0
+    finally:
+        queue_manager.current_song = None
+    assert queue_manager.get_full_state()["song_lyric_offset_ms"] == 0
+
+
+def test_lyric_offsets_list_and_rebase(lyric_offsets_clean):
+    client.post("/api/songs/a/lyric-offset", json={"offset_ms": 300})
+    client.post("/api/songs/b/lyric-offset", json={"offset_ms": 200})
+    listing = client.get("/api/lyric-offsets").json()
+    assert listing["count"] == 2 and listing["offsets"]["a"] == 300
+
+    # 升級成本機基準：裝置 +200 之後，每一首已校正的歌都要跟著 −200，
+    # 否則會冒出一批「昨天好好的、今天突然歪了」的歌
+    res = client.post("/api/lyric-offsets/rebase", json={"delta_ms": 200})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["changed"] == 1 and body["cleared"] == 1
+    assert client.get("/api/songs/a/lyric-offset").json()["offset_ms"] == 100
+    assert client.get("/api/songs/b/lyric-offset").json()["offset_ms"] == 0
+
+
+def test_song_offset_is_never_behind_the_staff_lock(staff_lock_clean, lyric_offsets_clean):
+    """字幕歪了不能變成「要先找櫃檯」—— 這是唱歌的事。"""
+    client.post("/api/staff-lock/pin", json={"pin": "1234"})
+    assert client.post("/api/songs/song_a/lyric-offset",
+                       json={"offset_ms": 120}).status_code == 200
+    assert client.delete("/api/songs/song_a/lyric-offset").status_code == 200
+    assert client.post("/api/lyric-offsets/rebase", json={"delta_ms": 50}).status_code == 200
+
+
+# --- 對齊診斷與重算歌詞 ---
+
+
+@pytest.fixture()
+def fake_song_with_alignment():
+    """有 alignment.json 的假歌（快取分頁要畫徽章）。"""
+    song_id = "test_align_song_01"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(
+        json.dumps({"id": song_id, "title": "對齊測試歌", "artist": "測試"}), encoding="utf-8")
+    (song_dir / "instrumental.mp3").write_bytes(b"x" * 100)
+    (song_dir / "vocals.mp3").write_bytes(b"x" * 100)
+    (song_dir / "lyrics.json").write_text("[]", encoding="utf-8")
+    (song_dir / "alignment.json").write_text(
+        json.dumps({"source": "lrc", "scale": 0.996, "offset": 0.4,
+                    "score": 0.577, "recall": 0.967, "lines": 47,
+                    "track": "稻香 / 周杰倫"}), encoding="utf-8")
+    yield song_id
+    storage.delete_song(song_id)
+
+
+def test_cache_overview_carries_alignment(fake_song_with_alignment, lyric_offsets_clean):
+    entry = next(s for s in client.get("/api/cache").json()["songs"]
+                 if s["song_id"] == fake_song_with_alignment)
+    assert entry["alignment"]["source"] == "lrc"
+    assert entry["alignment"]["score"] == 0.577
+    assert entry["lyric_offset_ms"] == 0
+
+
+def test_cache_overview_alignment_is_none_for_old_songs(fake_cached_song):
+    """功能上線前處理的舊歌沒有這個檔 —— 要回 None，不能假裝是 0 分。"""
+    entry = next(s for s in client.get("/api/cache").json()["songs"]
+                 if s["song_id"] == fake_cached_song)
+    assert entry["alignment"] is None
+
+
+def test_cache_overview_counts_tuned_songs(fake_song_with_alignment, lyric_offsets_clean):
+    client.post(f"/api/songs/{fake_song_with_alignment}/lyric-offset", json={"offset_ms": 180})
+    data = client.get("/api/cache").json()
+    entry = next(s for s in data["songs"] if s["song_id"] == fake_song_with_alignment)
+    assert entry["lyric_offset_ms"] == 180
+    assert data["tuned_count"] >= 1
+
+
+def test_rebuild_lyrics_refuses_song_in_use(fake_song_with_alignment):
+    """重算會就地覆寫 lyrics.json，正在唱的那一首不能動。"""
+    queue_manager.queue.append({"queue_id": "test-q-align", "status": "READY",
+                                "song_id": fake_song_with_alignment})
+    try:
+        res = client.post(f"/api/cache/{fake_song_with_alignment}/rebuild-lyrics")
+        assert res.status_code == 409
+    finally:
+        queue_manager.queue[:] = [i for i in queue_manager.queue
+                                  if i.get("queue_id") != "test-q-align"]
+
+
+def test_rebuild_lyrics_404_for_unknown_song():
+    assert client.post("/api/cache/no_such_song/rebuild-lyrics").status_code == 404
+
+
+def test_rebuild_lyrics_needs_vocals(fake_cached_song):
+    """缺人聲軌只能走「重新處理」—— 要講出這句話，不是回一個 500。"""
+    res = client.post(f"/api/cache/{fake_cached_song}/rebuild-lyrics")
+    assert res.status_code == 409
+    assert "重新處理" in res.json()["detail"]
+
+
+def test_rebuild_lyrics_runs_and_clears_the_manual_offset(fake_song_with_alignment,
+                                                          lyric_offsets_clean, monkeypatch):
+    """
+    重算成功要做三件事：寫新歌詞、回報新舊分數、**清掉那首歌的人工偏移**
+    （那個數字是為舊歌詞調的，歌詞換了它最可能變錯）。
+    """
+    song_id = fake_song_with_alignment
+    client.post(f"/api/songs/{song_id}/lyric-offset", json={"offset_ms": 300})
+
+    def fake_align(voc_path, title, artist, output_json=None):
+        # 假 aligner：CI 不裝 whisper，真的跑會抓網路也會載模型
+        assert output_json is not None, "忘了傳 output_json 就不會寫 alignment.json"
+        output_json.write_text(json.dumps([{"start": 0, "end": 1, "text": "新歌詞"}]),
+                               encoding="utf-8")
+        (output_json.parent / "alignment.json").write_text(
+            json.dumps({"source": "lrc", "scale": 1.0, "offset": 0.0,
+                        "score": 0.812, "recall": 0.98, "lines": 1}), encoding="utf-8")
+        return [{"start": 0, "end": 1, "text": "新歌詞"}]
+
+    monkeypatch.setattr(main.song_processor.lyrics_aligner, "align", fake_align)
+    res = client.post(f"/api/cache/{song_id}/rebuild-lyrics")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["lines"] == 1
+    assert body["before"]["score"] == 0.577          # 重算前後都要講，不然無從判斷有沒有變好
+    assert body["alignment"]["score"] == 0.812
+    assert body["cleared_offset_ms"] == 300
+    assert client.get(f"/api/songs/{song_id}/lyric-offset").json()["offset_ms"] == 0
+    assert storage.get_song_alignment(song_id)["score"] == 0.812
+
+
+def test_rebuild_lyrics_failure_is_503_not_500(fake_song_with_alignment, monkeypatch):
+    """抓不到 LRC、記憶體不足都是暫時性的：等一下再按同一個網址就會成功。"""
+    def boom(*args, **kwargs):
+        raise RuntimeError("LRC 來源連不上")
+
+    monkeypatch.setattr(main.song_processor.lyrics_aligner, "align", boom)
+    res = client.post(f"/api/cache/{fake_song_with_alignment}/rebuild-lyrics")
+    assert res.status_code == 503
+    # 失敗不該動到原本的診斷
+    assert storage.get_song_alignment(fake_song_with_alignment)["score"] == 0.577

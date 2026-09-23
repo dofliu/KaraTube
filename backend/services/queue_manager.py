@@ -39,7 +39,8 @@ class QueueManager:
                  song_history: Optional[SongHistory] = None, settings: Optional[Any] = None,
                  room: Optional[Any] = None, library: Optional[Any] = None,
                  favorites: Optional[Any] = None,
-                 number_of: Optional[Callable] = None):
+                 number_of: Optional[Callable] = None,
+                 lyric_offset_of: Optional[Callable] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
@@ -55,6 +56,12 @@ class QueueManager:
         # 佇列與片頭卡要印得出號碼，包廂裡的人才學得會「下次直接打這組」——
         # 一個沒有人看得到的號碼，沒有人會記得。
         self.number_of = number_of
+        # 這首歌的字幕偏移查詢（可為 None）：`song_id -> 毫秒`。
+        # 傳函式而不是傳整個儲存物件，跟 number_of 同一個理由 —— 佇列管的是
+        # 誰排在誰前面，不該連「偏移存在哪個檔案」都認識。
+        # 每次廣播都重查一次（不是寫死在 queue item 上）：有人在唱到一半校正了
+        # 字幕，那個新值必須在同一則 STATE_UPDATE 裡到每一台裝置上。
+        self.lyric_offset_of = lyric_offset_of
 
         self.current_song: Optional[Dict[str, Any]] = None
         self.queue: List[Dict[str, Any]] = []
@@ -146,8 +153,12 @@ class QueueManager:
             await self.broadcast_cb(payload)
 
     def get_full_state(self) -> Dict[str, Any]:
+        song_offset = self.current_song_lyric_offset()
         return {
-            "current_song": self.current_song,
+            # 這首歌的字幕偏移**掛在歌上**（不只放在外層）：舞台在 loadAndPlaySong
+            # 的第一行就要拿得到它，才不會有「新的歌配上一首的偏移」那半秒鐘。
+            "current_song": ({**self.current_song, "lyric_offset_ms": song_offset}
+                             if self.current_song else None),
             "queue": self.queue,
             "history": self.history[-10:],
             "is_playing": self.is_playing,
@@ -167,7 +178,13 @@ class QueueManager:
             "duet_name_a": self.duet_name_a,
             "duet_name_b": self.duet_name_b,
             "sing_mode": self.sing_mode,
+            # 這台舞台機的延遲補償（藍牙喇叭、HDMI 電視）。舞台自己推上來，
+            # 點歌台只是唯讀顯示 —— 手機聽不到舞台的喇叭，不該給它控制權。
             "lyric_offset_ms": self.lyric_offset_ms,
+            # 正在唱的這一首自己的字幕偏移（人用耳朵校出來的那個數字）。
+            # 跟 current_song 在**同一則訊息**裡抵達，所以舞台換歌時不會有
+            # 「新的歌配上一首的偏移」那半秒鐘（這正是這個功能要修的 bug 本體）。
+            "song_lyric_offset_ms": song_offset,
             "show_pitch": self.show_pitch,
             "loop_enabled": self.loop_enabled,
             "loop_start": self.loop_start,
@@ -190,6 +207,21 @@ class QueueManager:
             # 畫面會出現「歌換了、標記還停在上一首」的半秒鐘。
             "autofill": self.autofill_state(),
         }
+
+    def current_song_lyric_offset(self) -> int:
+        """
+        正在唱的這一首歌的字幕偏移（毫秒）。沒歌、沒接儲存服務都是 0。
+
+        每次廣播現算，不快取在 queue item 上 —— 唱到一半有人按方向鍵校正時，
+        那個新值要在下一則 STATE_UPDATE 就到每一台裝置上。
+        """
+        if not self.current_song or not self.lyric_offset_of:
+            return 0
+        try:
+            return int(self.lyric_offset_of(self.current_song.get("song_id", "")) or 0)
+        except Exception:
+            # 偏移拿不到不該讓整份狀態廣播失敗：最糟就是這一首沒有校正效果。
+            return 0
 
     # --- 包廂計時 ---
 

@@ -196,8 +196,17 @@ class PitchEngine {
    *            從這支麥克風漏進來，記進來就等於幫他加分）。音高照樣偵測 ——
    *            串音判定本身就需要知道這支麥克風收到的音高是什麼。
    *   reuseRms true = 電平已經由外面量過了，不要重抓一次波形。
+   *   sectionTime 段落統計要用的時間（預設同 currentTime）。
+   *
+   * **為什麼有兩個時間**：導唱音符（pitch.json）是從人聲軌抽的，活在**音訊**
+   * 時間軸上；段落邊界是從歌詞（lyrics.json）算出來的，活在**歌詞**時間軸上。
+   * 這兩條在「這首歌的字幕偏移」不為零時會差那個偏移量，拿同一個時間去查
+   * 就會有一邊是錯的：音符用錯時間＝評分整個歪掉（而且畫面上看不出來），
+   * 段落用錯時間＝「哪一段唱得最好」指到隔壁那一段。
    */
   tick(currentTime, options = {}) {
+    const sectionTime = options.sectionTime === undefined
+      ? currentTime : options.sectionTime;
     const credit = options.credit === undefined ? true : !!options.credit;
     const userMidi = this.detectUserPitch(currentTime, !!options.reuseRms);
     this.lastUserMidi = credit ? userMidi : 0;
@@ -238,7 +247,7 @@ class PitchEngine {
 
     // 同一幀的判定再依曲式分段累計一次，唱畢才知道哪一段唱得好、哪一段要練
     // （判定為串音的幀不進段落統計，否則段落命中率的分母會混進別人唱的時間）
-    if (credit) this.sectionScorer.count(currentTime, frame);
+    if (credit) this.sectionScorer.count(sectionTime, frame);
 
     return frame;
   }

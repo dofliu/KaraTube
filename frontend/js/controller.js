@@ -68,6 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const closeMixerBtn = document.getElementById("closeMixerBtn");
   const lyricOffsetSlider = document.getElementById("lyricOffsetSlider");
   const lyricOffsetText = document.getElementById("lyricOffsetText");
+  const lyricOffsetHint = document.getElementById("lyricOffsetHint");
   const musicVolumeSlider = document.getElementById("musicVolumeSlider");
   const musicVolumeText = document.getElementById("musicVolumeText");
   const pitchToggleBtn = document.getElementById("pitchToggleBtn");
@@ -696,11 +697,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (active && active.dataset.lib === "recordings") loadRecordings();
   });
 
-  // 快取管理：看每首歌吃多少磁碟、刪除不唱的歌、重新處理壞掉的歌
+  // 快取管理：看每首歌吃多少磁碟、刪除不唱的歌、重新處理壞掉的歌、重算歌詞。
+  // 每一列的原始資料留一份在這裡：inline onclick 只傳得了字串，而重算的
+  // confirm 要講出這首歌現在的對齊狀況與手動校正值（把它們塞進 onclick 參數
+  // 會在歌名含引號時把整串 HTML 打壞）。
+  let cacheEntriesById = {};
+
   async function loadCacheManager() {
     try {
       const res = await window.api.getCacheInfo();
       const list = res.songs || [];
+      cacheEntriesById = {};
+      list.forEach(s => { cacheEntriesById[s.song_id] = s; });
       libSummary.textContent = `${res.song_count || 0} 首 ・ 佔用 ${formatBytes(res.total_bytes || 0)} ・ 磁碟剩餘 ${formatBytes(res.disk_free_bytes || 0)}`;
       if (list.length === 0) {
         searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-muted);">快取是空的<br>點過的歌會存在這裡，第二次點就能秒播！</div>`;
@@ -709,29 +717,47 @@ document.addEventListener("DOMContentLoaded", () => {
       const brokenNote = res.incomplete_count > 0
         ? `<div style="grid-column: 1/-1; font-size: 12px; color: var(--accent-yellow);">⚠️ 有 ${res.incomplete_count} 首不完整（處理中斷或失敗的殘留），可直接刪除或重新處理。</div>`
         : "";
+      const tunedNote = res.tuned_count > 0
+        ? `<div style="grid-column: 1/-1; font-size: 12px; color: var(--text-muted);">🎬 有 ${res.tuned_count} 首歌被人工校正過字幕（重算歌詞會清掉那一首的校正值）。</div>`
+        : "";
       const rowsHtml = list.map(s => {
         const badge = s.complete
           ? `<span class="cache-badge ok">完整</span>`
-          : `<span class="cache-badge broken" title="缺少：${(s.missing_files || []).join(", ")}">不完整</span>`;
+          : `<span class="cache-badge broken" title="缺少：${escapeHtml((s.missing_files || []).join("、"))}">不完整</span>`;
+        // 對齊品質徽章。文案與分級規則在 alignment-view.js（純邏輯、有測試）——
+        // score 沒有對人校準過，直接印 0.577 只會引來「這樣算好還是壞」。
+        const align = window.AlignmentView.alignmentBadge(s.alignment);
+        const alignBadge = `<span class="cache-badge align-${align.tone}" title="${escapeHtml(align.title)}">${align.label}</span>`;
+        // 這首歌被人工校正過就標出來：它是重算歌詞之後最可能變錯的東西
+        const tuneBadge = s.lyric_offset_ms
+          ? `<span class="cache-badge tuned" title="這首歌的字幕被人工校正過（唱的時候用 ← → 或點歌台滑桿調的）">🎬 ${s.lyric_offset_ms > 0 ? "+" : "−"}${Math.abs(s.lyric_offset_ms)}ms</span>`
+          : "";
         const thumb = s.thumbnail || `https://i.ytimg.com/vi/${s.song_id}/mqdefault.jpg`;
         const playBtn = s.complete
           ? `<button class="btn btn-primary" onclick="window.addSong('${s.song_id}', '${escapeAttr(s.title)}', '${escapeAttr(s.artist)}', '${thumb}', false)">🎤 點歌</button>`
           : "";
+        // 重算歌詞：便宜的那一條路排在「重新處理」前面（成本差一個數量級，
+        // 而店員只會記得上次按過哪一顆）。缺人聲軌就不給這顆鍵，並說出理由。
+        const rebuild = window.AlignmentView.canRebuildLyrics(s);
+        const rebuildBtn = rebuild.can
+          ? `<button class="btn btn-secondary" onclick="window.rebuildSongLyrics('${s.song_id}', '${escapeAttr(s.title)}')" title="${escapeHtml(align.rebuildHint || "只用已存在的人聲軌重新對齊字幕，不重新下載、不跑 AI 分離")}">🔄 重算歌詞</button>`
+          : `<button class="btn btn-secondary" disabled style="opacity:0.45" title="${escapeHtml(rebuild.reason)}">🔄 重算歌詞</button>`;
         return `
           <div class="cache-row">
             <img class="cache-row-thumb" src="${thumb}" loading="lazy" onerror="this.style.visibility='hidden'">
             <div class="cache-row-info">
-              <div class="cache-row-title" title="${s.title || s.song_id}">${s.title || s.song_id}</div>
-              <div class="cache-row-meta">${s.artist ? s.artist + " ・ " : ""}${formatBytes(s.size_bytes)} ${badge}</div>
+              <div class="cache-row-title" title="${escapeHtml(s.title || s.song_id)}">${escapeHtml(s.title || s.song_id)}</div>
+              <div class="cache-row-meta">${s.artist ? escapeHtml(s.artist) + " ・ " : ""}${formatBytes(s.size_bytes)} ${badge} ${alignBadge} ${tuneBadge}</div>
             </div>
             <div class="cache-row-actions">
               ${playBtn}
-              <button class="btn btn-secondary" onclick="window.reprocessSong('${s.song_id}', '${escapeAttr(s.title)}')" title="砍掉快取重新下載、分離、對字幕">🔁 重新處理</button>
+              ${rebuildBtn}
+              <button class="btn btn-secondary" onclick="window.reprocessSong('${s.song_id}', '${escapeAttr(s.title)}')" title="砍掉快取重新下載、分離、對字幕（需要幾分鐘）">🔁 重新處理</button>
               <button class="btn btn-secondary cache-del-btn" onclick="window.deleteCachedSong('${s.song_id}', '${escapeAttr(s.title)}')" title="刪除快取釋放磁碟空間">🗑️</button>
             </div>
           </div>`;
       }).join("");
-      searchResults.innerHTML = `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">🗂️ 快取管理</div>` + brokenNote + rowsHtml;
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">🗂️ 快取管理</div>` + brokenNote + tunedNote + rowsHtml;
     } catch (e) {
       searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">快取清單讀取失敗</div>`;
     }
@@ -745,6 +771,30 @@ document.addEventListener("DOMContentLoaded", () => {
       loadCacheManager();
     } catch (e) {
       alert("刪除失敗: " + e.message);
+    }
+  };
+
+  /**
+   * 只重算這首歌的歌詞時間軸。
+   *
+   * 跟「重新處理」刻意分成兩顆鍵：這一顆不刪任何檔案、不重新下載，通常十幾秒。
+   * confirm 要講滿四件事（成本、何時生效、跨場次趨勢會歸零、手動校正會被清掉），
+   * 因為這四件事使用者都問過。文案在 alignment-view.js。
+   */
+  window.rebuildSongLyrics = async (id, title) => {
+    const row = (cacheEntriesById[id] || {});
+    if (!confirm(window.AlignmentView.rebuildConfirmText({
+      title, songId: id, offsetMs: row.lyric_offset_ms || 0, alignment: row.alignment,
+    }))) return;
+    showNotification("🔄 重算歌詞中…（抓歌詞、重新對齊，通常十幾秒）", 4000);
+    try {
+      const res = await window.api.rebuildLyrics(id);
+      showNotification(window.AlignmentView.rebuildResultMessage(
+        res.before, res.alignment, res.cleared_offset_ms), 6000);
+      loadCacheManager();
+    } catch (e) {
+      alert("重算歌詞失敗: " + e.message);
+      loadCacheManager();
     }
   };
 
@@ -2051,6 +2101,10 @@ document.addEventListener("DOMContentLoaded", () => {
       currentSongId = songId;
       lastKnownTime = 0;
       lastKnownDuration = 0;
+      // 新歌的字幕校正值跟 current_song 在同一則訊息裡，所以在這裡就換過去 ——
+      // 等下面那個「值不同才寫」的守衛處理的話，滑桿會有一瞬間停在上一首的值。
+      songOffsetMs = Number(state.song_lyric_offset_ms) || 0;
+      lyricOffsetSlider.value = songOffsetMs;
       onCurrentSongChanged();
     }
 
@@ -2067,11 +2121,16 @@ document.addEventListener("DOMContentLoaded", () => {
       updateVocalLabel(state.vocal_volume);
     }
 
-    // 舞台端用鍵盤調過字幕同步時，這裡的滑桿要跟著走
-    if (state.lyric_offset_ms !== undefined &&
-        parseInt(lyricOffsetSlider.value, 10) !== state.lyric_offset_ms) {
-      lyricOffsetSlider.value = state.lyric_offset_ms;
-      updateLyricOffsetLabel(state.lyric_offset_ms);
+    // 舞台的裝置延遲（唯讀，只用來在提示裡講出來）
+    if (state.lyric_offset_ms !== undefined) deviceOffsetMs = state.lyric_offset_ms;
+    // 這首歌的偏移：舞台用鍵盤調過、或別支手機調過，這裡的滑桿都要跟著走。
+    // 注意 disabled 的滑桿也要更新 —— 換歌時值必須換過去（見下面的換歌分支）。
+    if (state.song_lyric_offset_ms !== undefined &&
+        document.activeElement !== lyricOffsetSlider &&
+        parseInt(lyricOffsetSlider.value, 10) !== state.song_lyric_offset_ms) {
+      songOffsetMs = state.song_lyric_offset_ms;
+      lyricOffsetSlider.value = songOffsetMs;
+      updateLyricOffsetLabel(songOffsetMs);
     }
 
     if (state.music_volume !== undefined &&
@@ -2400,17 +2459,45 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target === mixerModal) mixerModal.classList.remove("open");
   });
 
-  // 字幕同步微調。正值＝字幕延後，用來補喇叭/藍牙的輸出延遲與該首歌的殘差。
+  // 字幕同步。**這一條調的是正在唱的那一首**（存伺服器、綁 song_id）；
+  // 舞台那台機器的喇叭延遲是另一個數字，在舞台按 S 調，這裡只唯讀顯示。
+  // 兩者混在一起的後果見 frontend/js/lyric-sync.js 檔頭。
+  let deviceOffsetMs = 0;      // 舞台推上來的裝置延遲（唯讀）
+  let songOffsetMs = 0;        // 正在唱這一首的偏移
+
   function updateLyricOffsetLabel(ms) {
     const sign = ms > 0 ? "+" : "";
     lyricOffsetText.textContent = `${sign}${ms} ms`;
     lyricOffsetText.style.color = ms === 0 ? "var(--accent-cyan)" : "var(--accent-yellow)";
+    if (lyricOffsetHint) {
+      lyricOffsetHint.textContent = currentSongId
+        ? `${window.LyricSync.deckOffsetSummary({ songMs: ms, deviceMs: deviceOffsetMs })}` +
+          "　・只影響這一首，下次唱同一首還在"
+        : "沒有歌在唱 —— 字幕校正是綁在歌上的，點一首歌之後才調得動";
+    }
+    // 沒有歌就沒有東西可以對齊：滑桿關起來，而不是讓它落到一首不存在的歌上
+    lyricOffsetSlider.disabled = !currentSongId;
+    lyricOffsetSlider.style.opacity = currentSongId ? "1" : "0.45";
   }
 
+  // 拖曳中只動畫面（每一格都寫一次伺服器＝拖一次滑桿就是幾十次寫檔＋廣播），
+  // 放開才落地。舞台端的 ← → 是同一個道理，那邊用 400ms debounce。
   lyricOffsetSlider.addEventListener("input", (e) => {
+    songOffsetMs = parseInt(e.target.value, 10);
+    updateLyricOffsetLabel(songOffsetMs);
+  });
+
+  // 開機先畫一次：沒有歌在唱時那條滑桿要是關著的（而且說得出為什麼）。
+  // 不做這一次的話，STATE_UPDATE 只在「歌換了」時才會走到，剛開機的畫面
+  // 會出現一條看起來可以拖、拖了卻沒有任何事發生的滑桿。
+  updateLyricOffsetLabel(0);
+
+  lyricOffsetSlider.addEventListener("change", (e) => {
+    if (!currentSongId) return;
     const ms = parseInt(e.target.value, 10);
-    updateLyricOffsetLabel(ms);
-    window.api.updateControl({ lyric_offset_ms: ms });
+    const songId = currentSongId;    // 抓當下這一首：換歌之後這次寫入不該落到新歌上
+    window.api.setSongLyricOffset(songId, ms)
+      .catch((err) => showNotification(`字幕校正失敗：${err.message}`, 3500));
   });
 
   // 音樂（伴奏）音量。麥克風走另一條增益路徑，所以不受影響。
@@ -2587,6 +2674,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function onCurrentSongChanged() {
+    // 換歌一定要重畫字幕校正那一列：值是綁在歌上的，沿用上一首就是這次要修的 bug。
+    // 走這裡而不是只靠 STATE_UPDATE 的守衛，是因為那個守衛會在「上一首 +300、
+    // 新歌 0」時被「值沒變」以外的條件擋掉（滑桿正被拖曳、值剛好相同）。
+    updateLyricOffsetLabel(songOffsetMs);
     if (!currentSongId) {
       if (sectionList) sectionList.innerHTML = "";
       sectionCache = { songId: null, data: null };
@@ -2595,10 +2686,15 @@ document.addEventListener("DOMContentLoaded", () => {
     renderSections(await ensureSections());
   }
 
+  // 雙擊歸零（手機沒有雙擊，所以那邊靠拖到 0）。只歸零**這一首**，
+  // 舞台的裝置基準不動 —— 不講清楚的話，下一個人會以為 0 代表全部清乾淨了。
   lyricOffsetSlider.addEventListener("dblclick", () => {
+    if (!currentSongId) return;
     lyricOffsetSlider.value = 0;
+    songOffsetMs = 0;
     updateLyricOffsetLabel(0);
-    window.api.updateControl({ lyric_offset_ms: 0 });
+    window.api.clearSongLyricOffset(currentSongId)
+      .catch((err) => showNotification(`字幕校正歸零失敗：${err.message}`, 3500));
   });
 
   // --- 系統設定頁 ---
@@ -3233,6 +3329,21 @@ document.addEventListener("DOMContentLoaded", () => {
       applyMarqueeState(res && res.marquee);
     });
   }
+
+  // 歌詞被重算過：曲式（段落）跟著換了，這裡的段落快取會過期。
+  // 不清的話「副歌重唱」會跳到舊時間軸上的位置 —— 那個錯誤看起來像機器壞了。
+  window.api.on("LYRICS_REBUILT", (msg) => {
+    const songId = msg && msg.data && msg.data.song_id;
+    if (!songId) return;
+    if (sectionCache && sectionCache.songId === songId) {
+      sectionCache = { songId: null, data: null };
+      if (currentSongId === songId) onCurrentSongChanged();
+    }
+    // 只有正開著快取分頁時才重畫（跟 RECORDING_SAVED 同一個慣例：
+    // 使用者不在那一頁的話，重畫只是白花一次整個目錄的掃描）
+    const activeTab = document.querySelector(".lib-tab.active");
+    if (activeTab && activeTab.dataset.lib === "cache") loadCacheManager();
+  });
 
   window.api.on("MARQUEE_UPDATE", (msg) => applyMarqueeState(msg && msg.data));
 

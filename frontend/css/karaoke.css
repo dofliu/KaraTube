@@ -1596,3 +1596,52 @@ body.duet-mode .score-card {
 
 .marquee-card.is-urgent .marquee-card-kicker { color: var(--accent-yellow); }
 .marquee-card.is-urgent .marquee-card-text { text-shadow: 0 0 44px rgba(255, 0, 127, 0.65); }
+
+/* --- 音訊面板裡的「本機延遲補償」那一列 --- */
+/* 這個數字是「這台機器怎麼接的」，所以住在音訊裝置面板裡，跟選喇叭擺一起；
+   某一首歌自己對不上則是用 ← → 當場調（見 frontend/js/lyric-sync.js）。 */
+.stage-panel-step {
+  min-width: 34px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(10, 15, 28, 0.8);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.stage-panel-step:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.stage-panel-value {
+  min-width: 72px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--accent-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「把這首的偏移設成本機基準」。只有真的有值可以升級時才出現 ——
+   一顆按下去沒反應的按鈕，比沒有那顆按鈕更糟。 */
+.stage-panel-promote {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  background: rgba(0, 240, 255, 0.08);
+  color: var(--accent-cyan);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.stage-panel-promote:hover {
+  background: rgba(0, 240, 255, 0.16);
+}

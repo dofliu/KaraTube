@@ -45,6 +45,28 @@ class SongStorage:
                 logger.error(f"Error reading pitch for {song_id}: {e}")
         return {"notes": [], "points": []}
 
+    def get_song_alignment(self, song_id: str) -> Optional[Dict[str, Any]]:
+        """
+        這首歌的歌詞對齊診斷（`alignment.json`：source / scale / offset / score…）。
+
+        **沒有這個檔案跟「分數 0」是兩件事**，所以缺檔回 `None` 而不是 `{}`：
+        這份診斷是後來才加的，功能上線前處理好的舊歌一律沒有，而把「未知」
+        畫成 0 分等於冤枉一整批其實沒問題的歌。
+        （`source` 是 whisper 時 score 也固定是 0.0 —— 那是「根本沒有 LRC 可對」，
+        判讀規則在 frontend/js/alignment-view.js。）
+        """
+        align_file = self.storage_dir / song_id / "alignment.json"
+        if align_file.exists():
+            try:
+                with open(align_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else None
+            except Exception as e:
+                # 半份 JSON（align 寫到一半斷電）也走這裡：當成沒有，不要讓
+                # 一首歌的壞檔擋掉整張快取清單。
+                logger.error(f"Error reading alignment for {song_id}: {e}")
+        return None
+
     def list_cached_songs(self) -> List[Dict[str, Any]]:
         songs = []
         for song_folder in self.storage_dir.iterdir():
@@ -158,14 +180,24 @@ class SongStorage:
                 "complete": not missing,
                 "missing_files": missing,
                 "cached_at": cached_at,
+                # 歌詞對齊診斷。掛在這裡而不是另開一支 API：快取管理頁有 N 列，
+                # 為了一個小數字打 N 次請求，而這個迴圈本來就已經在逐首讀檔了。
+                "alignment": self.get_song_alignment(song_id),
             })
         # 最新快取排最前面，跟其他分頁一致
         entries.sort(key=lambda e: e["cached_at"], reverse=True)
         return entries
 
-    def cache_stats(self) -> Dict[str, Any]:
-        """快取總覽：歌曲數、佔用空間、磁碟剩餘空間。"""
-        entries = self.list_cache_entries()
+    def cache_stats(self, entries: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        快取總覽：歌曲數、佔用空間、磁碟剩餘空間。
+
+        `entries` 可以把 `list_cache_entries()` 的結果傳進來重用。快取管理頁
+        兩邊都要，不傳的話整個 songs/ 目錄會被 rglob 兩遍（每首歌還多讀一次
+        alignment.json）—— 曲庫幾百首時那是會讓舞台的 WebSocket 卡一下的量。
+        """
+        if entries is None:
+            entries = self.list_cache_entries()
         total_bytes = sum(e["size_bytes"] for e in entries)
         try:
             usage = shutil.disk_usage(self.storage_dir)

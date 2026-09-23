@@ -41,6 +41,9 @@ PROTECTED_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     # --- 曲庫（影響下一組客人）---
     ("DELETE", "/api/cache/{song_id}", "刪除曲庫歌曲"),
     ("POST", "/api/cache/{song_id}/reprocess", "重新處理歌曲"),
+    # 重算歌詞比重新處理便宜一個數量級，但仍然是「改寫曲庫裡那首歌的檔案」
+    # ＋ 吃掉整台機器唯一那個重算名額（可能掉進 Whisper 轉錄）。
+    ("POST", "/api/cache/{song_id}/rebuild-lyrics", "重算歌詞"),
 
     # --- 排程預處理（整台機器的 CPU）---
     ("POST", "/api/batch", "新增排程處理清單"),
@@ -118,6 +121,14 @@ OPEN_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     # 一通電話。
     ("POST", "/api/service", "叫櫃檯"),
     ("POST", "/api/service/cancel", "取消服務需求"),
+    # --- 字幕對齊：正在唱歌的人當場要修的東西 ---
+    # 字幕對不上時，包廂裡的人必須能立刻修好那一首 —— 鎖起來等於「字幕歪了
+    # 要先找櫃檯」，而這只影響一首歌的顯示、隨時可以歸零。
+    # （「升級成本機基準」會動到所有校正過的歌，但它修的是這台舞台機的延遲，
+    #   而那個延遲本來就只有站在喇叭前面的人聽得出來 —— 一樣不鎖。）
+    ("POST", "/api/songs/{song_id}/lyric-offset", "校正這首歌的字幕"),
+    ("DELETE", "/api/songs/{song_id}/lyric-offset", "把這首歌的字幕校正歸零"),
+    ("POST", "/api/lyric-offsets/rebase", "把字幕校正升級成本機基準"),
     # --- 鎖自己：解鎖要 PIN、上鎖不需要任何東西（見 staff_lock.py 第 3 點），
     #     所以這幾條一定不能被自己擋住，否則鎖上之後連解鎖的門都敲不了。 ---
     ("POST", "/api/staff-lock/unlock", "解鎖"),

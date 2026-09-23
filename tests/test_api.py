@@ -2212,7 +2212,7 @@ def lyric_offsets_clean(tmp_path, monkeypatch):
     from backend.services.lyric_offsets import LyricOffsets
     store = LyricOffsets(tmp_path / "lyric_offsets.json")
     monkeypatch.setattr(main, "lyric_offsets", store)
-    monkeypatch.setattr(queue_manager, "lyric_offset_of", store.get)
+    monkeypatch.setattr(queue_manager, "lyric_calibration_of", store.calibration)
     yield store
 
 
@@ -2293,6 +2293,90 @@ def test_song_offset_is_never_behind_the_staff_lock(staff_lock_clean, lyric_offs
                        json={"offset_ms": 120}).status_code == 200
     assert client.delete("/api/songs/song_a/lyric-offset").status_code == 200
     assert client.post("/api/lyric-offsets/rebase", json={"delta_ms": 50}).status_code == 200
+
+
+# --- 兩點校正（速度）---
+#
+# 守的是「速度不會被偏移的寫入洗掉」：滑桿與方向鍵只送得出 offset_ms，
+# 而兩點校正是使用者花了半首歌才做出來的動作。
+
+
+def test_calibration_defaults_to_rate_one(lyric_offsets_clean):
+    body = client.get("/api/songs/never_tuned/lyric-offset").json()
+    assert body["offset_ms"] == 0 and body["rate"] == 1.0
+    assert body["min_rate"] < 1.0 < body["max_rate"]
+
+
+def test_set_rate_and_offset_together(lyric_offsets_clean):
+    res = client.post("/api/songs/song_a/lyric-offset",
+                      json={"offset_ms": -150, "rate": 1.024})
+    assert res.status_code == 200
+    assert res.json()["rate"] == 1.024 and res.json()["offset_ms"] == -150
+    body = client.get("/api/songs/song_a/lyric-offset").json()
+    assert body["rate"] == 1.024 and body["offset_ms"] == -150
+
+
+def test_offset_only_write_keeps_the_rate(lyric_offsets_clean):
+    """
+    這一條守的是整個 v1.23 最容易無聲壞掉的地方：使用者做完兩點校正之後
+    再按一下方向鍵（很常見 —— 反應時間的常數偏差就落在那裡），
+    如果那一筆把速度重設成 1.0，他會看到「後段又開始越唱越歪」，
+    而那個症狀跟「剛剛按錯方向」長得一模一樣。
+    """
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": -150, "rate": 1.024})
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": -100})
+    body = client.get("/api/songs/song_a/lyric-offset").json()
+    assert body["rate"] == 1.024 and body["offset_ms"] == -100
+
+
+def test_bad_rate_clamps_instead_of_500(lyric_offsets_clean):
+    """唱到一半的動作不該用 500 打斷演唱；而 0 進到分母裡是舞台白掉。"""
+    assert client.post("/api/songs/a/lyric-offset",
+                       json={"rate": 99}).json()["rate"] == 1.15
+    assert client.post("/api/songs/b/lyric-offset",
+                       json={"rate": 0}).json()["rate"] == 1.0
+    assert client.post("/api/songs/c/lyric-offset",
+                       json={"rate": "abc"}).json()["rate"] == 1.0
+
+
+def test_rate_rides_along_with_current_song(lyric_offsets_clean):
+    """速度跟偏移必須在同一份狀態裡：分開到達的那一幀字幕會跳。"""
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": 250, "rate": 1.02})
+    queue_manager.current_song = {"song_id": "song_a", "title": "測試"}
+    try:
+        state = queue_manager.get_full_state()
+        assert state["song_lyric_offset_ms"] == 250 and state["song_lyric_rate"] == 1.02
+        assert state["current_song"]["lyric_rate"] == 1.02
+        queue_manager.current_song = {"song_id": "song_b", "title": "另一首"}
+        # 換歌一定重設 —— 沿用上一首的速度比沿用偏移更糟（越走越偏，不是平移）
+        assert queue_manager.get_full_state()["song_lyric_rate"] == 1.0
+    finally:
+        queue_manager.current_song = None
+
+
+def test_delete_clears_the_rate_too(lyric_offsets_clean):
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": 200, "rate": 1.02})
+    assert client.delete("/api/songs/song_a/lyric-offset").json()["rate"] == 1.0
+    assert client.get("/api/songs/song_a/lyric-offset").json()["rate"] == 1.0
+
+
+def test_rebase_reports_offset_count_not_record_count(lyric_offsets_clean):
+    """
+    升級成本機基準只動得到「偏移不是 0」的那幾首。只解過速度的歌算進去，
+    等於在確認框上對使用者多報幾首。
+    """
+    client.post("/api/songs/a/lyric-offset", json={"offset_ms": 300})
+    client.post("/api/songs/b/lyric-offset", json={"offset_ms": 0, "rate": 1.03})
+    listing = client.get("/api/lyric-offsets").json()
+    assert listing["count"] == 2 and listing["offset_count"] == 1
+    assert listing["calibrations"]["b"]["rate"] == 1.03
+
+
+def test_lyrics_endpoint_carries_the_calibration(lyric_offsets_clean):
+    """舞台換歌時本來就會抓這一支，兩個數字一起回就不必多打一次請求。"""
+    client.post("/api/songs/song_a/lyric-offset", json={"offset_ms": 120, "rate": 0.98})
+    body = client.get("/api/songs/song_a/lyrics").json()
+    assert body["offset_ms"] == 120 and body["rate"] == 0.98
 
 
 # --- 對齊診斷與重算歌詞 ---

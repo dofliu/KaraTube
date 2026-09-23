@@ -3,8 +3,8 @@ name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
 progress: 100
 status: active
-last_updated: "2026-09-22"
-next_milestone: "v1.22.0 打標籤發布；商用點歌機功能對照清單已全數完成，字幕對齊的三種症狀補齊了兩種（固定偏移、抓錯歌詞版本），剩「越唱越歪」的兩點校正與多包廂（一台伺服器帶多組舞台與佇列）見 docs/ROADMAP.md"
+last_updated: "2026-09-23"
+next_milestone: "v1.23.0 打標籤發布；商用點歌機功能對照清單已全數完成，字幕對齊的三種症狀（固定偏移、抓錯歌詞版本、越唱越歪）全部補齊 —— 最後一種靠兩點校正（播放中按兩次 A，解出這首歌的速度）。剩多包廂（一台伺服器帶多組舞台與佇列）見 docs/ROADMAP.md"
 technologies:
   - Python
   - Docker

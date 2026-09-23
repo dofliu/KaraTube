@@ -29,7 +29,8 @@ from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
 from backend.services.song_index import SongFinder
 from backend.services.song_numbers import SongNumberBook, parse_number
-from backend.services.lyric_offsets import MAX_OFFSET_MS, LyricOffsets
+from backend.services.lyric_offsets import (MAX_OFFSET_MS, MAX_RATE, MIN_RATE,
+                                            LyricOffsets)
 from backend.services.artist_index import ArtistFinder
 from backend.services.song_history import SongHistory
 from backend.services import access_policy, marquee, room_timer, service_calls, song_quota
@@ -254,10 +255,10 @@ queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.br
                              # 傳的是函式而不是號碼簿本身 —— 佇列管的是誰排在誰前面，
                              # 不該連「號碼怎麼發」都認識。
                              number_of=song_numbers.ensure,
-                             # 這首歌的字幕偏移。跟歌號同樣傳函式不傳物件，
-                             # 而且是每次廣播現查 —— 唱到一半校正的值要立刻
-                             # 跟著 current_song 送到每一台裝置上。
-                             lyric_offset_of=lyric_offsets.get)
+                             # 這首歌的字幕校正（偏移 + 速度）。跟歌號同樣傳函式
+                             # 不傳物件，而且是每次廣播現查 —— 唱到一半校正的值
+                             # 要立刻跟著 current_song 送到每一台裝置上。
+                             lyric_calibration_of=lyric_offsets.calibration)
 # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
 queue_manager.apply_control_defaults()
 
@@ -374,11 +375,14 @@ def _cache_overview() -> Dict[str, Any]:
     （校正過的歌在重算歌詞之後最可能變錯，見 rebuild-lyrics 端點）。
     """
     entries = storage.list_cache_entries()
-    offsets = lyric_offsets.all()
+    calibrations = lyric_offsets.all_calibrations()
     for entry in entries:
-        entry["lyric_offset_ms"] = offsets.get(entry["song_id"], 0)
+        cal = calibrations.get(entry["song_id"]) or {}
+        entry["lyric_offset_ms"] = int(cal.get("offset_ms", 0) or 0)
+        entry["lyric_rate"] = float(cal.get("rate", 1.0) or 1.0)
     return {"songs": entries, **storage.cache_stats(entries),
-            "tuned_count": sum(1 for e in entries if e["lyric_offset_ms"])}
+            "tuned_count": sum(1 for e in entries
+                               if e["lyric_offset_ms"] or e["lyric_rate"] != 1.0)}
 
 
 @app.get("/api/cache")
@@ -504,8 +508,14 @@ async def rebuild_song_lyrics(song_id: str):
         # 同一個網址等一下再按多半就成功，所以是 503 不是 500。
         raise HTTPException(status_code=503, detail=result.get("message", "重算歌詞失敗"))
 
-    cleared_offset = lyric_offsets.get(song_id)
-    if cleared_offset:
+    # 歌詞整份換掉了，人工校正的**兩個數字都失效**（速度尤其：新的時間軸是
+    # 重新對出來的，舊的 1.024× 套上去只會把一份剛對好的歌詞再弄歪一次）。
+    # 所以看的是「有沒有紀錄」，不是「偏移是不是 0」—— 只解過速度的歌偏移正好
+    # 是 0，用 get() 判斷會讓那個 rate 留下來。
+    cleared = lyric_offsets.calibration(song_id)
+    cleared_offset = cleared["offset_ms"]
+    cleared_rate = cleared["rate"]
+    if cleared_offset or cleared_rate != 1.0:
         lyric_offsets.clear(song_id)
         # 清掉了就要讓每一台裝置知道 —— 不廣播的話，點歌台的滑桿與舞台的
         # songOffsetMs 還停在那個已經不存在的值上（而且下一次有人動滑桿時
@@ -515,11 +525,12 @@ async def rebuild_song_lyrics(song_id: str):
     await ws_manager.broadcast({
         "type": "LYRICS_REBUILT",
         "data": {"song_id": song_id, "alignment": result.get("after"),
-                 "cleared_offset_ms": cleared_offset},
+                 "cleared_offset_ms": cleared_offset,
+                 "cleared_rate": cleared_rate},
     })
     return {"status": "success", "song_id": song_id, "lines": result.get("lines", 0),
             "before": result.get("before"), "alignment": result.get("after"),
-            "cleared_offset_ms": cleared_offset,
+            "cleared_offset_ms": cleared_offset, "cleared_rate": cleared_rate,
             "started_singing": bool(result.get("started_singing"))}
 
 
@@ -2121,14 +2132,17 @@ async def get_lyrics(song_id: str):
     # 那一份跟 current_song 同一則訊息抵達）。
     lyrics = storage.get_song_lyrics(song_id)
     return {"song_id": song_id, "lyrics": lyrics,
-            "offset_ms": lyric_offsets.get(song_id)}
+            **lyric_offsets.calibration(song_id)}
 
 
-# --- 每首歌的字幕偏移 ---
+# --- 每首歌的字幕校正 ---
 #
 # 「這首歌的 LRC 偏差」與「這台裝置的延遲」是兩個數字（見 lyric_offsets.py）：
-# 這一區只管前者。後者留在舞台那台的 localStorage 與音訊設定面板，
-# 並以唯讀的姿態出現在共享狀態的 `lyric_offset_ms` 上（讓點歌台印得出來）。
+# 這一區只管前者，而前者本身又是兩個數字 —— 「這首歌對不上」有兩種形狀：
+# 整首平移（`offset_ms`）與越唱越歪（`rate`，兩點校正解出來的）。
+#
+# 裝置延遲那一個留在舞台那台的 localStorage 與音訊設定面板，並以唯讀的姿態
+# 出現在共享狀態的 `lyric_offset_ms` 上（讓點歌台印得出來）。
 #
 # 這幾條**不鎖**（access_policy 的 OPEN 表）：字幕對不上時，包廂裡的人必須
 # 能當場修好那一首，而它只影響一首歌的顯示、隨時可以歸零。
@@ -2136,37 +2150,53 @@ async def get_lyrics(song_id: str):
 
 @app.get("/api/songs/{song_id}/lyric-offset")
 async def get_song_lyric_offset(song_id: str):
-    """這首歌的字幕偏移。沒校正過回 0，並附上 entry=null 讓前端分得出「沒調過」。"""
-    return {"song_id": song_id, "offset_ms": lyric_offsets.get(song_id),
-            "entry": lyric_offsets.entry(song_id), "max_offset_ms": MAX_OFFSET_MS}
+    """這首歌的字幕校正。沒校正過回 0／1.0，並附上 entry=null 讓前端分得出「沒調過」。"""
+    return {"song_id": song_id, **lyric_offsets.calibration(song_id),
+            "entry": lyric_offsets.entry(song_id), "max_offset_ms": MAX_OFFSET_MS,
+            "min_rate": MIN_RATE, "max_rate": MAX_RATE}
 
 
 @app.post("/api/songs/{song_id}/lyric-offset")
 async def set_song_lyric_offset(song_id: str, payload: Dict[str, Any] = Body(...)):
     """
-    校正這首歌的字幕偏移（毫秒，正值＝字幕延後）。越界夾回 ±2000，不回 500。
+    校正這首歌的字幕：偏移（毫秒，正值＝字幕延後）與／或速度倍率。越界一律夾回，
+    不回 500 —— 這是一個「唱到一半發現字幕歪了」的動作，不該用錯誤打斷演唱。
+
+    **沒帶到的欄位不會被動到。** 滑桿與方向鍵只送得出 `offset_ms`，如果把缺席
+    當成「速度重設為 1.0」，兩點校正解出來的速度會在使用者下一次微調偏移時
+    無聲消失，而症狀（後段又開始越唱越歪）跟「剛剛按錯方向」長得一模一樣。
 
     寫完廣播一次完整狀態，包廂裡每一支手機與舞台同一刻換值 —— 五個人看著
-    同一面螢幕，偏移只有一個版本。
+    同一面螢幕，校正只有一個版本。
     """
-    applied = lyric_offsets.set(song_id, payload.get("offset_ms"))
+    applied = lyric_offsets.set_calibration(
+        song_id,
+        offset_ms=payload.get("offset_ms"),
+        rate=payload.get("rate"),
+    )
     await queue_manager.broadcast_state()
-    return {"status": "success", "song_id": song_id, "offset_ms": applied}
+    return {"status": "success", "song_id": song_id, **applied}
 
 
 @app.delete("/api/songs/{song_id}/lyric-offset")
 async def clear_song_lyric_offset(song_id: str):
-    """把這首歌的字幕偏移歸零（回到「沒有校正過」）。"""
+    """把這首歌的字幕校正歸零（偏移與速度都回到「沒有校正過」）。"""
     lyric_offsets.clear(song_id)
     await queue_manager.broadcast_state()
-    return {"status": "success", "song_id": song_id, "offset_ms": 0}
+    return {"status": "success", "song_id": song_id, "offset_ms": 0, "rate": 1.0}
 
 
 @app.get("/api/lyric-offsets")
 async def list_lyric_offsets():
     """校正過的歌一覽（快取管理頁與「升級成本機基準」的確認框要用）。"""
-    return {"offsets": lyric_offsets.all(), "count": lyric_offsets.count(),
-            "max_offset_ms": MAX_OFFSET_MS}
+    return {"offsets": lyric_offsets.all(),
+            "calibrations": lyric_offsets.all_calibrations(),
+            "count": lyric_offsets.count(),
+            # 升級成本機基準只會動到「偏移不是 0」的那幾首：只解過速度的歌
+            # 不在其中，算進去等於在確認框上多報幾首。
+            "offset_count": lyric_offsets.offset_count(),
+            "max_offset_ms": MAX_OFFSET_MS,
+            "min_rate": MIN_RATE, "max_rate": MAX_RATE}
 
 
 @app.post("/api/lyric-offsets/rebase")

@@ -189,6 +189,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   } catch (e) { /* 無痕模式沒有 localStorage，忽略 */ }
   let songOffsetMs = 0;
+  // 這一首的速度校正（兩點校正解出來的）。1 ＝ 沒有速度問題。
+  // 跟偏移一樣綁在歌上、隨 current_song 一起到，換歌一定重設 ——
+  // 沿用上一首的速度比沿用上一首的偏移更糟：偏移錯是整首平移，速度錯是越走越偏。
+  let songRate = 1;
+  // 兩點校正的第 1 點（`{lrcS, audioS, text}`）。**只活在記憶體、只活在這一首**：
+  // 換歌、歸零、解出結果都要清掉。留著的話，下一首的第 2 點會跟上一首的第 1 點
+  // 解出一條毫無意義的直線，而那條線看起來跟真的一樣。
+  let anchorFirst = null;
+  // 兩點校正送出去、還沒收到廣播回來的那一首（見 applyCalibration）
+  let calibrationInFlight = null;
   // 「連續同方向」偵測用的樣本：`{songId, ms}`，**一首歌只佔一格**（同一首的
   // 後續微調是在修飾同一個判斷，各記一筆會讓一首歌投好幾票；而且只記第一下的話
   // 拿到的是「按了一次 +50」而不是他最後停在的 +300）。只存在記憶體，重整就忘。
@@ -1549,9 +1559,15 @@ document.addEventListener("DOMContentLoaded", () => {
     deviceOffsetValue.textContent = LS.offsetLabel(deviceOffsetMs);
     if (deviceOffsetHint) {
       const auto = Math.round(outputLatency * 1000);
+      // 速度校正過的歌要在這裡說出來：這一格是使用者查「字幕為什麼這樣」時
+      // 會看的地方，而一首被動過速度的歌，方向鍵的行為（只平移）跟他的預期不同。
+      const speed = songRate !== 1
+        ? `　這一首做過兩點校正：速度 ${LS.rateLabel(songRate)}（${LS.rateDirection(songRate)}），按 0 可全部歸零。`
+        : "";
       deviceOffsetHint.textContent =
         `瀏覽器已自動補償 ${auto} ms（藍牙與外接混音器量不到，剩下的在這裡補）。` +
-        `這一個數字對每一首歌都一樣；某一首歌自己對不上請在播放時按 ← →。`;
+        `這一個數字對每一首歌都一樣；某一首歌自己對不上請在播放時按 ← →，` +
+        `越唱越歪（前面對、後面歪）則按 A 做兩點校正。${speed}`;
     }
     if (promoteOffsetBtn) {
       // 只有「這首歌真的調過」才給升級按鈕：沒有值可以升級的時候，
@@ -1584,7 +1600,10 @@ document.addEventListener("DOMContentLoaded", () => {
     await flushSongOffset();
     let tunedCount = 0;
     try {
-      tunedCount = (await window.api.getLyricOffsets()).count || 0;
+      // 只數「偏移不是 0」的那幾首：rebase 動不到只解過速度的歌，
+      // 用 count 會在確認框上對使用者多報幾首。
+      const listed = await window.api.getLyricOffsets();
+      tunedCount = (listed.offset_count !== undefined ? listed.offset_count : listed.count) || 0;
     } catch (e) { /* 問不到就少講一句，不擋這個動作 */ }
     if (!confirm(window.LyricSync.rebaseConfirmText(
       { deltaMs: delta, deviceMs: deviceOffsetMs, tunedCount }))) return;
@@ -1598,6 +1617,136 @@ document.addEventListener("DOMContentLoaded", () => {
     // 伺服器那半做完了（含這一首歸零，廣播會把 songOffsetMs 帶回 0），
     // 本機這半自己加上去。兩半的總效果對這首歌是 0，對其他歌也是 0。
     setDeviceOffset(deviceOffsetMs + delta);
+  }
+
+  // --- 兩點校正（速度）---
+  //
+  // 修的是第三種症狀：**越唱越歪**（前面對得好好的、副歌開始慢半拍、片尾差兩秒）。
+  // 成因是抓到的歌詞來自速度不同的版本，而那種歪**加一個常數永遠修不好** ——
+  // 使用者會一路按方向鍵按到整首都對不上，然後以為機器壞了。
+  //
+  // 人能做的量測只有一種：「這一句現在開始」。兩個這樣的量測唯一決定一條直線
+  // （`音訊時間 = rate × 歌詞時間 + offset`），所以流程就是按兩次 A。
+  // 數學在 lyric-sync.js（有測試），這裡只負責抓時間、配對歌詞、講話。
+
+  /** 現在這一刻的兩條時間（不等 renderLoop）。沒在播放回 null。 */
+  function currentSyncTimes() {
+    if (!currentSongId || audioInst.paused || !(audioInst.currentTime > 0)) return null;
+    return window.LyricSync.syncTimes({
+      audioTime: clock.now(), outputLatency,
+      deviceMs: deviceOffsetMs, songMs: songOffsetMs, rate: songRate,
+    });
+  }
+
+  function showTwoPointToast(event, ms = 5200) {
+    const lines = window.LyricSync.twoPointToastLines(event);
+    showToast(`${lines.main}<span class="sync-hint">${lines.hint}</span>`, ms);
+  }
+
+  /**
+   * 按一次 A。第一次收點，第二次解直線。
+   *
+   * 兩個刻意的決定：
+   *
+   * 1. **配對到的那一句要印出來。** 機器只能用時間去猜「他指的是哪一句」，
+   *    而字幕正歪著（那就是他按鍵的原因），所以猜錯是可能的。印出來就變成
+   *    一眼看得出對錯，而且再按一次 A 就重標 —— 把一個推不出來的推論換成
+   *    一個看得見的畫面。
+   * 2. **第 2 點離第 1 點太近時，當成「重標第 1 點」而不是錯誤。** 按錯的人
+   *    本來就會立刻再按一次；當成錯誤而保留舊的第 1 點，那個錯的點就拔不掉了。
+   */
+  function markAnchor() {
+    const times = currentSyncTimes();
+    const lyrics = (karaokeRenderer && karaokeRenderer.lyrics) || [];
+    if (!times || !lyrics.length) {
+      showTwoPointToast({ kind: "idle" }, 4200);
+      return;
+    }
+    const snapped = window.LyricSync.snapAnchor(lyrics, times.lyricTime);
+    if (!snapped) {
+      showTwoPointToast({ kind: "nosnap" }, 6000);
+      return;
+    }
+    // 音訊端用 scoreTime（已扣輸出延遲與本機補償），歌詞端用那一句在檔案裡的
+    // 起始時間 —— 兩邊都必須是「未經這首歌校正」的量，否則解出來的直線會
+    // 疊在現有校正上再算一次。
+    const point = { lrcS: snapped.startS, audioS: times.scoreTime, text: snapped.text };
+
+    if (!anchorFirst) {
+      anchorFirst = point;
+      showTwoPointToast({ kind: "first", text: snapped.text });
+      return;
+    }
+
+    const solved = window.LyricSync.solveTwoPoint(anchorFirst, point);
+    if (!solved.ok) {
+      if (solved.reason === "span") {
+        // 太近＝把它當成重標第 1 點（見上面決定 2）
+        anchorFirst = point;
+        showTwoPointToast({ kind: "restart", text: snapped.text });
+      } else {
+        // 其他拒絕理由都代表「有一點對到別的句子了」，而機器分不出是哪一點 ——
+        // 留著任何一個都是留著一個可能錯的點，所以兩個都丟掉、從頭來。
+        anchorFirst = null;
+        showTwoPointToast({ kind: "reject", ...solved }, 7000);
+      }
+      return;
+    }
+
+    const driftS = window.LyricSync.driftCorrectionS({
+      rate: solved.rate, offsetMs: solved.offsetMs,
+      prevRate: songRate, prevOffsetMs: songOffsetMs,
+      durationS: audioInst.duration || 0,
+    });
+    anchorFirst = null;
+    applyCalibration(solved.offsetMs, solved.rate);
+    showTwoPointToast({ kind: "applied", rate: solved.rate, offsetMs: solved.offsetMs,
+                        driftS }, 7000);
+  }
+
+  /**
+   * 套用一組校正（兩個數字一起）並立刻落盤。
+   *
+   * 不走 setSongOffset 的 400ms debounce：兩點校正是一個**明確的單次動作**
+   * （不像連按方向鍵），而且它同時改兩個數字 —— 拖著不寫的話，中間任何一則
+   * 廣播回來的舊值都會把速度洗掉，而使用者只會看到「校正完又歪回去了」。
+   */
+  function applyCalibration(offsetMs, rate) {
+    if (!currentSongId) return;
+    const songId = currentSongId;
+    songOffsetMs = window.LyricSync.clampSyncMs(offsetMs);
+    songRate = window.LyricSync.clampRate(rate);
+    if (songOffsetPending && songOffsetPending.songId !== songId) {
+      // 上一首的在途偏移：照它自己帶的 songId 送出去（丟掉它就是丟掉別人
+      // 花時間聽出來的那一下）。
+      flushSongOffset();
+    } else {
+      // **這一首**的在途偏移已經被這一組校正取代了，而且不能送 ——
+      // 兩個請求打同一首歌、到達順序不保證，晚到的那一個會把剛解出來的偏移
+      // 蓋回舊值，而畫面上只會看到「校正完又歪回去了」。
+      if (songOffsetSaveTimer) { clearTimeout(songOffsetSaveTimer); songOffsetSaveTimer = null; }
+      songOffsetPending = null;
+    }
+    // 送出去到廣播回來之間，別的裝置動一下音量就會推一則帶著**舊校正**的
+    // STATE_UPDATE 過來。標記在飛的是哪一首，讓那道守門把它擋掉。
+    calibrationInFlight = songId;
+    window.api.setSongCalibration(songId, { offsetMs: songOffsetMs, rate: songRate })
+      .catch(() => { })
+      .then(() => { if (calibrationInFlight === songId) calibrationInFlight = null; });
+    updateDeviceOffsetUI();
+  }
+
+  /** 這一首的校正全部歸零（偏移、速度、還沒配對完的第 1 點）。 */
+  function resetSongCalibration() {
+    anchorFirst = null;
+    if (currentSongId && songRate !== 1) {
+      // 速度不是 1 時，setSongOffset(0) 只清得掉偏移 —— 留著速度的話，
+      // 使用者會看到一首「歸零過卻還是越唱越歪」的歌，而沒有任何鍵救得回來。
+      applyCalibration(0, 1);
+      showSyncToast("song");
+      return;
+    }
+    setSongOffset(0);
   }
 
   // 音準導唱線顯示切換。關掉後 MV 畫面完整露出來。
@@ -1802,7 +1951,11 @@ document.addEventListener("DOMContentLoaded", () => {
       setSongOffset(songOffsetMs + step);       // 字幕延後
     } else if (e.key === "0") {
       e.preventDefault();
-      setSongOffset(0);                          // 只歸零這一首，本機基準不動
+      resetSongCalibration();                    // 只歸零這一首（偏移＋速度），本機基準不動
+    } else if (e.key === "a" || e.key === "A") {
+      // 兩點校正：修「越唱越歪」的那一種，方向鍵永遠修不好它
+      e.preventDefault();
+      markAnchor();
     } else if (e.key === "l" || e.key === "L") {
       e.preventDefault();
       promoteSongOffsetToDevice();
@@ -2013,12 +2166,25 @@ document.addEventListener("DOMContentLoaded", () => {
     // 直接套用的話，使用者剛按的那一下會當場彈回去 —— 然後 400ms 後那個舊值
     // 又被寫回伺服器，他連按五次會得出「這台機器的方向鍵壞了」。
     // 歌換了（song_id 不同）則一律採用：換歌一定要重設，那是這個功能的本體。
-    const pendingForThisSong = songOffsetPending
-      && songOffsetPending.songId === (song ? song.song_id : null);
+    // 兩點校正在飛的時候一樣要擋：它一次改兩個數字，被一則舊廣播蓋掉的話，
+    // 使用者會看到「剛校正好的字幕自己彈回去」，而且那正是他花了半首歌換來的。
+    const thisSongId = song ? song.song_id : null;
+    const pendingForThisSong =
+      (songOffsetPending && songOffsetPending.songId === thisSongId)
+      || (calibrationInFlight !== null && calibrationInFlight === thisSongId);
     if (state.song_lyric_offset_ms !== undefined && !pendingForThisSong
         && state.song_lyric_offset_ms !== songOffsetMs) {
       songOffsetMs = window.LyricSync.clampSyncMs(state.song_lyric_offset_ms);
       updateDeviceOffsetUI();
+    }
+    // 速度跟偏移走同一道守門（含在途期間放著不動）：兩個數字描述的是**同一條
+    // 直線**，只套用其中一個會出現一幀「新的偏移配上舊的速度」的字幕跳動。
+    if (state.song_lyric_rate !== undefined && !pendingForThisSong) {
+      const nextRate = window.LyricSync.clampRate(state.song_lyric_rate);
+      if (nextRate !== songRate) {
+        songRate = nextRate;
+        updateDeviceOffsetUI();
+      }
     }
 
     if (state.show_pitch !== undefined) {
@@ -2063,6 +2229,9 @@ document.addEventListener("DOMContentLoaded", () => {
       // 那正是這個功能要修掉的 bug。歸零之前先把在途的那一筆送出去。
       flushSongOffset();
       songOffsetMs = 0;
+      songRate = 1;
+      anchorFirst = null;      // 標到一半的第 1 點跟著歌走，絕不跨到下一首
+      calibrationInFlight = null;
       updateDeviceOffsetUI();
       // 待機畫面一樣走情境背景（商用機的待機情境畫面），只是能量固定在低檔
       ambientStage.clearSong();
@@ -2084,6 +2253,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // 不會落到新歌身上），再換成這一首的值。
     flushSongOffset();
     songOffsetMs = window.LyricSync.clampSyncMs(song.lyric_offset_ms || 0);
+    songRate = window.LyricSync.clampRate(song.lyric_rate);
+    calibrationInFlight = null;   // 在飛的那一組屬於上一首，守門不該再擋這一首
+    // 上一首標到一半的第 1 點在這裡作廢。不清的話，這一首按下的第 2 點會跟
+    // 上一首的第 1 點解出一條毫無意義的直線 —— 而那條線看起來跟真的一樣。
+    anchorFirst = null;
     titleEl.textContent = song.title;
     artistEl.textContent = song.artist || "YouTube Music";
     showIntroCard(song);
@@ -2274,8 +2448,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // 調 +300ms 等於那一首的音準率與 Combo 無聲下降，而畫面上看不出任何異狀。
     // 算式本身抽在 lyric-sync.js（renderLoop 沒有單元測試，而這一段算錯的後果
     // 是「那首歌的分數無聲下降」—— 正是最需要被測試釘住的那一種）。
+    //   speed —— 兩點校正解出來的速度只縮放 lyricTime（見 syncTimes）。
+    //     它比偏移更不能碰評分：速度錯的話評分視窗不是平移，是**越走越偏**，
+    //     到副歌就完全對不到真實人聲了。
     const { scoreTime, lyricTime } = window.LyricSync.syncTimes({
       audioTime, outputLatency, deviceMs: deviceOffsetMs, songMs: songOffsetMs,
+      rate: songRate,
     });
 
     const nowMs = performance.now();

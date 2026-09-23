@@ -40,7 +40,7 @@ class QueueManager:
                  room: Optional[Any] = None, library: Optional[Any] = None,
                  favorites: Optional[Any] = None,
                  number_of: Optional[Callable] = None,
-                 lyric_offset_of: Optional[Callable] = None):
+                 lyric_calibration_of: Optional[Callable] = None):
         self.processor = song_processor
         self.storage = storage
         self.broadcast_cb = broadcast_cb
@@ -56,12 +56,14 @@ class QueueManager:
         # 佇列與片頭卡要印得出號碼，包廂裡的人才學得會「下次直接打這組」——
         # 一個沒有人看得到的號碼，沒有人會記得。
         self.number_of = number_of
-        # 這首歌的字幕偏移查詢（可為 None）：`song_id -> 毫秒`。
+        # 這首歌的字幕校正查詢（可為 None）：`song_id -> {"offset_ms", "rate"}`。
         # 傳函式而不是傳整個儲存物件，跟 number_of 同一個理由 —— 佇列管的是
-        # 誰排在誰前面，不該連「偏移存在哪個檔案」都認識。
+        # 誰排在誰前面，不該連「校正存在哪個檔案」都認識。
         # 每次廣播都重查一次（不是寫死在 queue item 上）：有人在唱到一半校正了
         # 字幕，那個新值必須在同一則 STATE_UPDATE 裡到每一台裝置上。
-        self.lyric_offset_of = lyric_offset_of
+        # 一支查詢回**兩個數字**（偏移與速度）：分兩支查會出現「新的偏移配上
+        # 舊的速度」那一幀，而那一幀正好長得像字幕跳了一下。
+        self.lyric_calibration_of = lyric_calibration_of
 
         self.current_song: Optional[Dict[str, Any]] = None
         self.queue: List[Dict[str, Any]] = []
@@ -153,11 +155,14 @@ class QueueManager:
             await self.broadcast_cb(payload)
 
     def get_full_state(self) -> Dict[str, Any]:
-        song_offset = self.current_song_lyric_offset()
+        calibration = self.current_song_lyric_calibration()
+        song_offset = calibration["offset_ms"]
+        song_rate = calibration["rate"]
         return {
-            # 這首歌的字幕偏移**掛在歌上**（不只放在外層）：舞台在 loadAndPlaySong
+            # 這首歌的字幕校正**掛在歌上**（不只放在外層）：舞台在 loadAndPlaySong
             # 的第一行就要拿得到它，才不會有「新的歌配上一首的偏移」那半秒鐘。
-            "current_song": ({**self.current_song, "lyric_offset_ms": song_offset}
+            "current_song": ({**self.current_song, "lyric_offset_ms": song_offset,
+                              "lyric_rate": song_rate}
                              if self.current_song else None),
             "queue": self.queue,
             "history": self.history[-10:],
@@ -185,6 +190,10 @@ class QueueManager:
             # 跟 current_song 在**同一則訊息**裡抵達，所以舞台換歌時不會有
             # 「新的歌配上一首的偏移」那半秒鐘（這正是這個功能要修的 bug 本體）。
             "song_lyric_offset_ms": song_offset,
+            # 這一首的速度校正（兩點校正解出來的）。1.0 ＝ 沒有速度問題。
+            # 跟偏移在同一則訊息裡，理由同上 —— 兩個數字描述的是同一條直線，
+            # 分開到達的那一幀字幕會跳。
+            "song_lyric_rate": song_rate,
             "show_pitch": self.show_pitch,
             "loop_enabled": self.loop_enabled,
             "loop_start": self.loop_start,
@@ -208,20 +217,28 @@ class QueueManager:
             "autofill": self.autofill_state(),
         }
 
-    def current_song_lyric_offset(self) -> int:
+    def current_song_lyric_calibration(self) -> Dict[str, Any]:
         """
-        正在唱的這一首歌的字幕偏移（毫秒）。沒歌、沒接儲存服務都是 0。
+        正在唱的這一首歌的字幕校正（偏移毫秒 + 速度倍率）。
+        沒歌、沒接儲存服務都是「沒有校正」。
 
-        每次廣播現算，不快取在 queue item 上 —— 唱到一半有人按方向鍵校正時，
-        那個新值要在下一則 STATE_UPDATE 就到每一台裝置上。
+        每次廣播現算，不快取在 queue item 上 —— 唱到一半有人按方向鍵或做完
+        兩點校正時，那個新值要在下一則 STATE_UPDATE 就到每一台裝置上。
         """
-        if not self.current_song or not self.lyric_offset_of:
-            return 0
+        default = {"offset_ms": 0, "rate": 1.0}
+        if not self.current_song or not self.lyric_calibration_of:
+            return default
         try:
-            return int(self.lyric_offset_of(self.current_song.get("song_id", "")) or 0)
+            raw = self.lyric_calibration_of(self.current_song.get("song_id", "")) or {}
+            rate = float(raw.get("rate", 1.0))
+            # 速度進到播放端的**分母**裡，所以這裡寧可退回 1.0 也不要放一個 0
+            # 出去 —— 那不是「校正沒生效」，是整台舞台的字幕消失。
+            if not rate or rate != rate:
+                rate = 1.0
+            return {"offset_ms": int(raw.get("offset_ms", 0) or 0), "rate": rate}
         except Exception:
-            # 偏移拿不到不該讓整份狀態廣播失敗：最糟就是這一首沒有校正效果。
-            return 0
+            # 校正拿不到不該讓整份狀態廣播失敗：最糟就是這一首沒有校正效果。
+            return default
 
     # --- 包廂計時 ---
 

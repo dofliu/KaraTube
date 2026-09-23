@@ -328,6 +328,28 @@ class KaraTubeAPI {
     return data;
   }
 
+  /**
+   * 兩點校正的結果：偏移與速度**一起送**。
+   *
+   * 分兩次送會在伺服器上留下一個「新偏移配舊速度」的中間狀態，而那個狀態會
+   * 被廣播出去 —— 包廂裡每一面螢幕都會看到字幕跳一下。
+   */
+  async setSongCalibration(songId, { offsetMs, rate } = {}) {
+    const body = {};
+    // 只放有帶到的欄位：後端把缺席當成「這個數字不要動」，
+    // 送一個 undefined 進去會變成 null，那是另一件事。
+    if (offsetMs !== undefined) body.offset_ms = offsetMs;
+    if (rate !== undefined) body.rate = rate;
+    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
   async clearSongLyricOffset(songId) {
     const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`,
                             { method: 'DELETE' });

@@ -131,7 +131,8 @@ function canRebuildLyrics(entry) {
  * 什麼時候看得到（下次播放）、會不會弄壞別的東西（跨場次趨勢歸零）、
  * 以及**那首歌手動校正過的偏移會被清掉**（它是為舊歌詞調的）。
  */
-function rebuildConfirmText({ title = "", songId = "", offsetMs = 0, alignment = null } = {}) {
+function rebuildConfirmText({ title = "", songId = "", offsetMs = 0, rate = 1,
+                             alignment = null } = {}) {
   const name = title || songId || "這首歌";
   const badge = alignmentBadge(alignment);
   const lines = [
@@ -148,18 +149,27 @@ function rebuildConfirmText({ title = "", songId = "", offsetMs = 0, alignment =
     lines.push(`・會一併清掉這首歌手動校正的 ${sign}${Math.abs(offsetMs)} ms 字幕偏移` +
                "（那是為舊的那份歌詞調的）");
   }
+  // 速度校正也是為舊的那份歌詞解出來的，而且**留著比清掉更糟**：
+  // 新的時間軸是重新對出來的，舊的 1.024× 套上去會把一份剛對好的歌詞再弄歪一次。
+  if (Number(rate) && Number(rate) !== 1) {
+    lines.push(`・也會清掉兩點校正解出來的 ${Number(rate).toFixed(3)}× 速度` +
+               "（新的時間軸是重對的，舊的速度套上去反而會歪）");
+  }
   return lines.join("\n");
 }
 
 /** 重算完成後的那句話：新舊分數要一起講，否則沒有人知道有沒有變好。 */
-function rebuildResultMessage(before, after, clearedOffsetMs = 0) {
+function rebuildResultMessage(before, after, clearedOffsetMs = 0, clearedRate = 1) {
   const from = alignmentBadge(before);
   const to = alignmentBadge(after);
   const beforeScore = alignScore(before);
   const afterScore = alignScore(after);
   const detail = (beforeScore !== null && afterScore !== null)
     ? `（${beforeScore.toFixed(3)} → ${afterScore.toFixed(3)}）` : "";
-  const tail = clearedOffsetMs ? "，原本的手動字幕偏移已清掉" : "";
+  const cleared = [];
+  if (clearedOffsetMs) cleared.push("字幕偏移");
+  if (Number(clearedRate) && Number(clearedRate) !== 1) cleared.push("速度校正");
+  const tail = cleared.length ? `，原本的手動${cleared.join("與")}已清掉` : "";
   return `🔄 歌詞重算完成：${from.label} → ${to.label}${detail}${tail}。下次播放這首歌就會套用。`;
 }
 

@@ -732,6 +732,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const tuneBadge = s.lyric_offset_ms
           ? `<span class="cache-badge tuned" title="這首歌的字幕被人工校正過（唱的時候用 ← → 或點歌台滑桿調的）">🎬 ${s.lyric_offset_ms > 0 ? "+" : "−"}${Math.abs(s.lyric_offset_ms)}ms</span>`
           : "";
+        // 速度校正另外標一顆：它跟偏移是兩種不同的修法（平移 vs 縮放），
+        // 而「這首歌解過速度」正是重算歌詞之後最該重做的那一件事。
+        const rate = Number(s.lyric_rate) || 1;
+        const rateBadge = rate !== 1
+          ? `<span class="cache-badge tuned" title="這首歌做過兩點校正（舞台按 A）：歌詞版本的速度跟這個上傳版本不一樣">⏩ ${rate.toFixed(3)}×</span>`
+          : "";
         const thumb = s.thumbnail || `https://i.ytimg.com/vi/${s.song_id}/mqdefault.jpg`;
         const playBtn = s.complete
           ? `<button class="btn btn-primary" onclick="window.addSong('${s.song_id}', '${escapeAttr(s.title)}', '${escapeAttr(s.artist)}', '${thumb}', false)">🎤 點歌</button>`
@@ -747,7 +753,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <img class="cache-row-thumb" src="${thumb}" loading="lazy" onerror="this.style.visibility='hidden'">
             <div class="cache-row-info">
               <div class="cache-row-title" title="${escapeHtml(s.title || s.song_id)}">${escapeHtml(s.title || s.song_id)}</div>
-              <div class="cache-row-meta">${s.artist ? escapeHtml(s.artist) + " ・ " : ""}${formatBytes(s.size_bytes)} ${badge} ${alignBadge} ${tuneBadge}</div>
+              <div class="cache-row-meta">${s.artist ? escapeHtml(s.artist) + " ・ " : ""}${formatBytes(s.size_bytes)} ${badge} ${alignBadge} ${tuneBadge} ${rateBadge}</div>
             </div>
             <div class="cache-row-actions">
               ${playBtn}
@@ -784,13 +790,14 @@ document.addEventListener("DOMContentLoaded", () => {
   window.rebuildSongLyrics = async (id, title) => {
     const row = (cacheEntriesById[id] || {});
     if (!confirm(window.AlignmentView.rebuildConfirmText({
-      title, songId: id, offsetMs: row.lyric_offset_ms || 0, alignment: row.alignment,
+      title, songId: id, offsetMs: row.lyric_offset_ms || 0,
+      rate: row.lyric_rate || 1, alignment: row.alignment,
     }))) return;
     showNotification("🔄 重算歌詞中…（抓歌詞、重新對齊，通常十幾秒）", 4000);
     try {
       const res = await window.api.rebuildLyrics(id);
       showNotification(window.AlignmentView.rebuildResultMessage(
-        res.before, res.alignment, res.cleared_offset_ms), 6000);
+        res.before, res.alignment, res.cleared_offset_ms, res.cleared_rate), 6000);
       loadCacheManager();
     } catch (e) {
       alert("重算歌詞失敗: " + e.message);
@@ -2104,6 +2111,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // 新歌的字幕校正值跟 current_song 在同一則訊息裡，所以在這裡就換過去 ——
       // 等下面那個「值不同才寫」的守衛處理的話，滑桿會有一瞬間停在上一首的值。
       songOffsetMs = Number(state.song_lyric_offset_ms) || 0;
+      songRate = Number(state.song_lyric_rate) || 1;
       lyricOffsetSlider.value = songOffsetMs;
       // 正在拖曳的那一下已經失效（它是為上一首調的）。放掉焦點讓 change 早點
       // 發生；dragSongId 留著 —— 那是 change 事件說得出「歌換了、那一下沒有
@@ -2135,6 +2143,16 @@ document.addEventListener("DOMContentLoaded", () => {
       songOffsetMs = state.song_lyric_offset_ms;
       lyricOffsetSlider.value = songOffsetMs;
       updateLyricOffsetLabel(songOffsetMs);
+    }
+    // 速度是舞台按 A 解出來的，手機這邊只跟著顯示。它沒有滑桿，所以不必怕
+    // 蓋掉使用者正在拖的東西 —— 但那一行說明要立刻換（兩點校正做完的那一刻，
+    // 手機上的人也在看同一件事）。
+    if (state.song_lyric_rate !== undefined) {
+      const nextRate = Number(state.song_lyric_rate) || 1;
+      if (nextRate !== songRate) {
+        songRate = nextRate;
+        updateLyricOffsetLabel(songOffsetMs);
+      }
     }
 
     if (state.music_volume !== undefined &&
@@ -2468,6 +2486,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // 兩者混在一起的後果見 frontend/js/lyric-sync.js 檔頭。
   let deviceOffsetMs = 0;      // 舞台推上來的裝置延遲（唯讀）
   let songOffsetMs = 0;        // 正在唱這一首的偏移
+  // 正在唱這一首的速度校正（舞台按 A 兩點校正解出來的，唯讀）。
+  // 手機上沒有這個動作 —— 兩點校正要在聽得到喇叭的地方按，而按的人正是舞台
+  // 前面那一個。但這裡必須**顯示**得出來：一首被動過速度的歌，滑桿的行為
+  // （整首平移）跟使用者的預期不同，看不到那個數字就沒有人解釋得了。
+  let songRate = 1;
 
   function updateLyricOffsetLabel(ms) {
     const sign = ms > 0 ? "+" : "";
@@ -2475,8 +2498,9 @@ document.addEventListener("DOMContentLoaded", () => {
     lyricOffsetText.style.color = ms === 0 ? "var(--accent-cyan)" : "var(--accent-yellow)";
     if (lyricOffsetHint) {
       lyricOffsetHint.textContent = currentSongId
-        ? `${window.LyricSync.deckOffsetSummary({ songMs: ms, deviceMs: deviceOffsetMs })}` +
-          "　・只影響這一首，下次唱同一首還在"
+        ? `${window.LyricSync.deckOffsetSummary({ songMs: ms, deviceMs: deviceOffsetMs, rate: songRate })}` +
+          "　・只影響這一首，下次唱同一首還在" +
+          (songRate !== 1 ? "　・這一首做過兩點校正（滑桿只平移，不改速度）" : "")
         : "沒有歌在唱 —— 字幕校正是綁在歌上的，點一首歌之後才調得動";
     }
     // 沒有歌就沒有東西可以對齊：滑桿關起來，而不是讓它落到一首不存在的歌上
@@ -2710,6 +2734,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!currentSongId) return;
     lyricOffsetSlider.value = 0;
     songOffsetMs = 0;
+    // 歸零是「這首歌的字幕全部重來」：速度也一起清（DELETE 本來就清兩個），
+    // 只清偏移的話會留下一首「歸零過卻還是越唱越歪」的歌。
+    songRate = 1;
     updateLyricOffsetLabel(0);
     window.api.clearSongLyricOffset(currentSongId)
       .catch((err) => showNotification(`字幕校正歸零失敗：${err.message}`, 3500));

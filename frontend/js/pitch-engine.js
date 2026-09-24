@@ -17,6 +17,9 @@ class PitchEngine {
     this.label = options.label ? String(options.label) : "";
 
     this.pitchData = { notes: [], points: [] };
+    // 升降 Key（半音）。導唱音符是從原調的人聲軌抽出來的，伴奏一移調
+    // 就要跟著搬，否則每一幀都判成走音（見 setKeyShift）。
+    this.keyShift = 0;
     this.score = 0;
     this.combo = 0;
     this.maxCombo = 0;
@@ -101,6 +104,30 @@ class PitchEngine {
   /** 對唱模式的演唱者暱稱（點歌台可以隨時改，浮字要跟著改）。 */
   setLabel(label) {
     this.label = label ? String(label) : "";
+  }
+
+  /**
+   * 升降 Key：導唱音符要跟著搬家。
+   *
+   * 伴奏升了兩個半音，人就會跟著唱高兩個半音 —— 導唱音符留在原地的話，
+   * **每一幀都會判成走音**：分數掛零、COMBO 永遠斷、導唱自動淡出誤判成
+   * 「這個人唱不準」而一直把人聲軌拉回來，而且畫面上那條線會整整低兩格
+   * 卻沒有任何地方說得出為什麼。升降 Key 是包廂裡最常被按的一顆鍵，
+   * 所以這一行沒接上，等於評分對一半的人是壞的。
+   *
+   * 只影響「拿什麼音來比」，不影響使用者自己唱出來的音高 ——
+   * 麥克風收到的本來就是移調之後的實際歌聲，不需要再折回去。
+   */
+  setKeyShift(semitones) {
+    const n = Math.max(-12, Math.min(12, Math.round(Number(semitones) || 0)));
+    this.keyShift = n;
+    return n;
+  }
+
+  /** 這個導唱音符**現在**應該唱在哪個音上（含升降 Key）。 */
+  noteMidi(note) {
+    if (!note || !(note.midi > 0)) return 0;
+    return note.midi + (this.keyShift || 0);
   }
 
   // Real-time Autocorrelation Pitch Detector
@@ -236,8 +263,10 @@ class PitchEngine {
       // 麥克風原始電平：自動增益用它決定要加多少（前饋，量的是增益節點之前的訊號）
       rms: this.lastRms,
       // 現在這個導唱音符是什麼音、從哪裡開始（和聲用它算音階上的度數；
-      // noteStart 同時是「換音符了沒」的識別碼 —— 同一個音符不重算移調量）
-      noteMidi: activeNote ? activeNote.midi : 0,
+      // noteStart 同時是「換音符了沒」的識別碼 —— 同一個音符不重算移調量）。
+      // 給的是**移調之後**的音（唱出來的那個音），不是 pitch.json 裡的原調音
+      // —— 差一個 Key 的和聲比沒有和聲更難聽。
+      noteMidi: this.noteMidi(activeNote),
       noteStart: activeNote ? activeNote.start : null,
       // 這支麥克風這一幀收到的音高（0 = 沒偵測到）。
       // 不管有沒有計分都給實際偵測值 —— 對唱的串音判定要靠「兩支麥克風的音高
@@ -313,8 +342,10 @@ class PitchEngine {
     this.ctx.setLineDash([]);
 
     // Note pitch range: Midi 45 (A2) to Midi 80 (Ab5)
-    const minMidi = 45;
-    const maxMidi = 80;
+    // 升降 Key 時整個視窗跟著搬：導唱音符與使用者的歌聲都搬到新的調上，
+    // 只有格線不動的話，升 6 個 Key 會把整條旋律頂到畫面上緣擠成一條。
+    const minMidi = 45 + (this.keyShift || 0);
+    const maxMidi = 80 + (this.keyShift || 0);
     const midiToY = (midi) => {
       const clamped = Math.max(minMidi, Math.min(maxMidi, midi));
       return height - ((clamped - minMidi) / (maxMidi - minMidi)) * (height - 20) - 10;
@@ -326,7 +357,7 @@ class PitchEngine {
         if (note.end >= windowStart && note.start <= windowStart + windowDuration) {
           const x1 = ((note.start - windowStart) / windowDuration) * width;
           const x2 = ((note.end - windowStart) / windowDuration) * width;
-          const y = midiToY(note.midi);
+          const y = midiToY(this.noteMidi(note));
           const w = Math.max(x2 - x1, 4);
           const h = 8;
 
@@ -397,7 +428,7 @@ class PitchEngine {
   /** 回傳這一幀的判定 `{ hit, perfect }`，讓段落評分沿用同一個結果。 */
   evaluateSingingScore(currentTime, userMidi, activeNote) {
     if (activeNote) {
-      const diff = Math.abs(userMidi - activeNote.midi);
+      const diff = Math.abs(userMidi - this.noteMidi(activeNote));
       if (diff <= 1.5) {
         // Hit!
         const perfect = diff < 0.6;

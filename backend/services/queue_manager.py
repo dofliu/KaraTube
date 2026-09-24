@@ -772,6 +772,16 @@ class QueueManager:
             self.current_song = next_item
             # 上一首圈起來的練唱區間對這一首沒有意義，換人上台就歸零
             self.clear_loop()
+            # 升降 Key 跟著「唱這一首的那個人」走，不跟著機器走。
+            #
+            # 上一位把歌降了 4 個 Key（他唱不上去），下一位上台如果沿用，
+            # 那首歌會低得唱不下去 —— 而且他多半不知道要去哪裡改，只會覺得
+            # 「這台機器今天怪怪的」。商用點歌機切歌就回原調，這裡照做。
+            #
+            # 回到的是**設定頁的預設**而不是硬編的 0：包廂裡固定一群男生唱，
+            # 櫃檯把預設設成 -2 是合理的，那才是這台機器的「原調」。
+            # 重唱（restart）不走這裡 —— 同一個人同一首歌，他剛調好的 Key 要留著。
+            self._reset_key_for_new_singer()
             self.is_playing = True
             self._idle_since = None
             if next_item.get("auto"):
@@ -963,6 +973,23 @@ class QueueManager:
         defaults = self.settings.control_defaults()
         self._apply_controls(defaults)
         return defaults
+
+    def _reset_key_for_new_singer(self):
+        """
+        換一首歌上台：升降 Key 回到設定頁的預設值。
+
+        只動這一個控制參數是刻意的。音量、殘響、回音是「這個包廂的音響設定」
+        （調好就整晚不用再碰），升降 Key 是「這首歌對這個人來說高不高」——
+        換人換歌就失效。一起歸零的話，上一位好不容易調順的殘響會在每次切歌
+        時被打回原形，那比沿用錯的 Key 更煩。
+        """
+        default = 0
+        if self.settings:
+            try:
+                default = int(self.settings.get("default_pitch_shift", 0) or 0)
+            except (TypeError, ValueError):
+                default = 0
+        self.pitch_shift = int(max(-6, min(6, default)))
 
     def _cleanup_cache_if_needed(self):
         """快取自動清理：超過設定的上限就從最舊的歌開始刪，演唱中／佇列裡的不動。"""

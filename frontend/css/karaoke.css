@@ -948,6 +948,36 @@ body.hide-pitch .pitch-visualizer-container {
   font-size: 14px;
 }
 
+/* 升降 Key 徽章（同一欄第五層）。
+   紫色是「整首歌被搬到別的調上」的顏色，跟和聲（粉）分得開 —— 兩者都在動
+   音高，但一個是多疊一個聲部，一個是整個伴奏搬家。
+
+   不是 0 就常駐，跟和聲同一個理由：升降 Key 是**共享**狀態，上一位客人
+   留下來的 +4 會原封不動地跟著下一首（換歌會歸回預設，但同一首歌裡不會）。
+   「怎麼這首唱起來特別高」在包廂裡是查不到答案的問題，除非畫面上寫著。 */
+.key-badge {
+  position: absolute;
+  bottom: 200px;
+  right: 40px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-purple);
+  border-left: 3px solid var(--accent-purple);
+  animation: guideDuckFadeIn 0.4s ease-out;
+}
+
+.key-icon {
+  font-size: 14px;
+}
+
 /* 錄音指示。放在畫面左上角而不是跟其他徽章擠在右下：
    它講的不是演出效果，而是「你現在正在被錄音」—— 那是一件要一眼看到的事。
    紅點會呼吸（1.4 秒一次，遠低於光敏性癲癇的 3Hz 安全線）：

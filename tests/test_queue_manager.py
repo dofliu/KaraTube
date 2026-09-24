@@ -201,6 +201,83 @@ def test_update_controls_clamps_values(tmp_path):
     asyncio.run(scenario())
 
 
+class FakeSettings:
+    """SystemSettings 的最小替身：升降 Key 的預設值要能被讀到。"""
+
+    def __init__(self, **values):
+        self._values = values
+
+    def get(self, key, default=None):
+        return self._values.get(key, default)
+
+    def control_defaults(self):
+        return {}
+
+
+def test_key_shift_resets_when_a_new_song_takes_the_stage(tmp_path):
+    """
+    升降 Key 跟著唱歌的人走：換歌回到預設。
+
+    這是包廂裡最常被按的一顆鍵，也是最容易留給下一位客人的一個坑 ——
+    上一位降了 4 個 Key，下一位上台那首歌會低得唱不下去，而他不知道要去哪裡改。
+    """
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002"])
+        await manager.add_song("song0000001")
+        await manager.add_song("song0000002")
+        await manager.update_controls({"pitch_shift": -4})
+        assert manager.pitch_shift == -4
+
+        # 重唱＝同一個人同一首歌：他剛調好的 Key 要留著
+        await manager.restart_current()
+        assert manager.pitch_shift == -4
+
+        # 切歌＝換人上台：回到預設（沒有設定物件時就是原調）
+        await manager.skip_current()
+        assert manager.current_song["song_id"] == "song0000002"
+        assert manager.pitch_shift == 0
+
+    asyncio.run(scenario())
+
+
+def test_key_shift_resets_to_configured_default_not_zero(tmp_path):
+    """
+    回到的是設定頁的預設，不是硬編的 0。
+
+    包廂裡固定一群男生唱，櫃檯把預設設成 -2 是合理的 —— 那才是這台機器的原調。
+    """
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002"])
+        manager.settings = FakeSettings(default_pitch_shift=-2)
+        await manager.add_song("song0000001")
+        await manager.add_song("song0000002")
+        await manager.update_controls({"pitch_shift": 5})
+        await manager.skip_current()
+        assert manager.pitch_shift == -2
+
+    asyncio.run(scenario())
+
+
+def test_key_shift_reset_survives_a_broken_settings_value(tmp_path):
+    """設定檔被手動改壞（字串、超出範圍）時退回原調，不能讓切歌整個炸掉。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002"])
+        manager.settings = FakeSettings(default_pitch_shift="很低")
+        await manager.add_song("song0000001")
+        await manager.add_song("song0000002")
+        await manager.update_controls({"pitch_shift": 5})
+        await manager.skip_current()
+        assert manager.pitch_shift == 0
+
+        manager.settings = FakeSettings(default_pitch_shift=99)
+        await manager.add_song("song0000001")
+        await manager.update_controls({"pitch_shift": 0})
+        await manager.skip_current()
+        assert manager.pitch_shift == 6
+
+    asyncio.run(scenario())
+
+
 def test_requested_by_recorded_and_sanitized(tmp_path):
     """多人包廂：點歌時記下是誰點的，前後空白修掉、過長截斷。"""
     async def scenario():

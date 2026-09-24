@@ -44,6 +44,21 @@ class AudioEngine {
     this.harmonySupported = null;   // null = 還沒試過
     this._harmonyLoading = null;
 
+    // 升降 Key（伴奏即時移調）。跟和聲一樣在 AudioWorklet 裡做，所以要非同步
+    // 載入模組、也可能根本不支援。移調量記在這裡而不是只存在音訊圖上：
+    // 音訊環境往往比第一次按下升降 Key 還晚建立（舞台要等使用者點一下才開音訊）。
+    this.keyShift = 0;
+    this.keyShiftNode = null;
+    this.keyDryGain = null;
+    this.keyWetGain = null;
+    this.keyShiftActive = false;
+    this.keyShiftReady = false;
+    this.keyShiftSupported = null;   // null = 還沒試過
+    this._keyShiftLoading = null;
+    // 移調器那條路多出來的延遲（秒）。worklet 建好時會把實際值報過來，
+    // 這個初值只是「還沒報到之前的合理估計」（90ms 視窗的一半）。
+    this.keyShiftLatencySeconds = 0.045;
+
     // 情境背景用的音樂頻譜分析節點（延遲建立：沒開情境背景就不必多掛一個節點）
     this.musicAnalyser = null;
 
@@ -116,8 +131,27 @@ class AudioEngine {
       // 所以換一首歌調整音量平衡時，唱歌的人不會忽然覺得自己的聲音變大變小。
       this.normGain = this.ctx.createGain();
       this.normGain.gain.value = 1.0;
-      this.normGain.connect(this.mixBus);
       this.normalizationDb = 0;
+
+      // 升降 Key 的兩條路：直通與移調，用兩顆增益交叉淡接。
+      //
+      //   normGain ─┬─→ keyDryGain ──────────────→ mixBus     （原調）
+      //             └─→ music-shifter → keyWetGain → mixBus   （升降 Key）
+      //
+      // 分成兩條而不是「永遠走移調器、移調量 0 時直通」，是因為移調器
+      // 再怎麼乾淨都會多 45ms 的延遲，而原調是九成以上的時候都在的狀態 ——
+      // 那 45ms 會一直躺在伴奏與 MV 畫面之間，只為了一個沒有人在用的功能。
+      //
+      // 位置在 normGain **之後**：伴奏與導唱人聲一起移調（切回原唱時不會
+      // 忽然跳回原本的調），而麥克風與罐頭音效直接接 mixBus 完全不受影響 ——
+      // 升 Key 是把音樂搬到你唱得到的地方，不是把你的聲音變成別人。
+      this.keyDryGain = this.ctx.createGain();
+      this.keyDryGain.gain.value = 1.0;
+      this.keyDryGain.connect(this.mixBus);
+      this.keyWetGain = this.ctx.createGain();
+      this.keyWetGain.gain.value = 0.0;
+      this.keyWetGain.connect(this.mixBus);
+      this.normGain.connect(this.keyDryGain);
 
       // Instrumental & Vocal tracks gain
       this.gainInst = this.ctx.createGain();
@@ -138,6 +172,12 @@ class AudioEngine {
       this.guideDuckLevel = 1.0;
 
       this._initReverb();
+
+      // 音訊環境比「點歌台送來的升降 Key」晚建立是常態（舞台要等第一次點擊
+      // 才能開音訊，而點歌台可能早就按過 +2 了）。所以那個值先記著，
+      // 這裡補做一次 —— 不補的話，開場第一首會唱在錯的調上，
+      // 而畫面上的「+2」還亮著。
+      if (this.keyShift) this.setKeyShift(this.keyShift);
     }
 
     if (this.ctx.state === 'suspended') {
@@ -148,13 +188,137 @@ class AudioEngine {
   // 送進 destination 的音訊要多久才真的從喇叭發出來。
   // media.currentTime 回報的是「已排程」的位置，字幕若直接照它畫就會系統性地比歌聲早，
   // Windows WASAPI 常見 40~200ms，藍牙喇叭更可到 300ms。
+  //
+  // 升降 Key 打開時還要再加上移調器那半個視窗（約 45ms）：那條路是**多出來的**
+  // 延遲，字幕與評分都照這個函式在補償。不加的話，升 Key 的那一刻整首歌的
+  // 字幕會一起早 45ms —— 而使用者只會知道「升 Key 之後字幕怪怪的」。
   getOutputLatency() {
     if (!this.ctx) return 0;
+    return this._deviceLatency() + this.keyShiftLatency();
+  }
+
+  _deviceLatency() {
     const out = this.ctx.outputLatency;      // Chrome / Firefox：含作業系統與裝置緩衝
     if (typeof out === "number" && out > 0 && out < 1.0) return out;
     const base = this.ctx.baseLatency;       // Safari 只有這個，且只算 Web Audio 內部緩衝
     if (typeof base === "number" && base > 0 && base < 1.0) return base * 2;
     return 0.05;
+  }
+
+  // --- 升降 Key（伴奏即時移調，music-shifter-worklet.js）---
+
+  /** 移調器這條路多出來的延遲（秒）。沒在移調（或不支援）就是 0。 */
+  keyShiftLatency() {
+    return this.keyShiftActive ? this.keyShiftLatencySeconds : 0;
+  }
+
+  /**
+   * 這台機器做不做得到即時移調。
+   * @returns {boolean|null} null = 還沒試過（音訊環境還沒建、還沒有人按過升降 Key）
+   */
+  keyShiftAvailable() {
+    return this.keyShiftSupported;
+  }
+
+  /**
+   * 載入移調用的 AudioWorklet 並接進伴奏匯流排。
+   *
+   * 第一次真的要用（移調量不為 0）才載入：原調的人不必為了一個沒用到的功能
+   * 多下載一支模組、多跑一條音訊路徑。重複呼叫安全。
+   */
+  async initKeyShift() {
+    if (this.keyShiftReady) return true;
+    if (this.keyShiftSupported === false) return false;
+    if (this._keyShiftLoading) return this._keyShiftLoading;
+
+    this._keyShiftLoading = (async () => {
+      if (!this.ctx || !this.keyWetGain) return false;   // 還沒輪到，不是不支援
+      if (!this.ctx.audioWorklet) {
+        this.keyShiftSupported = false;
+        return false;
+      }
+      try {
+        await this.ctx.audioWorklet.addModule("/js/music-shifter-worklet.js");
+        this.keyShiftNode = new AudioWorkletNode(this.ctx, "music-shifter", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        });
+      } catch (e) {
+        console.warn("移調模組載入失敗，此瀏覽器不支援升降 Key:", e);
+        this.keyShiftSupported = false;
+        return false;
+      }
+      // 延遲長度由 worklet 那一端依實際取樣率決定，所以是它報過來的。
+      this.keyShiftNode.port.onmessage = (e) => {
+        if (e.data && e.data.type === "latency") {
+          this.keyShiftLatencySeconds = Number(e.data.seconds) || 0;
+        }
+      };
+      this.normGain.connect(this.keyShiftNode);
+      this.keyShiftNode.connect(this.keyWetGain);
+      this.keyShiftSupported = true;
+      this.keyShiftReady = true;
+      return true;
+    })();
+
+    const ok = await this._keyShiftLoading;
+    this._keyShiftLoading = null;
+    return ok;
+  }
+
+  /**
+   * 升降 Key：把伴奏與導唱人聲移調幾個半音（速度不變）。
+   *
+   * 值先記下來再說 —— 音訊環境還沒建、worklet 還在載入的時候也可能被呼叫
+   * （點歌台不等舞台準備好），那些情況都是「還沒輪到」，不是失敗。
+   *
+   * @returns {number} 實際採用的移調量（夾在 ±6，跟點歌台與後端同一個範圍）
+   */
+  setKeyShift(semitones) {
+    const n = Math.max(-6, Math.min(6, Math.round(Number(semitones) || 0)));
+    this.keyShift = n;
+    if (!this.ctx || !this.keyWetGain) return n;
+
+    if (n !== 0 && !this.keyShiftReady) {
+      // 非同步載入，載好之後自己再走一次這個函式（此時 this.keyShift 可能
+      // 已經被改成別的值了 —— 用最新的那個，不是這次進來的 n）。
+      this.initKeyShift().then((ok) => { if (ok) this.setKeyShift(this.keyShift); });
+      return n;
+    }
+
+    const node = this.keyShiftNode;
+    const active = n !== 0 && this.keyShiftReady;
+    const now = this.ctx.currentTime;
+
+    if (node) {
+      const param = node.parameters.get("shift");
+      // 移調量變了不用排斜坡：worklet 裡的延遲量是連續的，改變的只是它
+      // 前進的速度，所以直接設值不會有爆音（跟和聲同一個理由）。
+      if (param) param.value = n;
+      // 從原調切進移調（或反過來）時，移調器剛好是靜音的 —— 這時候清掉
+      // 緩衝，免得它播出十分之一秒前那段「還沒移調」的聲音。
+      if (active !== this.keyShiftActive && !this.keyShiftActive) {
+        try { node.port.postMessage({ type: "reset" }); } catch (e) { /* 節點已收掉 */ }
+      }
+    }
+
+    if (active !== this.keyShiftActive) {
+      this.keyShiftActive = active;
+      // 60ms 的交叉淡接。兩條路差的是 45ms 的延遲，交叉期間會聽到一瞬間的
+      // 相位干涉 —— 但那一瞬間正是使用者自己按下升降 Key 的時候，
+      // 而「按了鍵，聲音有反應」本來就是他要的。中間如果不淡接而是硬切，
+      // 那就不是一瞬間的相位干涉，而是一聲爆音。
+      this.keyWetGain.gain.setTargetAtTime(active ? 1 : 0, now, 0.06);
+      this.keyDryGain.gain.setTargetAtTime(active ? 0 : 1, now, 0.06);
+    }
+    return n;
+  }
+
+  /** 換歌：清掉移調器裡上一首的殘留樣本（新的歌從靜音開始，清了不會有聲響）。 */
+  resetKeyShift() {
+    if (!this.keyShiftNode) return;
+    try { this.keyShiftNode.port.postMessage({ type: "reset" }); } catch (e) { /* 節點已收掉 */ }
   }
 
   // Setup dual audio element sync

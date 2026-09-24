@@ -95,6 +95,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const recordingBadge = document.getElementById("recordingBadge");
   const harmonyBadge = document.getElementById("harmonyBadge");
   const harmonyBadgeText = document.getElementById("harmonyBadgeText");
+  const keyBadge = document.getElementById("keyBadge");
+  const keyBadgeText = document.getElementById("keyBadgeText");
   const duetBoard = document.getElementById("duetBoard");
   const duetRowA = document.getElementById("duetRowA");
   const duetRowB = document.getElementById("duetRowB");
@@ -284,6 +286,9 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastMicFrameMsB = 0;
 
   let outputLatency = 0.05;
+  // 升降 Key（半音）。共享狀態，點歌台按一下這裡就跟著搬：伴奏移調、
+  // 導唱音符移調、和聲的調性重估、字幕補償加上移調器的延遲。
+  let currentKeyShift = 0;
   let syncToastTimer = null;
   let lastVocResync = 0;
   let lastVideoResync = 0;
@@ -314,6 +319,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     isAudioUnlocked = true;
     outputLatency = window.audioEngine.getOutputLatency();
+    // 音訊解鎖之前點歌台就按過升降 Key 的話，移調器要到現在才載得起來
+    // （AudioContext 在使用者點一下之前根本不存在）。
+    refreshKeyLatency();
     console.log(`[KaraTube] 輸出延遲 ${(outputLatency * 1000).toFixed(0)}ms，本機字幕補償 ${deviceOffsetMs}ms`);
     if (audioPromptOverlay) {
       audioPromptOverlay.classList.add("hidden");
@@ -606,10 +614,24 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  /**
+   * 和聲要看的導唱音符。
+   *
+   * 和聲是「在音階上往上疊三度」，而音階是從導唱音符判出來的 ——
+   * 升降 Key 之後整首歌搬了家，音階也要跟著搬。餵原調的音符進去的話，
+   * 判出來的調性會差那幾個半音，疊出來的第二聲部就會整首不在調上
+   * （而那比沒有和聲更難聽）。
+   */
+  function harmonyNotes(notes) {
+    const list = Array.isArray(notes) ? notes : [];
+    if (!currentKeyShift) return list;
+    return list.map((n) => ({ ...n, midi: n.midi + currentKeyShift }));
+  }
+
   /** 換歌／重唱：調性要重估，移調器裡上一首的殘留樣本也要清掉。 */
   function resetHarmony(notes) {
     if (notes !== undefined) {
-      const key = harmony.setNotes(notes);
+      const key = harmony.setNotes(harmonyNotes(notes));
       if (harmony.enabled) {
         console.log(key
           ? `[KaraTube] 和聲調性：${key.name}（相關 ${key.confidence}，取樣 ${key.seconds}s）`
@@ -621,6 +643,68 @@ document.addEventListener("DOMContentLoaded", () => {
     lastHarmonyFrameMs = 0;
     window.audioEngine.resetHarmony();
     updateHarmonyBadge();
+  }
+
+  // --- 升降 Key（伴奏即時移調）---
+
+  /**
+   * 套用共享狀態裡的升降 Key。
+   *
+   * 一顆鍵要牽動四個地方，少接一個都是很難查的壞法：
+   *   1. **伴奏與導唱人聲**移調（`audio-effects.js` → music-shifter worklet）。
+   *   2. **導唱音符**跟著移調，否則每一幀都判成走音（見 pitch-engine.setKeyShift）。
+   *   3. **和聲的調性**重估 —— 它是從導唱音符判出來的。
+   *   4. **字幕補償**加上移調器那 45ms，不然升 Key 之後整首字幕一起變早。
+   */
+  function applyKeyShift(semitones) {
+    const n = Math.max(-6, Math.min(6, Math.round(Number(semitones) || 0)));
+    if (n === currentKeyShift) return;
+    currentKeyShift = n;
+    window.audioEngine.setKeyShift(n);
+    pitchEngine.setKeyShift(n);
+    pitchEngineB.setKeyShift(n);
+    // 和聲吃的是移調後的音符（沒有歌的時候 notes 是空的，等於只做重置）
+    resetHarmony((pitchEngine.pitchData && pitchEngine.pitchData.notes) || []);
+    refreshKeyLatency();
+    updateKeyBadge();
+    console.log(`[KaraTube] 升降 Key：${n > 0 ? "+" : ""}${n} 半音`);
+  }
+
+  /**
+   * 移調器載好之後再量一次輸出延遲，並把徽章補上。
+   *
+   * worklet 是非同步載入的，所以按下升降 Key 的當下還不知道
+   * （a）這台機器做不做得到、（b）那條路到底多長。兩件事都要等它回話。
+   */
+  function refreshKeyLatency() {
+    if (!isAudioUnlocked) return;
+    outputLatency = window.audioEngine.getOutputLatency();
+    if (!currentKeyShift) return;
+    window.audioEngine.initKeyShift().then(() => {
+      outputLatency = window.audioEngine.getOutputLatency();
+      updateKeyBadge();
+    }).catch(() => { /* 不支援，徽章會說 */ });
+  }
+
+  /**
+   * 舞台徽章：升降 Key 不是 0 的時候常駐。
+   *
+   * 要寫在舞台上的理由跟和聲的調性一樣 —— 「怎麼今天這首唱起來特別高」
+   * 在包廂裡是個沒有人查得到答案的問題，除非畫面上寫著 +2。
+   * 而它是**共享**狀態（上一位客人留下來的也算），所以看得到才有得改。
+   */
+  function updateKeyBadge() {
+    if (!keyBadge) return;
+    if (!currentKeyShift) {
+      if (keyBadge.style.display !== "none") keyBadge.style.display = "none";
+      return;
+    }
+    keyBadge.style.display = "flex";
+    const label = `${currentKeyShift > 0 ? "+" : ""}${currentKeyShift} Key`;
+    // 這台機器做不到即時移調時一定要說：畫面上亮著 +2 而聲音沒有變，
+    // 客人會一直按那顆鍵（而每按一次都更確定「這台機器壞了」）。
+    keyBadgeText.textContent = window.audioEngine.keyShiftAvailable() === false
+      ? `${label} · 本機瀏覽器無法移調` : label;
   }
 
   // --- 對唱模式（兩支麥克風分別評分）---
@@ -2191,6 +2275,13 @@ document.addEventListener("DOMContentLoaded", () => {
       setShowPitch(state.show_pitch, false);
     }
 
+    // 升降 Key。放在 current_song 的處理**之前**：換歌時後端會把它歸回預設，
+    // 而那則廣播跟新的歌在同一個訊息裡 —— 先套 Key 再載歌，新的歌才不會有
+    // 前面幾幀唱在上一位客人留下來的調上。
+    if (state.pitch_shift !== undefined) {
+      applyKeyShift(state.pitch_shift);
+    }
+
     applyLoopState(state);
 
     if (song && song.status === "READY") {
@@ -2289,6 +2380,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     karaokeRenderer.setLyrics(lyrics);
     pitchEngine.setPitchData(pitch);
+    // 導唱音符換了一份，這首歌的升降 Key 要重新套上去（setPitchData 不動
+    // keyShift，但移調器裡還留著上一首最後半個視窗的聲音 —— 那半個視窗
+    // 會在新的歌前奏第一拍被播出來）。
+    window.audioEngine.resetKeyShift();
     // 先 setPitchData（它會歸零評分）再載段落，順序反了段落統計會被清掉
     pitchEngine.setSections((structure && structure.sections) || []);
     // 對唱的第二位吃同一份導唱音符與曲式（同一把尺才比得出誰唱得好）

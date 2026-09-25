@@ -16,10 +16,10 @@
 """
 import os
 
-__version__ = "1.24.0"
+__version__ = "1.25.0"
 
 # 版本代號：發布公告與 release 標題用，純粹是給人記的名字
-VERSION_CODENAME = "Sing It in Your Key"
+VERSION_CODENAME = "Bring Your Own Songs"
 
 
 def build_id() -> str:

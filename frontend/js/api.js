@@ -402,6 +402,26 @@ class KaraTubeAPI {
     return data;
   }
 
+  // --- 本機曲庫匯入（把 cache/import/ 裡的檔案變成曲庫歌曲）---
+  // 掃描是 GET（不鎖），真正建立處理任務走 staffFetch（機器層級的動作）。
+  async getLocalImports() {
+    const res = await fetch(`${this.baseUrl}/api/import`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async importLocalFiles({ items, name = "", startNow = true, requestedBy = "" }) {
+    const res = await this.staffFetch(`${this.baseUrl}/api/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, name, start_now: startNow, requested_by: requestedBy })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  }
+
   // --- 排程預處理（半夜把整批歌先跑成伴奏＋字幕）---
   async getBatchState() {
     const res = await fetch(`${this.baseUrl}/api/batch`);

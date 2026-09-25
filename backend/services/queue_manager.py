@@ -11,6 +11,7 @@ from backend.services import autofill as autofill_rules
 from backend.services import rotation as rotation_rules
 from backend.services import room_timer as room_rules
 from backend.services import song_quota
+from backend.services.local_import import is_local_id, local_url
 # 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
 from backend.services.settings import HARMONY_STYLE_CHOICES
 
@@ -636,13 +637,20 @@ class QueueManager:
             status = "PENDING"
             progress = 0
 
+        # 本機匯入的歌不在 YouTube 上：網址要走 `local:` 那條路，
+        # 不然流水線會拿著一個假的 youtube 網址去下載，然後在「重新處理」
+        # 與「快取被清掉之後再點一次」這兩個時機失敗 —— 而那兩次失敗都離
+        # 匯入很遠，沒有人會把它們聯想在一起。縮圖同理：YouTube 那個網址
+        # 對本機歌永遠是 404，換成自己抽出來的那張。
+        local = is_local_id(song_id)
         queue_item = {
             "queue_id": str(uuid.uuid4()),
             "song_id": song_id,
-            "url": f"https://www.youtube.com/watch?v={song_id}",
+            "url": local_url(song_id) if local else f"https://www.youtube.com/watch?v={song_id}",
             "title": title or "Loading...",
             "artist": artist or "",
-            "thumbnail": thumbnail or f"https://img.youtube.com/vi/{song_id}/hqdefault.jpg",
+            "thumbnail": thumbnail or (f"/media/songs/{song_id}/thumbnail.jpg" if local
+                                       else f"https://img.youtube.com/vi/{song_id}/hqdefault.jpg"),
             "has_video": has_video,
             "status": status,
             "progress": progress,

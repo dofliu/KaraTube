@@ -2334,3 +2334,164 @@ input[type="range"] {
   border: 1px solid rgba(0, 240, 255, 0.25);
   font-variant-numeric: tabular-nums;
 }
+
+/* --- 本機曲庫匯入 --- */
+/* 這一頁的每一列都要同時交代四件事：哪個檔案、會變成哪一首歌、
+   現在是什麼狀態、以及**有沒有附歌詞**（最後這件只有在匯入之前補得了）。
+   所以是一列一檔的清單，不是歌卡格線 —— 歌卡放不下可以編輯的歌名欄。 */
+.import-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.import-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.import-guidance {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-main);
+}
+
+/* 資料夾路徑要能整串選起來複製 —— 使用者的下一個動作是去檔案總管貼上它 */
+.import-root {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--accent-cyan);
+  user-select: all;
+  word-break: break-all;
+}
+
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.import-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.import-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* 已經在曲庫裡的那幾列要明顯退到後面，但不能隱藏 ——
+   「我放進去的那個檔案機器到底有沒有看到」正是使用者來這一頁要確認的事。 */
+.import-row-done {
+  opacity: 0.55;
+}
+
+.import-check {
+  margin-top: 4px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--accent-cyan);
+}
+
+.import-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.import-row-file {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.import-row-fields {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.import-input {
+  flex: 2;
+  min-width: 140px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-main);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.import-input-artist {
+  flex: 1;
+  min-width: 110px;
+}
+
+.import-input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.import-input:disabled {
+  opacity: 0.6;
+}
+
+.import-row-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.import-row-warn {
+  font-size: 12px;
+  color: var(--accent-yellow, #ffde59);
+}
+
+.import-skipped {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 8px 12px;
+}
+
+.import-skipped summary {
+  cursor: pointer;
+}
+
+/* 徽章的三種語意版本（對齊徽章用的是 align-* 前綴，這裡是通用的那一組） */
+.cache-badge.warn {
+  color: var(--accent-yellow, #ffde59);
+  background: rgba(255, 222, 89, 0.12);
+  border: 1px solid rgba(255, 222, 89, 0.3);
+}
+
+.cache-badge.bad {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.cache-badge.muted {
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}

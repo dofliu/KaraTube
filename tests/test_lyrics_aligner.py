@@ -178,3 +178,65 @@ def test_distribute_chars_survives_zero_length_line(aligner):
     assert len(chars) == 3
     for prev, nxt in zip(chars, chars[1:], strict=False):
         assert prev["end"] <= nxt["start"] + 1e-6
+
+
+# --- 自備歌詞（本機匯入時放在檔案旁邊的那份 .lrc）---
+#
+# 這一段是**行為**測試而不是純函數測試，但它跑得動：給了 local_lrc 就不上網，
+# 而人聲活動分析（需要 librosa 與真實音檔）失敗時會退成 va=None，
+# 剩下的路徑全部是 numpy。這幾條釘的是兩個不能退讓的決定。
+
+LOCAL_LRC = "\n".join([
+    "[00:10.00]午後的陽光",
+    "[00:14.00]灑在稻田上",
+    "[00:18.00]風吹過山崗",
+    "[00:22.00]記得那年的夏天",
+])
+
+
+def test_sidecar_lrc_is_used_without_going_online(aligner, tmp_path, monkeypatch):
+    """給了自備歌詞就不該再上網搜尋：本機檔案多半是網路上根本沒有的歌，
+    而那一趟搜尋只會拖慢整批匯入（一首多等好幾秒，兩百首就是半小時）。"""
+    def explode(*args, **kwargs):
+        raise AssertionError("有了自備歌詞還去抓線上 LRC")
+
+    monkeypatch.setattr(aligner, "fetch_lrc_candidates", explode)
+    out = tmp_path / "lyrics.json"
+    lines = aligner.align(tmp_path / "vocals.mp3", "稻香", "周杰倫",
+                          output_json=out, local_lrc=LOCAL_LRC)
+    assert [ln["text"] for ln in lines][:2] == ["午後的陽光", "灑在稻田上"]
+    assert out.exists()
+
+    import json
+    report = json.loads((tmp_path / "alignment.json").read_text(encoding="utf-8"))
+    assert report["source"] == "lrc_local"
+
+
+def test_a_low_scoring_sidecar_lrc_is_not_silently_replaced(aligner, tmp_path, monkeypatch):
+    """使用者親手放的歌詞被默默換成聽寫結果的話，他既看不到原因，
+    也想不到要去哪裡改。分數照樣記進 alignment.json，讓畫面上的徽章去講。"""
+    def explode(*args, **kwargs):
+        raise AssertionError("自備歌詞不該掉進 Whisper 聽寫")
+
+    monkeypatch.setattr(aligner, "transcribe_pure_acoustic", explode)
+    monkeypatch.setattr(aligner, "fetch_lrc_candidates", lambda *a, **k: [])
+    lines = aligner.align(tmp_path / "vocals.mp3", "稻香", "",
+                          output_json=tmp_path / "lyrics.json", local_lrc=LOCAL_LRC)
+    assert len(lines) >= 4
+
+
+def test_a_plain_text_lyric_file_falls_back_to_the_normal_path(aligner, tmp_path, monkeypatch):
+    """沒有時間戳的純文字歌詞解不出兩行以上。硬用的話整首歌只剩一行字，
+    所以要退回一般流程（上網找 → 聽寫）。"""
+    called = {"online": 0}
+
+    def fake_fetch(*args, **kwargs):
+        called["online"] += 1
+        return []
+
+    monkeypatch.setattr(aligner, "fetch_lrc_candidates", fake_fetch)
+    monkeypatch.setattr(aligner, "transcribe_pure_acoustic", lambda *a, **k: [])
+    aligner.align(tmp_path / "vocals.mp3", "稻香", "",
+                  output_json=tmp_path / "lyrics.json",
+                  local_lrc="午後的陽光\n灑在稻田上")
+    assert called["online"] == 1

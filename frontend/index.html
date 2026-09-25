@@ -84,6 +84,7 @@
         <button class="btn btn-secondary lib-tab" data-lib="recordings" title="錄唱回放：把剛剛唱的那一次聽回來（要先到系統設定頁打開錄音）">🎙️ 錄唱回放</button>
         <button class="btn btn-secondary lib-tab" data-lib="cache">🗂️ 快取管理</button>
         <button class="btn btn-secondary lib-tab" data-lib="batch" title="半夜自動把整張播放清單處理好，隔天點下去就是秒播">🌙 排程預處理</button>
+        <button class="btn btn-secondary lib-tab" data-lib="import" title="本機匯入：把自己的伴唱影片或音檔放進 cache/import/，跑同一條流水線變成曲庫裡的歌（不必上 YouTube）">📁 本機匯入</button>
         <span id="libSummary" class="lib-summary"></span>
       </div>
 
@@ -624,6 +625,10 @@
   <script src="/js/api.js"></script>
   <!-- 排程分頁的純顯示邏輯（有單元測試），要在 controller 之前載入 -->
   <script src="/js/batch-view.js"></script>
+  <!-- 本機匯入那一頁的說法。這一頁的錯誤幾乎都不會拋例外，只會安靜地騙人
+       （把已經在曲庫裡的歌顯示成可以匯入、或掃到 0 個檔案時不講那個資料夾在哪），
+       所以每一種狀態的「下一步是什麼」都寫在那支裡，並且有單元測試。 -->
+  <script src="/js/local-import.js"></script>
   <!-- 跨場次段落趨勢的呈現（純邏輯，舞台端載的是同一支）：
        兩邊各寫一次的話，同一份資料會在兩個畫面上講出不同的說法。 -->
   <script src="/js/trend-view.js"></script>

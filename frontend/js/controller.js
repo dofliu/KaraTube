@@ -1037,6 +1037,159 @@ document.addEventListener("DOMContentLoaded", () => {
     if (activeTab && activeTab.dataset.lib === "batch") renderBatch();
   });
 
+  // --- 本機曲庫匯入 ---
+  // 曲庫的第二個入口：把自己的 MV／音檔丟進 cache/import/，跑同一條流水線。
+  // 說法（狀態徽章、該做什麼、確認文字）住在 local-import.js，那邊有單元測試。
+  //
+  // 這一頁**刻意不跟著 BATCH_UPDATE 重畫**：畫面上有使用者打到一半的歌名，
+  // 而重畫會把它清掉。進度要看的人自己切到「🌙 排程預處理」那一頁。
+  const ImportView = window.LocalImportView;
+  let importScan = null;
+  const importSelection = new Set();
+  const importEdits = {};      // path -> { title, artist }
+
+  async function loadLocalImports() {
+    libSummary.textContent = "掃描中…";
+    try {
+      importScan = await window.api.getLocalImports();
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">匯入資料夾讀取失敗：${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    importSelection.clear();
+    ImportView.defaultSelection(importScan.files).forEach(p => importSelection.add(p));
+    renderLocalImports();
+  }
+
+  function importRowHtml(file) {
+    const meta = ImportView.fileStateMeta(file.state);
+    const selectable = ImportView.canSelect(file);
+    const edit = importEdits[file.path] || {};
+    const title = edit.title !== undefined ? edit.title : (file.title || "");
+    const artist = edit.artist !== undefined ? edit.artist : (file.artist || "");
+    const dup = ImportView.duplicateWarning(file);
+    const checked = importSelection.has(file.path) ? "checked" : "";
+    // 已匯入的那一列留著歌名輸入框但關掉：拿掉的話整排會高低不齊，
+    // 而使用者要的資訊（這個檔案對應曲庫裡哪一首）反而更難對上。
+    const disabled = selectable ? "" : "disabled";
+    return `
+      <div class="import-row ${selectable ? "" : "import-row-done"}">
+        <input type="checkbox" class="import-check" ${checked} ${disabled}
+               data-path="${escapeAttr(file.path)}"
+               onchange="window.toggleImportFile('${escapeAttr(file.path)}', this.checked)">
+        <div class="import-row-main">
+          <div class="import-row-file" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}</div>
+          <div class="import-row-fields">
+            <input type="text" class="import-input" placeholder="歌名" maxlength="120" ${disabled}
+                   value="${escapeAttr(title)}"
+                   oninput="window.editImportField('${escapeAttr(file.path)}', 'title', this.value)">
+            <input type="text" class="import-input import-input-artist" placeholder="歌手（選填）"
+                   maxlength="60" value="${escapeAttr(artist)}" ${disabled}
+                   oninput="window.editImportField('${escapeAttr(file.path)}', 'artist', this.value)">
+          </div>
+          <div class="import-row-detail">${escapeHtml(ImportView.fileDetail(file))}</div>
+          ${dup ? `<div class="import-row-warn">${escapeHtml(dup)}</div>` : ""}
+        </div>
+        <span class="cache-badge ${meta.cls}">${meta.label}</span>
+      </div>`;
+  }
+
+  function renderLocalImports() {
+    if (!importScan) return;
+    const files = importScan.files || [];
+    libSummary.textContent = ImportView.summaryText(importScan);
+    const skipped = importScan.skipped || [];
+    const skippedHtml = skipped.length
+      ? `<details class="import-skipped"><summary>${escapeHtml(ImportView.skippedSummary(importScan))}</summary>
+           ${skipped.map(s => `<div>${escapeHtml(s.path)} — ${escapeHtml(s.reason)}</div>`).join("")}
+         </details>`
+      : "";
+    const truncation = ImportView.truncationNote(importScan);
+    const head = `
+      <div class="import-head">
+        <div class="import-guidance">${escapeHtml(ImportView.guidanceText(importScan))}</div>
+        <div class="import-root">📂 ${escapeHtml(importScan.root || "")}</div>
+        ${truncation ? `<div class="import-row-warn">${escapeHtml(truncation)}</div>` : ""}
+        <div class="import-actions">
+          <button class="btn btn-secondary" onclick="window.rescanImports()">🔄 重新掃描</button>
+          <button class="btn btn-secondary" onclick="window.toggleImportAll(true)">全選可匯入</button>
+          <button class="btn btn-secondary" onclick="window.toggleImportAll(false)">全部不選</button>
+          <label class="batch-check"><input type="checkbox" id="importStartNow" checked> 立刻開始處理</label>
+          <button class="btn btn-primary" onclick="window.submitLocalImport()">📁 匯入所選</button>
+          <span class="import-count" id="importCount"></span>
+        </div>
+      </div>`;
+    searchResults.innerHTML = `<div class="import-panel">${head}
+      ${files.map(importRowHtml).join("")}${skippedHtml}</div>`;
+    paintImportCount();
+  }
+
+  function paintImportCount() {
+    const el = document.getElementById("importCount");
+    if (el) el.textContent = importSelection.size ? `已選 ${importSelection.size} 首` : "尚未選取";
+  }
+
+  window.toggleImportFile = (path, checked) => {
+    if (checked) importSelection.add(path);
+    else importSelection.delete(path);
+    paintImportCount();     // 只改那一行字，不重畫整頁（會清掉打到一半的歌名）
+  };
+
+  window.toggleImportAll = (select) => {
+    importSelection.clear();
+    if (select) {
+      (importScan && importScan.files || [])
+        .filter(ImportView.canSelect).forEach(f => importSelection.add(f.path));
+    }
+    // 照 data-path 對回去，不靠 DOM 順序跟陣列順序剛好一致
+    document.querySelectorAll(".import-row .import-check").forEach((box) => {
+      box.checked = importSelection.has(box.dataset.path);
+    });
+    paintImportCount();
+  };
+
+  window.editImportField = (path, field, value) => {
+    importEdits[path] = importEdits[path] || {};
+    importEdits[path][field] = value;
+  };
+
+  window.rescanImports = () => {
+    // 重新掃描會重畫整頁，打到一半的歌名就沒了 —— 先問一聲
+    if (Object.keys(importEdits).length &&
+        !confirm("重新掃描會清掉你剛剛改過的歌名，要繼續嗎？")) return;
+    Object.keys(importEdits).forEach(k => delete importEdits[k]);
+    loadLocalImports();
+  };
+
+  window.submitLocalImport = async () => {
+    const startNow = !!(document.getElementById("importStartNow") || {}).checked;
+    const files = (importScan && importScan.files) || [];
+    const items = files
+      .filter(f => importSelection.has(f.path) && ImportView.canSelect(f))
+      .map(f => {
+        const edit = importEdits[f.path] || {};
+        return {
+          path: f.path,
+          title: (edit.title !== undefined ? edit.title : f.title || "").trim(),
+          artist: (edit.artist !== undefined ? edit.artist : f.artist || "").trim(),
+        };
+      });
+    if (!items.length) {
+      alert("請先勾選要匯入的檔案");
+      return;
+    }
+    if (!confirm(ImportView.confirmText(items.length, startNow))) return;
+    try {
+      const res = await window.api.importLocalFiles({ items, startNow, requestedBy: nickname });
+      batchState = res.state || batchState;
+      showNotification(ImportView.resultMessage(res));
+      Object.keys(importEdits).forEach(k => delete importEdits[k]);
+      loadLocalImports();
+    } catch (e) {
+      alert("匯入失敗: " + e.message);
+    }
+  };
+
   // --- 分類瀏覽（語言別 / 歌手）---
   // 商用點歌機的「分類點歌」：先選語言別或歌手，再從清單裡挑歌。
   // 語言與歌手是伺服器從歌名、頻道名與歌詞判定後快取在 metadata 裡的。
@@ -1520,6 +1673,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "recordings") loadRecordings();
     else if (which === "cache") loadCacheManager();
     else if (which === "batch") loadBatch();
+    else if (which === "import") loadLocalImports();
     else loadCachedRecommendations();
   }
 

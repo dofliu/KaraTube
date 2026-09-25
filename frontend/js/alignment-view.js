@@ -81,6 +81,25 @@ function alignmentBadge(alignment) {
     };
   }
 
+  // 本機匯入時，使用者自己擺在檔案旁邊的那一份 .lrc。
+  // 分數照樣分級（手打的 LRC 一樣會對到不同版本而歪掉），但**下一步不一樣**：
+  // 重算只會再讀同一份檔案，所以修法是去換掉那個 .lrc，不是按重算。
+  // 不講這一句的話，使用者會對著同一首歌按五次重算，每次得到一樣的結果。
+  if (source === "lrc_local") {
+    const tone = score === null ? "muted"
+      : (score >= ALIGN_GOOD_SCORE ? "ok" : (score >= ALIGN_MIN_TRUST_SCORE ? "warn" : "bad"));
+    const head = tone === "ok"
+      ? "用的是你放在檔案旁邊的 .lrc，對得很準。"
+      : "用的是你放在檔案旁邊的 .lrc。時間軸看起來對不太上 —— " +
+        "那份歌詞可能是別的版本的（改用另一份 .lrc 再重新處理一次即可）。";
+    return {
+      label: "自備歌詞",
+      tone,
+      title: [head, ...parts].join("　"),
+      rebuildHint: "重算會再讀同一份 .lrc（要換歌詞的話先換掉那個檔案）",
+    };
+  }
+
   if (source === "lrc") {
     if (score === null) {
       return { label: "對齊未知", tone: "muted", title: parts.join("　"),

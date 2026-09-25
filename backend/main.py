@@ -15,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response, FileResponse, StreamingResponse, JSONResponse
 import qrcode
 
-from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, RECORDINGS_DIR, PUBLIC_HOST,
-                            PUBLIC_PORT, DEVICE)
+from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, IMPORT_DIR, RECORDINGS_DIR,
+                            PUBLIC_HOST, PUBLIC_PORT, DEVICE)
 from backend.pipeline.chorus_detector import analyze_song_structure
 from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
 from backend.pipeline.song_processor import SongProcessor
@@ -32,6 +32,7 @@ from backend.services.song_numbers import SongNumberBook, parse_number
 from backend.services.lyric_offsets import (MAX_OFFSET_MS, MAX_RATE, MIN_RATE,
                                             LyricOffsets)
 from backend.services.artist_index import ArtistFinder
+from backend.services.local_import import LocalImportLibrary
 from backend.services.song_history import SongHistory
 from backend.services import access_policy, marquee, room_timer, service_calls, song_quota
 from backend.services.staff_lock import StaffLock
@@ -161,10 +162,16 @@ staff_lock = StaffLock(CACHE_DIR / "staff_lock.json")
 settings = SystemSettings(CACHE_DIR / "settings.json")
 storage = SongStorage(SONGS_DIR)
 search_service = YouTubeSearchService()
+# 本機曲庫匯入：`cache/import/` 裡的檔案 → 跟 YouTube 歌完全一樣的曲庫歌曲。
+# 帳本放在 cache/ 而不是各首歌的資料夾裡（理由同歌號簿）：「重新處理」會
+# rmtree 整個歌資料夾，而那樣就再也找不到原始檔案在哪了。
+local_imports = LocalImportLibrary(IMPORT_DIR, CACHE_DIR / "local_imports.json",
+                                   storage=storage)
 song_processor = SongProcessor(
     whisper_model=settings.get("whisper_model"),
     demucs_model=settings.get("demucs_model"),
     loudness_target_lufs=settings.get("loudness_target_lufs", -14.0),
+    local_library=local_imports,
 )
 play_stats = PlayStats(CACHE_DIR / "play_stats.json")
 favorites = Favorites(CACHE_DIR / "favorites.json")
@@ -461,9 +468,15 @@ def _rebuild_song_lyrics(song_id: str) -> Dict[str, Any]:
         if queue_manager.is_song_in_use(song_id):
             return {"status": "in_use",
                     "message": "這首歌剛剛被點播了，重算已取消（重算會換掉正在唱的那份歌詞）"}
+        # 本機匯入的歌：重算照樣讀檔案旁邊那一份 .lrc。不讀的話，按下重算會把
+        # 使用者自備的歌詞換成線上抓的（或聽寫的）—— 那正是他放那個檔案要避免的事。
+        # 檔案不在了（隨身碟拔掉）就回 None，自動退回一般流程。
+        local_lrc = (local_imports.sidecar_lrc_text(song_id)
+                     if meta.get("source") == "local" else None)
         try:
             lines = song_processor.lyrics_aligner.align(
-                voc_file, meta.get("title", ""), meta.get("artist", ""), lyrics_file)
+                voc_file, meta.get("title", ""), meta.get("artist", ""), lyrics_file,
+                local_lrc)
         except Exception as e:
             logger.exception(f"[{song_id}] 重算歌詞失敗: {e}")
             return {"status": "failed", "message": f"重算歌詞失敗：{e}"}
@@ -532,6 +545,51 @@ async def rebuild_song_lyrics(song_id: str):
             "before": result.get("before"), "alignment": result.get("after"),
             "cleared_offset_ms": cleared_offset, "cleared_rate": cleared_rate,
             "started_singing": bool(result.get("started_singing"))}
+
+
+# --- 本機曲庫匯入 ---
+#
+# 曲庫的第二個入口：把 `cache/import/` 裡的影音檔跑成曲庫歌曲。
+# 匯入**不自己跑流水線**，而是建一筆排程任務丟給 batch_scheduler ——
+# 理由是那兩件事要爭的是同一顆 CPU：一顆隨身碟可能有兩百首歌，而包廂裡
+# 隨時會有人推門進來點第一首。排程器已經會「處理完一首就重新問一次
+# 現在可不可以跑」，把匯入接上去就自動繼承了那條讓路規則。
+
+
+@app.get("/api/import")
+async def get_local_imports():
+    """掃描匯入資料夾：有哪些檔案、哪些已經在曲庫裡、哪些上次失敗了。"""
+    return await asyncio.to_thread(local_imports.scan)
+
+
+@app.post("/api/import")
+async def create_import_job(payload: Dict[str, Any] = Body(...)):
+    """
+    把勾選的本機檔案排進處理佇列。
+
+    `items` 是 `[{path, title?, artist?}]`：`path` 相對於匯入資料夾，
+    歌名與歌手可以在畫面上改過再送（那是**唯一一次便宜的機會** ——
+    處理完之後歌號、注音索引、歌星併名全部建在那串字上）。
+    """
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="請先勾選要匯入的檔案")
+
+    prepared = await asyncio.to_thread(local_imports.prepare, items)
+    sources = prepared["sources"]
+    if not sources:
+        detail = "這些檔案都讀不到（被移走了？）" if prepared["failed"] else "沒有可匯入的檔案"
+        raise HTTPException(status_code=400, detail=detail)
+
+    job = batch_scheduler.create_job(
+        sources,
+        name=payload.get("name") or f"本機匯入 {len(sources)} 首",
+        start_now=bool(payload.get("start_now", True)),
+        requested_by=payload.get("requested_by", ""),
+    )
+    await ws_manager.broadcast({"type": "BATCH_UPDATE", "data": batch_scheduler.state()})
+    return {"status": "success", "job": job, "failed": prepared["failed"],
+            "accepted": len(sources), "state": batch_scheduler.state()}
 
 
 # --- 排程預處理 ---

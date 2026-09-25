@@ -832,6 +832,92 @@ def test_queued_cached_song_carries_its_number(fake_library_song, clean_song_num
         queue_manager.is_playing = False
 
 
+# --- 本機曲庫匯入 ---
+
+@pytest.fixture()
+def import_sandbox(tmp_path, monkeypatch):
+    """
+    把匯入資料夾與帳本指到 tmp_path，測完還原。
+
+    直接用本機真正的 `cache/import/` 會在開發者的機器上留下垃圾檔案，
+    更糟的是會讀到他自己放進去的歌 —— 那會讓這幾條測試在別人的機器上
+    紅得莫名其妙。
+    """
+    from backend.services.local_import import LocalImportLibrary
+    saved_root = main.local_imports.root
+    saved_file = main.local_imports.registry_file
+    saved_entries = dict(main.local_imports.entries)
+    saved_fps = dict(main.local_imports.fingerprints)
+
+    fresh = LocalImportLibrary(tmp_path / "import", tmp_path / "local_imports.json",
+                               storage=main.storage)
+    main.local_imports.root = fresh.root
+    main.local_imports.registry_file = fresh.registry_file
+    main.local_imports.entries = {}
+    main.local_imports.fingerprints = {}
+    yield fresh.root
+    main.local_imports.root = saved_root
+    main.local_imports.registry_file = saved_file
+    main.local_imports.entries = saved_entries
+    main.local_imports.fingerprints = saved_fps
+
+
+def drop_media(root, name, size=200 * 1024):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"A" * size)
+    return path
+
+
+def test_import_scan_shape(import_sandbox):
+    drop_media(import_sandbox, "周杰倫 - 稻香.mp4")
+    res = client.get("/api/import")
+    assert res.status_code == 200
+    data = res.json()
+    for key in ("root", "exists", "files", "skipped", "counts", "truncated"):
+        assert key in data
+    song = data["files"][0]
+    assert (song["title"], song["artist"]) == ("稻香", "周杰倫")
+    assert song["state"] == "new"
+
+
+def test_import_creates_a_batch_job_the_scheduler_can_run(import_sandbox, clean_batch_jobs):
+    """匯入不自己跑流水線，而是丟給排程器 —— 那條路上已經有「有人唱歌就讓開」。"""
+    drop_media(import_sandbox, "周杰倫 - 稻香.mp4")
+    res = client.post("/api/import", json={"items": [{"path": "周杰倫 - 稻香.mp4",
+                                                      "title": "稻香", "artist": "周杰倫"}],
+                                           "start_now": True})
+    assert res.status_code == 200, res.text
+    job = res.json()["job"]
+    assert len(job["items"]) == 1
+    item = job["items"][0]
+    assert item["title"] == "稻香"
+    # 網址一定要是 local:，不然流水線會拿著假的 youtube 網址去下載
+    assert item["url"].startswith("local:")
+    assert item["song_id"].startswith("loc_")
+    assert res.json()["state"]["force_run"] is True
+
+
+def test_import_rejects_an_empty_selection(import_sandbox, clean_batch_jobs):
+    assert client.post("/api/import", json={"items": []}).status_code == 400
+    assert client.post("/api/import", json={}).status_code == 400
+
+
+def test_import_reports_files_it_could_not_read(import_sandbox, clean_batch_jobs):
+    """一顆隨身碟裡有一兩個壞檔是常態：好的要收下，壞的要講出來。"""
+    drop_media(import_sandbox, "好的.mp4")
+    res = client.post("/api/import", json={"items": [{"path": "好的.mp4"},
+                                                     {"path": "../偷看.mp4"}]})
+    assert res.status_code == 200
+    assert res.json()["accepted"] == 1
+    assert len(res.json()["failed"]) == 1
+
+
+def test_import_with_nothing_readable_is_a_400(import_sandbox, clean_batch_jobs):
+    res = client.post("/api/import", json={"items": [{"path": "不存在.mp4"}]})
+    assert res.status_code == 400
+
+
 # --- 排程預處理 ---
 
 @pytest.fixture()
@@ -2456,7 +2542,7 @@ def test_rebuild_lyrics_runs_and_clears_the_manual_offset(fake_song_with_alignme
     song_id = fake_song_with_alignment
     client.post(f"/api/songs/{song_id}/lyric-offset", json={"offset_ms": 300})
 
-    def fake_align(voc_path, title, artist, output_json=None):
+    def fake_align(voc_path, title, artist, output_json=None, local_lrc=None):
         # 假 aligner：CI 不裝 whisper，真的跑會抓網路也會載模型
         assert output_json is not None, "忘了傳 output_json 就不會寫 alignment.json"
         output_json.write_text(json.dumps([{"start": 0, "end": 1, "text": "新歌詞"}]),
@@ -2551,7 +2637,7 @@ def test_rebuild_lyrics_broadcasts_after_clearing_the_offset(fake_song_with_alig
     async def spy_broadcast():
         broadcasts.append(queue_manager.get_full_state())
 
-    def fake_align(voc_path, title, artist, output_json=None):
+    def fake_align(voc_path, title, artist, output_json=None, local_lrc=None):
         output_json.write_text("[]", encoding="utf-8")
         (output_json.parent / "alignment.json").write_text(
             json.dumps({"source": "lrc", "score": 0.9, "lines": 1}), encoding="utf-8")

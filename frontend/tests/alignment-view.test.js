@@ -120,3 +120,21 @@ test("從沒有診斷變成有，也講得出來", () => {
   assert.match(msg, /對齊未知 → 聽寫字幕/);
   assert.ok(!msg.includes("undefined"));
 });
+
+
+// --- 自備歌詞（本機匯入時放在檔案旁邊的那份 .lrc）---
+
+test("自備歌詞要標明來源，而且下一步跟線上歌詞不一樣", () => {
+  // 重算只會再讀同一份檔案，所以修法是去換掉那個 .lrc。
+  // 不講這一句的話，使用者會對著同一首歌按五次重算，每次結果都一樣。
+  const badge = AV.alignmentBadge({ source: "lrc_local", score: 0.62, lines: 40 });
+  assert.equal(badge.label, "自備歌詞");
+  assert.equal(badge.tone, "ok");
+  assert.match(badge.rebuildHint, /同一份 \.lrc|換掉/);
+});
+
+test("自備歌詞對不上時要說「那份歌詞可能是別的版本」，不是說機器壞了", () => {
+  const badge = AV.alignmentBadge({ source: "lrc_local", score: 0.05, lines: 40 });
+  assert.equal(badge.tone, "bad");
+  assert.match(badge.title, /別的版本|對不太上/);
+});

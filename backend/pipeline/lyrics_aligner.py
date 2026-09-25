@@ -711,7 +711,16 @@ class LyricsAligner:
 
     # ------------------------------------------------------------------
     def align(self, vocal_audio_path: Path, track_name: str, artist_name: str = "",
-              output_json: Optional[Path] = None) -> List[Dict[str, Any]]:
+              output_json: Optional[Path] = None,
+              local_lrc: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        `local_lrc`：使用者自己擺在檔案旁邊的那一份 LRC（本機匯入專用）。
+
+        給了它就**不上網找**，而且不會因為對齊分數低就改用 Whisper ——
+        理由見 local_import.py 第 4 點：使用者親手放的歌詞被默默換掉，
+        他既看不到原因，也想不到要去哪裡改。它照樣走一次聲學校正
+        （仿射 + 起唱點吸附），因為手打的 LRC 對到別的上傳版本時一樣會歪。
+        """
         vocal_audio_path = Path(vocal_audio_path)
 
         va = None
@@ -725,16 +734,32 @@ class LyricsAligner:
 
         # 用實際音檔長度當比對依據，可以擋掉同名的翻唱／Live／加長版
         duration_hint = va.duration if va is not None else 0.0
-        cands = self.fetch_lrc_candidates(track_name, artist_name, duration_hint, max_candidates=3)
-        if cands:
-            picked, picked_report = self._pick_best_lrc(cands, va)
-            if picked:
-                lyrics, report = picked, picked_report
-        else:
-            logger.warning("找不到任何有時間軸的 LRC")
 
-        # 分數過低通常代表抓到的是同名的別首歌，寧可改聽人聲
-        if lyrics and va is not None and report["score"] < MIN_TRUST_SCORE:
+        local_parsed = self.parse_lrc_with_timestamps(local_lrc) if local_lrc else []
+        if local_lrc and len(local_parsed) < 2:
+            # 放了檔案卻解不出兩行以上：多半是純文字歌詞（沒有時間戳）或編碼壞掉。
+            # 這種情況要退回一般流程，不然整首歌會只剩一行字。
+            logger.warning("旁邊那份 .lrc 解不出時間軸，改走一般流程")
+            local_parsed = []
+
+        if local_parsed:
+            logger.info(f"採用檔案旁的 .lrc（{len(local_parsed)} 行），不上網搜尋")
+            lyrics, report = self.align_lrc_to_audio(local_parsed, va)
+            report["source"] = "lrc_local"
+        else:
+            cands = self.fetch_lrc_candidates(track_name, artist_name, duration_hint,
+                                              max_candidates=3)
+            if cands:
+                picked, picked_report = self._pick_best_lrc(cands, va)
+                if picked:
+                    lyrics, report = picked, picked_report
+            else:
+                logger.warning("找不到任何有時間軸的 LRC")
+
+        # 分數過低通常代表抓到的是同名的別首歌，寧可改聽人聲。
+        # 使用者自己放的那一份不適用（他指定的就是這一份，換掉他不會知道）。
+        if (lyrics and va is not None and report["source"] != "lrc_local"
+                and report["score"] < MIN_TRUST_SCORE):
             logger.warning(f"LRC 對齊分數僅 {report['score']:.3f}，低於信任門檻，改用聲學轉錄")
             try:
                 acoustic = self.transcribe_pure_acoustic(vocal_audio_path, va)

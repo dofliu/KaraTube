@@ -45,6 +45,11 @@ PROTECTED_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     # ＋ 吃掉整台機器唯一那個重算名額（可能掉進 Whisper 轉錄）。
     ("POST", "/api/cache/{song_id}/rebuild-lyrics", "重算歌詞"),
 
+    # --- 本機曲庫匯入（影響下一組客人 ＋ 整台機器的 CPU）---
+    # 掃描（GET）不鎖：看得到資料夾裡有什麼不會弄壞任何東西，而「我放進去的歌
+    # 機器有沒有看到」正是最該讓人自己確認的一件事。真正建立處理任務才鎖。
+    ("POST", "/api/import", "匯入本機歌曲"),
+
     # --- 排程預處理（整台機器的 CPU）---
     ("POST", "/api/batch", "新增排程處理清單"),
     ("DELETE", "/api/batch", "清空排程紀錄"),

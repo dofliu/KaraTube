@@ -66,6 +66,25 @@ def test_youtube_url_resolves_video_id(tmp_path):
     asyncio.run(scenario())
 
 
+def test_locally_imported_song_never_gets_a_youtube_url(tmp_path):
+    """
+    本機匯入的歌不在 YouTube 上。佇列項目給它一個假的 youtube 網址的話，
+    「重新處理」與「快取被清掉之後再點一次」都會去下載一支不存在的影片 ——
+    而那兩次失敗離匯入很遠，沒有人會把它們聯想在一起。
+
+    縮圖同理：`img.youtube.com/vi/loc_xxx` 對本機歌永遠是 404。
+    """
+    async def scenario():
+        manager, _ = make_manager(tmp_path)
+        item = await manager.add_song("loc_abc123def456")
+        assert item["url"] == "local:loc_abc123def456"
+        assert "youtube" not in item["thumbnail"]
+        assert item["thumbnail"].startswith("/media/songs/loc_abc123def456/")
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+
 def test_priority_song_jumps_queue(tmp_path):
     async def scenario():
         manager, _ = make_manager(tmp_path, cached_ids=["song0000001", "song0000002", "song0000003"])

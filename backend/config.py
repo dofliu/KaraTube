@@ -13,6 +13,10 @@ TEMP_DIR = CACHE_DIR / "temp"
 # 錄唱回放的音檔。跟歌曲快取放在同一個 CACHE_DIR 底下，
 # 容器部署時掛同一個 volume 就一起保住了（見 docs/DEPLOYMENT.md）。
 RECORDINGS_DIR = CACHE_DIR / "recordings"
+# 本機曲庫匯入的收件匣：把自己的 MV／音檔丟進這個資料夾，機器就掃得到。
+# 跟其他快取放在同一個 CACHE_DIR 底下，容器部署時掛同一個 volume 就進得去
+# （見 docs/DEPLOYMENT.md 的「把 USB 裡的歌倒進機器」）。
+IMPORT_DIR = CACHE_DIR / "import"
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 # Ensure runtime directories exist

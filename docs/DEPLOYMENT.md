@@ -214,6 +214,8 @@ server {
 | `score_history.json` | 評分紀錄與個人最佳 | 小，建議備份 |
 | `batch_jobs.json` | 排程預處理的任務與進度 | 小（重開機會照它續跑） |
 | `staff_lock.json` | 櫃檯管理鎖（PIN 雜湊、自動上鎖分鐘數） | 小，建議備份（只存雜湊，不含明碼） |
+| `import/` | **本機匯入的收件匣**：你自己丟進來的影音檔 | 你的原始檔案，機器不會刪它 |
+| `local_imports.json` | 哪一首曲庫歌曲來自哪個檔案（含指紋快取） | 小，建議備份 |
 | `recordings/` | 錄唱回放的音檔與索引（`index.json`） | 可能很大（有配額，預設 512 MB）|
 | `temp/` | 處理中的暫存 | 可隨時刪 |
 
@@ -233,6 +235,40 @@ docker run --rm -v karatube-cache:/data -v "$PWD":/backup alpine \
 
 磁碟吃緊時到點歌台「🗂️ 快取管理」手動刪，或在 **⚙️ 系統設定 → 快取**
 設上限並開啟自動清理。
+
+---
+
+## 6-2. 把自己的歌倒進機器（本機匯入）
+
+這台機器的曲庫有第二個入口：`cache/import/`。把伴唱影片或音檔複製進去，
+點歌台「📁 本機匯入」分頁就掃得到（詳細用法見
+[使用說明書](USER_GUIDE.md)）。**不必連外網**，所以刻意斷網的包廂機也能建曲庫。
+
+```bash
+# 直接裝在主機上：就是專案底下的 cache/import/
+cp -r /media/usb/我的伴唱影片/* cache/import/
+
+# Docker（named volume）：先把檔案送進 volume
+docker cp /media/usb/我的伴唱影片/. karatube:/data/import/
+
+# Docker（想長期用一個主機資料夾當收件匣）：在 docker-compose.yml 多掛一層
+#   volumes:
+#     - karatube-cache:/data
+#     - /srv/karatube-import:/data/import
+```
+
+幾個部署層面的注意事項：
+
+- **ffmpeg 與 ffprobe 都要在。** 匯入用 ffprobe 判讀檔案（有沒有音訊軌、
+  多長、內嵌標籤）、用 ffmpeg 抽音訊與背景影片。官方映像兩者都有；
+  手動安裝時請裝完整版（精簡版可能只有 ffmpeg）。找不到 ffprobe 時畫面會直說。
+- **權限**：容器裡跑的是非 root 的 `karatube`（uid 10001）。用 `docker cp`
+  送進去的檔案如果是 root 擁有且不可讀，掃描會列不出來 ——
+  必要時 `docker compose exec -u root karatube chown -R karatube /data/import`。
+- **匯入不會刪掉你的檔案**：它是複製一份進 `songs/`。所以這個資料夾與曲庫會
+  各佔一份磁碟；確認都匯好之後可以自己把收件匣清掉（已匯入的歌不受影響）。
+- **一次別倒太多**：單次掃描最多列 400 個檔案，而每一首要跑幾分鐘的 AI 處理。
+  兩百首的隨身碟建議分批，讓排程器在半夜慢慢跑（有人唱歌時它會自動讓開）。
 
 ---
 

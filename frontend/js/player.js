@@ -345,6 +345,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // Connect WebSocket
   window.api.initWebSocket();
 
+  // 房號不存在：整頁蓋住並講出下一步。舞台端**不重試** —— 重試永遠不會成功，
+  // 而一台一直重連的電視看起來跟「網路不好」一模一樣，沒有人會想到去看房號。
+  window.api.on("ROOM_UNKNOWN", (msg) => {
+    const box = document.getElementById("stageRoomError");
+    if (!box) return;
+    box.textContent = unknownRoomMessage(window.api.roomId, (msg.data || {}).rooms);
+    box.style.display = "flex";
+  });
+
+  // 這一間被櫃檯關掉了。舞台照樣要說出來（正在唱的那一首會停在那裡）。
+  window.api.on("ROOM_CLOSED", () => {
+    const box = document.getElementById("stageRoomError");
+    if (!box) return;
+    box.textContent = "這一間包廂已經被櫃檯關閉。";
+    box.style.display = "flex";
+  });
+
   window.api.on("STATE_UPDATE", (msg) => {
     handleStateUpdate(msg.data);
   });

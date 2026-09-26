@@ -1,11 +1,13 @@
 import asyncio
+import functools
 import io
 import json
+import shutil
 import socket
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import quote
 
 from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Header,
@@ -34,7 +36,8 @@ from backend.services.lyric_offsets import (MAX_OFFSET_MS, MAX_RATE, MIN_RATE,
 from backend.services.artist_index import ArtistFinder
 from backend.services.local_import import LocalImportLibrary
 from backend.services.song_history import SongHistory
-from backend.services import access_policy, marquee, room_timer, service_calls, song_quota
+from backend.services import (access_policy, marquee, process_lane, room_timer, rooms,
+                              service_calls, song_quota)
 from backend.services.staff_lock import StaffLock
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
@@ -66,39 +69,62 @@ async def stage_heartbeat_loop():
     這件事必須有人發現。提醒不能等到「下一次有人操作」才發現：包廂最安靜的
     時候正是快唱完的時候，而那正是最需要聽到「剩十分鐘」的時候。
     過期的訊息同理：沒有人會為了讓一則舊訊息消失而去按什麼。
+
+    多包廂之後這一圈走的是**每一間**。一間出事不能拖垮其他間，所以
+    try 包在每一間身上而不是整圈外面 —— 包在外面的話，202 包廂的服務鈴
+    寫檔失敗會讓 101 的倒數整晚停在同一個數字，而沒有人看得出那兩件事有關。
     """
     while True:
         try:
             await asyncio.sleep(ROOM_TICK_SECONDS)
-            for alert in await queue_manager.tick_room():
-                await ws_manager.broadcast({
-                    "type": "ROOM_ALERT",
-                    "data": {**alert, "room": queue_manager.room_state()},
-                })
-            # 舞台自己也會濾掉過期的（心跳五秒一次，而「十分鐘後消失」差五秒就
-            # 不叫十分鐘了），這裡是為了讓點歌台的訊息清單跟舞台看到的同一份。
-            if marquee_board.prune():
-                await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": marquee_state()})
-            # 服務鈴：開太久的那張單自己標成過期。掛在心跳上的理由跟過期訊息一樣
-            # —— 一張沒有人理的單，正好是沒有人會去查的那一張，而畫面上一直寫著
-            # 「等待中 47 分鐘」看起來像系統還在處理（見 service_calls.py 決定七）。
-            if service_desk.expire_stale():
-                await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": service_state()})
-            # 沒有人點歌時，機器自己接一首。掛在同一個心跳上的理由跟計時一樣：
-            # 「空了二十秒」這件事必須有人發現，而包廂最安靜的時候正是
-            # 沒有人會去按任何按鈕的時候。
-            await queue_manager.tick_autofill()
-            # 櫃檯管理鎖的自動上鎖，同樣是「時間自己過去了要有人發現」：
-            # 不主動廣播的話，那顆鎖頭會在每支手機上一直亮著「已解鎖」，
-            # 直到有人按下一個受保護的動作才發現自己早就被鎖在外面。
+        except asyncio.CancelledError:
+            raise
+        for bundle in room_registry.items():
+            try:
+                await tick_one_room(bundle)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # 這個迴圈死掉的話倒數就永遠停在那裡，而且沒有人看得出來，
+                # 所以任何一次失敗都只記錄、不中斷。
+                logger.warning(f"舞台心跳失敗（{bundle.id}）: {e}")
+        try:
+            # 櫃檯管理鎖是整台機器一份的（機器層級的動作不分包廂），
+            # 所以它的自動上鎖在迴圈外面走一次就好。不主動廣播的話，
+            # 那顆鎖頭會在每支手機上一直亮著「已解鎖」，直到有人按下一個
+            # 受保護的動作才發現自己早就被鎖在外面。
             if staff_lock.tick():
                 await ws_manager.broadcast({"type": "STAFF_LOCK", "data": staff_lock.state()})
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            # 這個迴圈死掉的話倒數就永遠停在那裡，而且沒有人看得出來，
-            # 所以任何一次失敗都只記錄、不中斷。
-            logger.warning(f"舞台心跳失敗: {e}")
+            logger.warning(f"櫃檯管理鎖心跳失敗: {e}")
+
+
+async def tick_one_room(bundle: "RoomBundle"):
+    """一間包廂的一次心跳。廣播一律只送到這一間。"""
+    for alert in await bundle.queue.tick_room():
+        await ws_manager.broadcast({
+            "type": "ROOM_ALERT",
+            "data": {**alert, "room_id": bundle.id,
+                     "room_name": room_name_of(bundle.id),
+                     "room": bundle.queue.room_state()},
+        }, room=bundle.id)
+    # 舞台自己也會濾掉過期的（心跳五秒一次，而「十分鐘後消失」差五秒就
+    # 不叫十分鐘了），這裡是為了讓點歌台的訊息清單跟舞台看到的同一份。
+    if bundle.marquee.prune():
+        await ws_manager.broadcast({"type": "MARQUEE_UPDATE",
+                                    "data": marquee_state(bundle)}, room=bundle.id)
+    # 服務鈴：開太久的那張單自己標成過期。掛在心跳上的理由跟過期訊息一樣
+    # —— 一張沒有人理的單，正好是沒有人會去查的那一張，而畫面上一直寫著
+    # 「等待中 47 分鐘」看起來像系統還在處理（見 service_calls.py 決定七）。
+    if bundle.service.expire_stale():
+        await ws_manager.broadcast({"type": "SERVICE_UPDATE",
+                                    "data": service_state(bundle)}, room=bundle.id)
+    # 沒有人點歌時，機器自己接一首。掛在同一個心跳上的理由跟計時一樣：
+    # 「空了二十秒」這件事必須有人發現，而包廂最安靜的時候正是
+    # 沒有人會去按任何按鈕的時候。
+    await bundle.queue.tick_autofill()
 
 
 @asynccontextmanager
@@ -213,24 +239,76 @@ song_finder = SongFinder(storage, library)
 artist_finder = ArtistFinder(song_finder)
 
 # WebSocket Connection Manager
+#
+# 多包廂之後每一條連線都屬於**一間**包廂（?room=）。分流的規則只有兩條：
+#
+#   1. 帶房號的訊息只送給那一間。送錯的代價是 A 包廂的螢幕跳出 B 包廂的歌詞，
+#      那比不同步還糟 —— 不同步看得出來是壞的，唱到別人的歌看起來像自己按錯。
+#   2. 不帶房號的訊息（設定、櫃檯管理鎖、曲庫與排程）送給全部：
+#      那些東西整台機器只有一份，改了就是所有人都改了。
+#
+# 櫃檯那一頁另外掛 `desk=1`，它會**額外**收到每一間的服務鈴與計時提醒
+# —— 但收不到 STATE_UPDATE / TIME_UPDATE / SCORE_EVENT。十間包廂每秒各推
+# 一次播放時間，櫃檯那一頁會被自己的訊息淹掉，而它要的「誰在唱什麼」
+# 一秒一次太頻繁了，那份資料在 /api/rooms/overview 裡。
+DESK_FORWARD_TYPES = frozenset({"SERVICE_UPDATE", "ROOM_ALERT", "MARQUEE_UPDATE"})
+
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        # 連線 → 房號。用 dict 而不是在 WebSocket 上掛屬性，是為了讓
+        # disconnect 一定清得乾淨（漏掉的話那條死連線會一直收到廣播、
+        # 一直丟例外，而廣播迴圈每一則訊息都要為它多繞一次）。
+        self.rooms: Dict[WebSocket, str] = {}
+        self.desks: List[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, room_id: str, desk: bool = False):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info(f"WebSocket client connected. Total clients: {len(self.active_connections)}")
+        self.rooms[websocket] = room_id
+        if desk:
+            self.desks.append(websocket)
+        logger.info(f"WebSocket 連線加入包廂 {room_id}"
+                    f"{'（櫃檯）' if desk else ''}，目前 {len(self.active_connections)} 條")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-            logger.info(f"WebSocket client disconnected. Total clients: {len(self.active_connections)}")
+        self.rooms.pop(websocket, None)
+        if websocket in self.desks:
+            self.desks.remove(websocket)
 
-    async def broadcast(self, message: Dict[str, Any]):
+    def room_counts(self) -> Dict[str, int]:
+        """每一間現在有幾台裝置連著。櫃檯總覽用它答「那間開著沒有」。"""
+        out: Dict[str, int] = {}
+        for rid in self.rooms.values():
+            out[rid] = out.get(rid, 0) + 1
+        return out
+
+    def _targets(self, message: Dict[str, Any], room: Optional[str]) -> List[WebSocket]:
+        if room is None:
+            return list(self.active_connections)
+        targets = [ws for ws in self.active_connections if self.rooms.get(ws) == room]
+        if str(message.get("type")) in DESK_FORWARD_TYPES:
+            for ws in self.desks:
+                if self.rooms.get(ws) != room:
+                    targets.append(ws)
+        return targets
+
+    async def broadcast(self, message: Dict[str, Any], room: Optional[str] = None):
+        """
+        送出去。`room` 給了就只有那一間（外加櫃檯的那幾種）。
+
+        房號會**寫進訊息本身**：斷線重連之後有可能連到別間去（換 Wi-Fi、
+        手機從睡眠醒來、網址被人改過），而每一則訊息自己報房號的話，
+        對不上的那一頁可以整頁不畫 —— 靜靜地畫錯是這個功能最糟的失敗。
+        """
+        if room is not None:
+            message = {**message, "room": room}
         message_json = json.dumps(message)
         dead_connections = []
-        for connection in self.active_connections:
+        for connection in self._targets(message, room):
             try:
                 await connection.send_text(message_json)
             except Exception:
@@ -238,36 +316,110 @@ class ConnectionManager:
         for dead in dead_connections:
             self.disconnect(dead)
 
+
 ws_manager = ConnectionManager()
-# 包廂計時。存檔放在 cache/ —— 計時對應的是「客人買了多久」，不該因為
-# 伺服器重開（或 --reload 存了一次檔）就重算或歸零。
-room = room_timer.RoomTimer(CACHE_DIR / "room_timer.json")
-# 舞台訊息（跑馬燈）。刻意不落地：伺服器重開之後最可能的狀況是「那件事早就
-# 處理完了」，而一則沒有人記得的舊訊息自己跳到螢幕上，看起來就像機器壞了。
-marquee_board = marquee.MarqueeBoard()
-# 服務鈴（包廂呼叫櫃檯）。跟舞台訊息相反，這一支**要存檔**：一張還開著的單
-# 對應的是現實世界裡一件還沒做完的事，伺服器重開不會讓那杯冰塊自己送到
-# （見 service_calls.py 決定七）。
-service_desk = service_calls.ServiceDesk(
-    CACHE_DIR / "service_calls.json",
-    stale_minutes=settings.service_call_policy()["stale_minutes"],
-)
-queue_manager = QueueManager(song_processor, storage, broadcast_cb=ws_manager.broadcast,
-                             play_stats=play_stats, song_history=song_history,
-                             settings=settings, room=room,
-                             # 自動接歌只從「已經備好的曲庫」挑（見 autofill 決定一），
-                             # 所以它拿的是曲庫索引，不是搜尋服務。
-                             library=library, favorites=favorites,
-                             # 歌號：佇列與舞台片頭卡要印得出「下次直接打這組號碼」。
-                             # 傳的是函式而不是號碼簿本身 —— 佇列管的是誰排在誰前面，
-                             # 不該連「號碼怎麼發」都認識。
-                             number_of=song_numbers.ensure,
-                             # 這首歌的字幕校正（偏移 + 速度）。跟歌號同樣傳函式
-                             # 不傳物件，而且是每次廣播現查 —— 唱到一半校正的值
-                             # 要立刻跟著 current_song 送到每一台裝置上。
-                             lyric_calibration_of=lyric_offsets.calibration)
-# 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
-queue_manager.apply_control_defaults()
+
+# 整台機器唯一的流水線車道（見 backend/services/process_lane.py）。
+# 十間包廂同時點新歌時，這條車道是「每一間都等更久」與「輪流、一首一首來」
+# 之間的差別。
+pipeline_lane = process_lane.ProcessLane(max_concurrent=1)
+
+# 包廂名冊（cache/rooms.json）。升級的機器讀不到這個檔，會自動長出一間
+# `default` —— 而 default 的狀態檔就是原本那幾個（見 rooms.py 決定二），
+# 所以升級之後看到的跟升級之前一模一樣。
+room_roster = rooms.RoomRoster(CACHE_DIR / "rooms.json")
+
+
+class RoomBundle:
+    """
+    一間包廂的那一組服務：佇列、計時、舞台訊息、服務鈴。
+
+    做成一個物件而不是四張 dict，是為了讓「拿到這間包廂」只有一個動作 ——
+    四張表的話，新加的每一支端點都要記得去對四次房號，而漏掉的那一次
+    會變成「切歌切到別間」。
+    """
+
+    __slots__ = ("id", "queue", "timer", "marquee", "service")
+
+    def __init__(self, room_id: str, queue, timer, board, desk):
+        self.id = room_id
+        self.queue = queue
+        self.timer = timer
+        self.marquee = board
+        self.service = desk
+
+
+def _make_room_bundle(room_id: str) -> RoomBundle:
+    """開一間包廂要準備的東西。RoomRegistry 在開機與新增房間時各叫一次。"""
+    timer = room_timer.RoomTimer(rooms.state_path(CACHE_DIR, room_id, "room_timer.json"))
+    # 舞台訊息刻意不落地：伺服器重開之後最可能的狀況是「那件事早就處理完了」，
+    # 而一則沒有人記得的舊訊息自己跳到螢幕上，看起來就像機器壞了。
+    # 服務鈴相反，它**要存檔** —— 一張還開著的單對應的是現實世界裡一件還沒做完
+    # 的事，伺服器重開不會讓那杯冰塊自己送到（見 service_calls.py 決定七）。
+    board = marquee.MarqueeBoard()
+    desk = service_calls.ServiceDesk(
+        rooms.state_path(CACHE_DIR, room_id, "service_calls.json"),
+        stale_minutes=settings.service_call_policy()["stale_minutes"],
+    )
+    qm = QueueManager(song_processor, storage,
+                      # 廣播綁死在這一間上：QueueManager 自己不認識房號分流，
+                      # 它只知道「把狀態送出去」，而送到哪由這一層決定。
+                      broadcast_cb=functools.partial(ws_manager.broadcast, room=room_id),
+                      play_stats=play_stats, song_history=song_history,
+                      settings=settings, room=timer,
+                      library=library, favorites=favorites,
+                      number_of=song_numbers.ensure,
+                      lyric_calibration_of=lyric_offsets.calibration,
+                      room_id=room_id, lane=pipeline_lane)
+    # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
+    qm.apply_control_defaults()
+    return RoomBundle(room_id, qm, timer, board, desk)
+
+
+room_registry = rooms.RoomRegistry(room_roster, _make_room_bundle)
+
+# 預設包廂那一組服務的捷徑。給**不分房**的呼叫端用：測試、維護腳本，以及
+# 那些在多包廂之前就寫死「這台機器只有一組佇列」的外部工具。
+# 新的程式碼一律走 `bundle_for(room)` —— 這三個名字只保證「default 那一間」，
+# 把它們當成「這台機器的佇列」用，就是 202 包廂被切歌的那個 bug。
+default_room = room_registry.get(rooms.DEFAULT_ROOM_ID)
+queue_manager = default_room.queue
+marquee_board = default_room.marquee
+service_desk = default_room.service
+
+
+def bundle_for(room: Any) -> RoomBundle:
+    """
+    房號 → 那一間。認不得就 404（rooms.py 決定三：絕不靜靜退回 default）。
+
+    每一支跟包廂有關的端點的第一行都是它，而不是各自去查 registry ——
+    少查一次的那一支會變成「所有包廂共用一份佇列」，而那件事在單包廂的
+    機器上完全看不出來，直到店裡裝了第二間。
+    """
+    found = room_registry.get(room)
+    if found is None:
+        raise HTTPException(status_code=404,
+                            detail={"error": "no_such_room", "room": str(room or ""),
+                                    "rooms": room_registry.rows()})
+    return found
+
+
+def song_in_use_anywhere(song_id: str) -> bool:
+    """
+    **任何一間**包廂正在唱這首、或佇列裡還排著它嗎？
+
+    刪快取／重新處理／重算歌詞的守門一律問這一支而不是某一間的佇列 ——
+    只問 default 的話，櫃檯在管理頁按下「重新處理」會把 202 包廂正在唱的
+    那一首的檔案砍掉，而那一刻舞台上的人只看到畫面停住。
+    """
+    return any(bundle.queue.is_song_in_use(song_id) for bundle in room_registry.items())
+
+
+async def broadcast_all_rooms():
+    """整台機器的狀態變了（曲庫、字幕校正、預設調音），每一間都要重畫。"""
+    for bundle in room_registry.items():
+        await bundle.queue.broadcast_state()
+
 
 
 def stage_is_busy() -> bool:
@@ -276,16 +428,27 @@ def stage_is_busy() -> bool:
 
     「有人在唱歌」只是其中一種忙：佇列裡還有歌在跑流水線時也算 ——
     現場點的那首當然比半夜的批次任務優先，讓它獨佔 GPU 才會早點唱到。
+
+    多包廂之後是**任何一間**在忙就算忙。只看 default 的話，半夜三點
+    202 包廂那一桌點的歌會跟批次任務搶同一顆 CPU，而批次任務不知道
+    自己該讓開 —— 那一桌等的是一首現在就要唱的歌。
     """
-    if queue_manager.current_song is not None:
-        return True
-    return any(item.get("status") in ("PENDING", "PROCESSING")
-               for item in queue_manager.queue)
+    for bundle in room_registry.items():
+        qm = bundle.queue
+        if qm.current_song is not None:
+            return True
+        if any(item.get("status") in ("PENDING", "PROCESSING") for item in qm.queue):
+            return True
+    return False
 
 
 batch_scheduler = BatchScheduler(
     song_processor, storage, CACHE_DIR / "batch_jobs.json",
     settings=settings, broadcast_cb=ws_manager.broadcast, busy_cb=stage_is_busy,
+    # 批次任務也要排進同一條車道，而且永遠排在所有包廂後面
+    # （見 process_lane.py 決定三）：`busy_cb` 只擋得住「還沒開始的那一首」，
+    # 已經跑到一半的 Demucs 不會因為有人點歌就停下來。
+    lane=pipeline_lane,
 )
 
 # Helper: Get Local Network IP
@@ -331,22 +494,36 @@ async def health_check():
 
 
 @app.get("/api/info")
-async def get_server_info():
+async def get_server_info(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     ip = PUBLIC_HOST or get_local_ip()
     base = public_base_url()
+    # 房號要掛進手機與舞台的網址裡。預設那一間**不掛** ——
+    # 只有一間包廂的店，網址上多一段 `?room=default` 只會讓人以為
+    # 自己開錯頁面（而且舊的書籤與印好的 QR 都要重做）。
+    suffix = "" if room == rooms.DEFAULT_ROOM_ID else f"?room={quote(room)}"
     return {
         "status": "online",
         "ip": ip,
         "port": PUBLIC_PORT,
         "device": DEVICE,
         "version": __version__,
-        "web_url": base,
-        "player_url": f"{base}/player.html"
+        "room_id": room,
+        "room_name": room_name_of(room),
+        "web_url": f"{base}/{suffix}" if suffix else base,
+        "player_url": f"{base}/player.html{suffix}"
     }
 
 @app.get("/api/qrcode")
-async def get_qrcode_image():
+async def get_qrcode_image(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    """
+    手機點歌的 QR。帶 `?room=` 就是**那一間門口貼的那一張** ——
+    掃進來的手機直接落在那一間的點歌台，不必再選一次房號
+    （選錯房號是這個功能最糟的失敗，見 rooms.py 決定三）。
+    """
+    bundle_for(room)
     target_url = public_base_url()
+    if room != rooms.DEFAULT_ROOM_ID:
+        target_url = f"{target_url}/?room={quote(room)}"
     qr = qrcode.QRCode(
         version=1,
         box_size=10,
@@ -401,7 +578,7 @@ async def get_cache_overview():
 @app.delete("/api/cache/{song_id}")
 async def delete_cached_song(song_id: str):
     """刪除一首快取歌曲（含壞資料夾）。演唱中或還在佇列裡的不能刪。"""
-    if queue_manager.is_song_in_use(song_id):
+    if song_in_use_anywhere(song_id):
         raise HTTPException(status_code=409, detail="歌曲演唱中或在佇列裡，不能刪除快取")
     if not storage.delete_song(song_id):
         raise HTTPException(status_code=404, detail="快取中沒有這首歌")
@@ -409,9 +586,16 @@ async def delete_cached_song(song_id: str):
 
 
 @app.post("/api/cache/{song_id}/reprocess")
-async def reprocess_cached_song(song_id: str):
-    """砍掉快取重新跑整條流水線：處理壞掉的歌（字幕全歪、檔案缺漏）用。"""
-    if queue_manager.is_song_in_use(song_id):
+async def reprocess_cached_song(song_id: str,
+                                room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    """
+    砍掉快取重新跑整條流水線：處理壞掉的歌（字幕全歪、檔案缺漏）用。
+
+    重跑要有人等它跑完，所以它會被排進**一間**包廂的佇列（`?room=`，
+    不給就是預設那一間）—— 櫃檯多半是在自己那一台管理頁按的，
+    而跑完那首歌就在那一間的佇列裡等著被試唱。
+    """
+    if song_in_use_anywhere(song_id):
         raise HTTPException(status_code=409, detail="歌曲演唱中或在佇列裡，不能重新處理")
     song_dir = SONGS_DIR / song_id
     if not song_dir.exists():
@@ -419,7 +603,7 @@ async def reprocess_cached_song(song_id: str):
     # 先留住舊 metadata 的顯示資訊，刪掉快取後排入佇列重新處理
     meta = storage.get_song_metadata(song_id) or {}
     storage.delete_song(song_id)
-    item = await queue_manager.add_song(
+    item = await bundle_for(room).queue.add_song(
         song_id,
         title=meta.get("title", ""),
         artist=meta.get("artist", ""),
@@ -465,7 +649,7 @@ def _rebuild_song_lyrics(song_id: str) -> Dict[str, Any]:
         # 所以真正動手之前再問一次 —— 而且是在 align 跑完、**寫檔之前**還來不及問，
         # 因為寫檔在 align 裡面。這裡能做的是把窗口縮到最小：對齊前再驗一次，
         # 對齊後（寫檔已經發生）如果發現已經有人在唱，就明說一句讓畫面講得出來。
-        if queue_manager.is_song_in_use(song_id):
+        if song_in_use_anywhere(song_id):
             return {"status": "in_use",
                     "message": "這首歌剛剛被點播了，重算已取消（重算會換掉正在唱的那份歌詞）"}
         # 本機匯入的歌：重算照樣讀檔案旁邊那一份 .lrc。不讀的話，按下重算會把
@@ -484,7 +668,7 @@ def _rebuild_song_lyrics(song_id: str) -> Dict[str, Any]:
                 "before": before, "after": storage.get_song_alignment(song_id),
                 # 跑的過程中被點播了：歌詞已經換掉，正在唱的那一位手上是舊的那份。
                 # 不是錯誤（新歌詞是好的），但要讓畫面說得出「這一首要下次才生效」。
-                "started_singing": queue_manager.is_song_in_use(song_id)}
+                "started_singing": song_in_use_anywhere(song_id)}
 
     return lyrics_gate.run(song_id, work)
 
@@ -502,7 +686,7 @@ async def rebuild_song_lyrics(song_id: str):
     歌詞換了之後它最有可能變成錯的。回應裡會講清楚清掉了多少，
     前端的確認框也會先講一次（不靜默清，也不靜默留）。
     """
-    if queue_manager.is_song_in_use(song_id):
+    if song_in_use_anywhere(song_id):
         raise HTTPException(status_code=409, detail="歌曲演唱中或在佇列裡，不能重算歌詞")
     if not (SONGS_DIR / song_id).exists():
         raise HTTPException(status_code=404, detail="快取中沒有這首歌")
@@ -533,7 +717,7 @@ async def rebuild_song_lyrics(song_id: str):
         # 清掉了就要讓每一台裝置知道 —— 不廣播的話，點歌台的滑桿與舞台的
         # songOffsetMs 還停在那個已經不存在的值上（而且下一次有人動滑桿時
         # 又會把它寫回去）。
-        await queue_manager.broadcast_state()
+        await broadcast_all_rooms()
     # 歌詞換了，段落曲式跟著換：點歌台的段落快取與舞台的歌詞都要重讀。
     await ws_manager.broadcast({
         "type": "LYRICS_REBUILT",
@@ -854,12 +1038,155 @@ async def get_recommendations(limit: int = Query(12, ge=1, le=50)):
     return {"songs": songs, "count": len(songs)}
 
 
+# --- 包廂（多包廂：一台伺服器帶多組舞台與佇列）---
+#
+# 下面每一支端點都吃 `?room=`，不給就是 `default` —— 只有一間包廂的店
+# 一個字都不用改，這個功能對他們等於不存在（見 rooms.py 決定二）。
+
+
+def room_name_of(room_id: str) -> str:
+    row = room_roster.get(room_id)
+    return row["name"] if row else str(room_id)
+
+
+def room_overview_row(bundle: "RoomBundle", counts: Dict[str, int]) -> Dict[str, Any]:
+    """
+    櫃檯總覽裡的一列：這間現在在唱什麼、排了幾首、剩多久、有沒有人在叫櫃檯。
+
+    刻意**不**包含整份佇列與整份訊息清單：十間包廂各一份佇列會讓這支端點
+    回好幾百 KB，而櫃檯要的是「哪一間需要我過去」。要看細節就點進那一間
+    （那時候才拿 /api/queue?room=）。
+    """
+    qm = bundle.queue
+    current = qm.current_song or {}
+    open_call = bundle.service.snapshot().get("call")
+    return {
+        "id": bundle.id,
+        "name": room_name_of(bundle.id),
+        "devices": counts.get(bundle.id, 0),
+        "is_playing": bool(qm.is_playing and qm.current_song),
+        "now_playing": ({"song_id": current.get("song_id"), "title": current.get("title"),
+                         "artist": current.get("artist"),
+                         "requested_by": current.get("requested_by", "")}
+                        if qm.current_song else None),
+        "queue_length": len(qm.queue),
+        "processing": sum(1 for i in qm.queue if i.get("status") in ("PENDING", "PROCESSING")),
+        "room": qm.room_state(),
+        "service_open": open_call,
+        "marquee_count": len(bundle.marquee.snapshot().get("messages", [])),
+    }
+
+
+@app.get("/api/rooms")
+async def list_rooms():
+    """
+    這台機器有哪幾間包廂。點歌台開機時問一次，才畫得出切換清單。
+    """
+    counts = ws_manager.room_counts()
+    return {
+        "rooms": [{**row, "devices": counts.get(row["id"], 0)} for row in room_registry.rows()],
+        "default": rooms.DEFAULT_ROOM_ID,
+        "limit": rooms.MAX_ROOMS,
+    }
+
+
+@app.get("/api/rooms/overview")
+async def rooms_overview():
+    """
+    櫃檯總覽：每一間現在的樣子。
+
+    做成一支 REST 端點（而不是靠 WebSocket 推）是刻意的：櫃檯那一頁
+    要的是「現在全店長怎樣」，而那份資料每秒變十次 —— 推的話那一頁會被
+    自己的訊息淹掉（見 DESK_FORWARD_TYPES 的說明）。需要即時的那兩件
+    （服務鈴、計時提醒）才用推的。
+    """
+    counts = ws_manager.room_counts()
+    return {
+        "rooms": [room_overview_row(b, counts) for b in room_registry.items()],
+        "lane": pipeline_lane.snapshot(),
+    }
+
+
+@app.post("/api/rooms")
+async def create_room(payload: Dict[str, Any] = Body(default={})):
+    """
+    開一間包廂。`id` 不給就從名字生一個（「101 包廂」→ `101`）。
+
+    房號重複一律拒絕而不是自動改名：櫃檯打的那個房號是他要貼在門口的
+    那一個（見 rooms.py `add`）。
+    """
+    data = payload or {}
+    try:
+        row = room_registry.create(data.get("name", ""), data.get("id"))
+    except rooms.RoomError as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail}) from exc
+    await ws_manager.broadcast({"type": "ROOMS_UPDATE", "data": room_registry.rows()})
+    return {"status": "success", "room": row, "rooms": room_registry.rows()}
+
+
+@app.post("/api/rooms/{room_id}/rename")
+async def rename_room(room_id: str, payload: Dict[str, Any] = Body(default={})):
+    """改名（「101」→「VIP 大包」）。房號不會跟著變 —— 門口那張 QR 不必重印。"""
+    bundle_for(room_id)
+    try:
+        row = room_registry.rename(room_id, (payload or {}).get("name", ""))
+    except rooms.RoomError as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail}) from exc
+    await ws_manager.broadcast({"type": "ROOMS_UPDATE", "data": room_registry.rows()})
+    return {"status": "success", "room": row, "rooms": room_registry.rows()}
+
+
+@app.delete("/api/rooms/{room_id}")
+async def delete_room(room_id: str, force: bool = Query(default=False)):
+    """
+    關掉一間。
+
+    **裡面還有人在唱歌就先擋下來**（409，要 `force=true` 才過）。
+    刪掉正在播的那一間，舞台那台電視會在唱到一半的時候整頁失效，
+    而按下去的人多半只是想清掉一間「今天沒開」的空房 —— 那個錯一秒鐘
+    就發生了，卻要等到包廂裡的人跑出來問才有人知道。
+    """
+    bundle = bundle_for(room_id)
+    qm = bundle.queue
+    if not force and (qm.current_song is not None or qm.queue):
+        raise HTTPException(status_code=409, detail={
+            "error": "room_in_use", "id": bundle.id, "name": room_name_of(bundle.id),
+            "queue_length": len(qm.queue),
+            "now_playing": (qm.current_song or {}).get("title", ""),
+        })
+    try:
+        row = room_registry.remove(room_id)
+    except rooms.RoomError as exc:
+        raise HTTPException(status_code=409,
+                            detail={"error": exc.reason, **exc.detail}) from exc
+    # 這一間自己的狀態檔（計時、服務鈴）跟著走。留著的話，半年後有人用同一個
+    # 房號再開一間，那間會**繼承一場沒有人記得的計時** —— 開機第一分鐘就跳出
+    # 「歡唱時間已結束」，而櫃檯找不到任何理由。
+    # 只砍 `cache/rooms/<id>/` 這一層（default 沒有這個資料夾，所以砍不到
+    # 原本那幾個檔案），曲庫、排行、錄音一個都不碰 —— 那些是整台機器的東西。
+    folder = rooms.room_dir(CACHE_DIR, row["id"])
+    if folder is not None and folder.is_dir():
+        try:
+            shutil.rmtree(folder)
+        except Exception as e:
+            logger.warning(f"刪除包廂資料夾失敗 {folder}: {e}")
+    await ws_manager.broadcast({"type": "ROOMS_UPDATE", "data": room_registry.rows()})
+    # 那一間裡面還連著的裝置要知道自己的房間沒了，否則它會一直對著一個
+    # 404 的房號重試，畫面上什麼都不會說。
+    await ws_manager.broadcast({"type": "ROOM_CLOSED", "data": row}, room=row["id"])
+    return {"status": "success", "room": row, "rooms": room_registry.rows()}
+
+
 @app.get("/api/queue")
-async def get_queue():
-    return queue_manager.get_full_state()
+async def get_queue(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    return bundle_for(room).queue.get_full_state()
 
 @app.post("/api/queue/add")
-async def add_to_queue(payload: Dict[str, Any] = Body(...)):
+async def add_to_queue(payload: Dict[str, Any] = Body(...),
+                       room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    queue_manager = bundle_for(room).queue
     url_or_id = payload.get("url") or payload.get("id")
     if not url_or_id:
         raise HTTPException(status_code=400, detail="Missing url or id parameter")
@@ -893,36 +1220,38 @@ async def add_to_queue(payload: Dict[str, Any] = Body(...)):
     return {"status": "success", "item": item,
             "placement": queue_manager.placement_of(item["queue_id"]),
             "quota": queue_manager.quota_of(item["requested_by"]),
+            "room_id": room,
             "room": queue_manager.room_state()}
 
 @app.delete("/api/queue/{queue_id}")
-async def remove_queue_item(queue_id: str):
-    await queue_manager.remove_from_queue(queue_id)
+async def remove_queue_item(queue_id: str, room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    await bundle_for(room).queue.remove_from_queue(queue_id)
     return {"status": "success"}
 
 @app.post("/api/queue/{queue_id}/retry")
-async def retry_queue_item(queue_id: str):
+async def retry_queue_item(queue_id: str, room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """重新處理佇列裡狀態為 ERROR 的歌。"""
-    item = await queue_manager.retry_item(queue_id)
+    item = await bundle_for(room).queue.retry_item(queue_id)
     if item is None:
         raise HTTPException(status_code=404, detail="佇列裡沒有這首失敗的歌")
     return {"status": "success", "item": item}
 
 @app.post("/api/queue/reorder")
-async def reorder_queue(payload: Dict[str, int] = Body(...)):
+async def reorder_queue(payload: Dict[str, int] = Body(...),
+                        room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     from_idx = payload.get("from_idx", 0)
     to_idx = payload.get("to_idx", 0)
-    await queue_manager.reorder_queue(from_idx, to_idx)
+    await bundle_for(room).queue.reorder_queue(from_idx, to_idx)
     return {"status": "success"}
 
 @app.get("/api/rotation")
-async def get_rotation():
+async def get_rotation(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """目前的輪序：每一首的輪次、每個人唱了幾首／還有幾首。"""
-    state = queue_manager.get_full_state()
+    state = bundle_for(room).queue.get_full_state()
     return {"enabled": state["rotation_enabled"], **state["rotation"]}
 
 @app.get("/api/quota")
-async def get_quota():
+async def get_quota(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     目前的點歌額度：上限是多少、誰排了幾首、誰滿了。
 
@@ -930,30 +1259,29 @@ async def get_quota():
     （一個人連點五首時其他人不必等完那五首），額度管**量**
     （那五首本來就不該同時排在佇列裡）。先到先唱的包廂也可能只想要後面那一條。
     """
-    state = queue_manager.get_full_state()
-    return state["quota"]
+    return bundle_for(room).queue.get_full_state()["quota"]
 
 
 @app.get("/api/autofill")
-async def get_autofill():
+async def get_autofill(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     自動接歌：開了沒有、照什麼挑、空多久才接、連著接了幾首、剛才那首為什麼被挑中。
 
     每一次 STATE_UPDATE 也帶著同一份資料（`state["autofill"]`），這支端點是給
     不想開 WebSocket 的呼叫端用的。
     """
-    return queue_manager.autofill_state()
+    return bundle_for(room).queue.autofill_state()
 
 
 @app.get("/api/autofill/preview")
-async def preview_autofill():
+async def preview_autofill(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     「現在接的話會接哪一首」。設定頁按下去可以先看一眼，不必真的等它接。
 
     只挑不播：挑歌本身沒有副作用（不記進「最近接過」，也不碰佇列），
     所以按幾次都不會影響等一下真正接歌的結果。
     """
-    plan = await queue_manager.plan_autofill()
+    plan = await bundle_for(room).queue.plan_autofill()
     if plan is None:
         raise HTTPException(status_code=404, detail="曲庫裡還沒有可以接的歌")
     return {"song": plan["song"], "reason": plan["reason"], "source": plan["source"],
@@ -962,7 +1290,8 @@ async def preview_autofill():
 
 
 @app.post("/api/autofill/random")
-async def random_pick_song(payload: Dict[str, Any] = Body(default={})):
+async def random_pick_song(payload: Dict[str, Any] = Body(default={}),
+                           room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     🎲 來一首：從已經備好的曲庫隨機點一首。
 
@@ -971,6 +1300,7 @@ async def random_pick_song(payload: Dict[str, Any] = Body(default={})):
     「只挑我的最愛」時它也照辦），但挑出來的歌**算人點的**：計入排行與歷史、
     佔輪序與額度，跟手動點一首完全一樣 —— 有人按了這顆鍵，就是有人做了決定。
     """
+    queue_manager = bundle_for(room).queue
     requested_by = (payload or {}).get("requested_by", "")
     try:
         result = await queue_manager.random_pick(requested_by=requested_by)
@@ -991,29 +1321,31 @@ async def random_pick_song(payload: Dict[str, Any] = Body(default={})):
 
 
 @app.post("/api/rotation/reset")
-async def reset_rotation():
+async def reset_rotation(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     輪序歸零。換一批客人（但機器沒關）、或是大家講好重新排時按的。
 
     刻意不動佇列：已經排好的順序是大家看著排出來的，歸零的是「誰已經唱過幾首」
     這份統計，下一首新點的歌才照新的輪次排。
     """
+    queue_manager = bundle_for(room).queue
     summary = await queue_manager.reset_rotation()
     return {"status": "success", "enabled": queue_manager.rotation_enabled, **summary}
 
 @app.get("/api/room")
-async def get_room_timer():
+async def get_room_timer(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     包廂計時：這一場買了多久、用掉多久、還剩多久、時間到會怎麼處理。
 
     每一次 STATE_UPDATE 也帶著同一份資料（`state["room"]`），這支端點是給
     不想開 WebSocket 的呼叫端（外掛的櫃檯看板、腳本）用的。
     """
-    return queue_manager.room_state()
+    return bundle_for(room).queue.room_state()
 
 
 @app.post("/api/room/start")
-async def start_room_timer(payload: Dict[str, Any] = Body(default={})):
+async def start_room_timer(payload: Dict[str, Any] = Body(default={}),
+                           room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     開始計時（歸零重算）。`minutes` 不給就用設定頁的預設長度。
 
@@ -1022,52 +1354,57 @@ async def start_room_timer(payload: Dict[str, Any] = Body(default={})):
     而那兩小時是拿不回來的（沒有人記得剛剛是幾點開始的）。
     """
     return {"status": "success",
-            "room": await queue_manager.start_room_session(payload.get("minutes"))}
+            "room": await bundle_for(room).queue.start_room_session(payload.get("minutes"))}
 
 
 @app.post("/api/room/extend")
-async def extend_room_timer(payload: Dict[str, Any] = Body(default={})):
+async def extend_room_timer(payload: Dict[str, Any] = Body(default={}),
+                            room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     續時（加時間，不是重開一場）。停在「時間到」畫面時按它會自己接回去播下一首。
     """
     return {"status": "success",
-            "room": await queue_manager.extend_room_session(payload.get("minutes"))}
+            "room": await bundle_for(room).queue.extend_room_session(payload.get("minutes"))}
 
 
 @app.post("/api/room/pause")
-async def pause_room_timer():
+async def pause_room_timer(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """停錶（中場休息、餐點來了）。播放不受影響。"""
-    return {"status": "success", "room": await queue_manager.pause_room_session()}
+    return {"status": "success", "room": await bundle_for(room).queue.pause_room_session()}
 
 
 @app.post("/api/room/resume")
-async def resume_room_timer():
+async def resume_room_timer(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """繼續倒數。"""
-    return {"status": "success", "room": await queue_manager.resume_room_session()}
+    return {"status": "success", "room": await bundle_for(room).queue.resume_room_session()}
 
 
 @app.post("/api/room/stop")
-async def stop_room_timer():
+async def stop_room_timer(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     結束計時（這桌不要再被計時了）。
 
     刻意連「時間到停播」的旗標一起解除並接回去播：這顆鍵的意思是
     「不要再管時間了」，按完卻還停在散場畫面不肯播的話，沒有人找得到怎麼救回來。
     """
-    return {"status": "success", "room": await queue_manager.stop_room_session()}
+    return {"status": "success", "room": await bundle_for(room).queue.stop_room_session()}
 
 
-def marquee_state() -> Dict[str, Any]:
+def marquee_state(bundle: "RoomBundle") -> Dict[str, Any]:
     """
-    廣播給所有裝置的舞台訊息狀態 = 訊息清單 + 現在生效的規則。
+    廣播給這一間所有裝置的舞台訊息狀態 = 訊息清單 + 現在生效的規則。
 
     規則跟著清單一起送，是因為畫面需要它們：舞台要知道「沒在播歌時要不要用
     大字卡」，點歌台要知道送出時預設幾秒、幾分鐘後消失。分兩支端點拿的話，
     兩邊會有一邊拿到的是舊的。
+
+    規則本身是整台機器一份（設定頁），只有**訊息清單**分包廂 ——
+    「跑馬燈幾秒消失」是這台機器的調校，不是這一桌客人的偏好。
     """
     policy = settings.marquee_policy()
     return {
-        **marquee_board.snapshot(),
+        **bundle.marquee.snapshot(),
+        "room_id": bundle.id,
         "enabled": policy["enabled"],
         "default_seconds": policy["seconds"],
         "default_ttl_minutes": policy["ttl_minutes"],
@@ -1076,75 +1413,96 @@ def marquee_state() -> Dict[str, Any]:
 
 
 @app.get("/api/marquee")
-async def get_marquee():
+async def get_marquee(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     舞台訊息：現在有哪些字要出現在包廂螢幕上。
 
     舞台端開機時先問這一支（WebSocket 只推「有變動」的那一刻，
     中途才打開的舞台不問一次就會是空的），之後靠 MARQUEE_UPDATE 更新。
     """
-    return marquee_state()
+    return marquee_state(bundle_for(room))
 
 
 @app.post("/api/marquee")
-async def post_marquee(payload: Dict[str, Any] = Body(...)):
+async def post_marquee(payload: Dict[str, Any] = Body(...),
+                       room: str = Query(default=rooms.DEFAULT_ROOM_ID),
+                       broadcast_all: bool = Query(default=False)):
     """
     送一則到舞台上（櫃檯的「您的餐點到了」、生日祝福）。
+
+    `broadcast_all=true` 是櫃檯的**全店廣播**（「本店 23:30 打烊」）——
+    一次送進每一間包廂。做成一個旗標而不是讓櫃檯按十次，是因為按十次的
+    那個人一定會漏掉一間，而漏掉的那一間正是還沒聽到要打烊的那一間。
 
     擋下來的時候回 409 而不是 400：跟點歌額度、歡唱時間同一種語氣 ——
     這不是「你送錯了」，是「現在的狀態不收這一則」，而每一句「不行」
     後面都要有下一步（等一則播完、或先撤掉一則）。
     """
     policy = settings.marquee_policy()
+    targets = room_registry.items() if broadcast_all else [bundle_for(room)]
     if not policy["enabled"]:
-        raise HTTPException(status_code=409, detail={"error": "disabled",
-                                                     "marquee": marquee_state()})
-    try:
-        message = marquee_board.post(
-            payload.get("text"),
-            sender=payload.get("sender", "") or "",
-            urgent=bool(payload.get("urgent")),
-            pinned=bool(payload.get("pinned")),
-            # 沒指定就用設定頁的值。每一則都可以自己帶（緊急的想久一點、
-            # 生日祝福想釘住），但包廂不該為了送一句話而先進設定頁。
-            ttl_minutes=payload.get("ttl_minutes", policy["ttl_minutes"]),
-            seconds=payload.get("seconds", policy["seconds"]),
-        )
-    except marquee.MarqueeRejected as exc:
         raise HTTPException(status_code=409,
-                            detail={"error": exc.reason, **exc.detail,
-                                    "marquee": marquee_state()}) from exc
-    state = marquee_state()
-    await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
-    return {"status": "success", "message": message, "marquee": state}
+                            detail={"error": "disabled",
+                                    "marquee": marquee_state(targets[0])})
+    sent = []
+    for bundle in targets:
+        try:
+            message = bundle.marquee.post(
+                payload.get("text"),
+                sender=payload.get("sender", "") or "",
+                urgent=bool(payload.get("urgent")),
+                pinned=bool(payload.get("pinned")),
+                # 沒指定就用設定頁的值。每一則都可以自己帶（緊急的想久一點、
+                # 生日祝福想釘住），但包廂不該為了送一句話而先進設定頁。
+                ttl_minutes=payload.get("ttl_minutes", policy["ttl_minutes"]),
+                seconds=payload.get("seconds", policy["seconds"]),
+            )
+        except marquee.MarqueeRejected as exc:
+            # 全店廣播時有一間滿了**不算整批失敗**：其餘九間該收到的還是要收到，
+            # 而擋下來的那一間會出現在 rejected 裡讓櫃檯自己決定要不要清一清。
+            if not broadcast_all:
+                raise HTTPException(status_code=409,
+                                    detail={"error": exc.reason, **exc.detail,
+                                            "marquee": marquee_state(bundle)}) from exc
+            sent.append({"room": bundle.id, "rejected": exc.reason})
+            continue
+        state = marquee_state(bundle)
+        await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state}, room=bundle.id)
+        sent.append({"room": bundle.id, "message": message})
+    return {"status": "success", "sent": sent,
+            "message": next((r.get("message") for r in sent if r.get("message")), None),
+            "marquee": marquee_state(targets[0])}
 
 
 @app.delete("/api/marquee/{message_id}")
-async def delete_marquee(message_id: str):
+async def delete_marquee(message_id: str, room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """撤掉一則（打錯字、那件事已經處理完了）。撤不到也回 success：
     畫面要的結果是「它不在了」，而它確實不在了。"""
-    removed = marquee_board.remove(message_id)
-    state = marquee_state()
+    bundle = bundle_for(room)
+    removed = bundle.marquee.remove(message_id)
+    state = marquee_state(bundle)
     if removed:
-        await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
+        await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state}, room=bundle.id)
     return {"status": "success", "removed": removed, "marquee": state}
 
 
 @app.delete("/api/marquee")
-async def clear_marquee(include_pinned: bool = Query(default=True)):
+async def clear_marquee(include_pinned: bool = Query(default=True),
+                        room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     全部撤掉。`include_pinned=false` 會留下釘住的那幾則 ——
     「把剛剛那幾則清掉」跟「連生日祝福也拿掉」是兩個不同的意思。
     """
-    removed = marquee_board.clear(include_pinned=include_pinned)
-    state = marquee_state()
-    await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state})
+    bundle = bundle_for(room)
+    removed = bundle.marquee.clear(include_pinned=include_pinned)
+    state = marquee_state(bundle)
+    await ws_manager.broadcast({"type": "MARQUEE_UPDATE", "data": state}, room=bundle.id)
     return {"status": "success", "removed": removed, "marquee": state}
 
 
-def service_state() -> Dict[str, Any]:
+def service_state(bundle: "RoomBundle") -> Dict[str, Any]:
     """
-    廣播給所有裝置的服務鈴狀態 = 現在那張單 + 紀錄 + 現在生效的規則。
+    廣播給這一間所有裝置的服務鈴狀態 = 現在那張單 + 紀錄 + 現在生效的規則。
 
     規則跟著送的理由跟舞台訊息一樣：客人那支手機要知道「按幾分鐘後會過期」，
     櫃檯那一端要知道要不要響一聲。分兩支端點拿的話，兩邊會有一邊拿到的是舊的。
@@ -1152,29 +1510,47 @@ def service_state() -> Dict[str, Any]:
     每一次都先把設定頁的「開多久算過期」套進去 —— 設定改完不必重開伺服器，
     而且**只影響還開著的那一張**（已經結案的不會自己亮回來，
     見 service_calls.py `set_stale_minutes`）。
+
+    房號與房名一起送：櫃檯那一頁收到的是十間包廂的單混在一起，
+    沒有房名的話那一列只寫著「加冰塊」，而櫃檯不知道要端去哪裡。
     """
     policy = settings.service_call_policy()
-    service_desk.set_stale_minutes(policy["stale_minutes"])
+    bundle.service.set_stale_minutes(policy["stale_minutes"])
     return {
-        **service_desk.snapshot(),
+        **bundle.service.snapshot(),
+        "room_id": bundle.id,
+        "room_name": room_name_of(bundle.id),
         "enabled": policy["enabled"],
         "chime": policy["chime"],
     }
 
 
 @app.get("/api/service")
-async def get_service_calls():
+async def get_service_calls(room: str = Query(default=rooms.DEFAULT_ROOM_ID),
+                            all_rooms: bool = Query(default=False)):
     """
     服務鈴：現在有沒有人在叫櫃檯。
+
+    `all_rooms=true` 是櫃檯那一頁要的那一份 —— 全店還開著的單，
+    照「等最久的排最前面」排。櫃檯要的順序是等待時間，不是房號
+    （見 service_calls.py 決定三：併單不重設等待時間）。
 
     跟舞台訊息同一個道理：中途才打開的點歌台要先問一次（WebSocket 只推
     「有變動」的那一刻），之後靠 SERVICE_UPDATE 更新。
     """
-    return service_state()
+    if not all_rooms:
+        return service_state(bundle_for(room))
+    rows = [service_state(b) for b in room_registry.items()]
+    open_calls = [{**r["call"], "room_id": r["room_id"], "room_name": r["room_name"]}
+                  for r in rows if r.get("call")]
+    open_calls.sort(key=lambda c: str(c.get("created_at") or ""))
+    return {"rooms": rows, "open_calls": open_calls,
+            "waiting_count": len(open_calls)}
 
 
 @app.post("/api/service")
-async def post_service_call(payload: Dict[str, Any] = Body(...)):
+async def post_service_call(payload: Dict[str, Any] = Body(...),
+                            room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     按下服務鈴。
 
@@ -1182,64 +1558,71 @@ async def post_service_call(payload: Dict[str, Any] = Body(...)):
     讓畫面講得出「已經併進剛剛那一張」而不是再講一次「已送出」——
     第二次按下去得到跟第一次一模一樣的回應，那個人會以為第一次沒送出去。
     """
+    bundle = bundle_for(room)
     policy = settings.service_call_policy()
     if not policy["enabled"]:
         raise HTTPException(status_code=409, detail={"error": "disabled",
-                                                     "service": service_state()})
+                                                     "service": service_state(bundle)})
     try:
-        call = service_desk.ring(payload.get("items"),
-                                 note=payload.get("note", "") or "",
-                                 by=payload.get("by", "") or "")
+        call = bundle.service.ring(payload.get("items"),
+                                   note=payload.get("note", "") or "",
+                                   by=payload.get("by", "") or "")
     except service_calls.ServiceCallRejected as exc:
         raise HTTPException(status_code=409,
                             detail={"error": exc.reason, **exc.detail,
-                                    "service": service_state()}) from exc
-    state = service_state()
+                                    "service": service_state(bundle)}) from exc
+    state = service_state(bundle)
     await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state,
                                 # 併單不再響一次：櫃檯已經看到那一列了，
                                 # 而同一張單響三聲只會讓人把音量關掉。
-                                "chime": bool(policy["chime"]) and not call.get("merged")})
+                                "chime": bool(policy["chime"]) and not call.get("merged")},
+                               room=bundle.id)
     return {"status": "success", "call": call, "merged": bool(call.get("merged")),
             "service": state}
 
 
 @app.post("/api/service/ack")
-async def ack_service_call(payload: Dict[str, Any] = Body(default=None)):
+async def ack_service_call(payload: Dict[str, Any] = Body(default=None),
+                           room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     櫃檯收到了。不改變現實世界，卻是整個功能最重要的一步 ——
     它把「等待中」變成「有人看到了」，而那正是客人還會不會再按一次的分水嶺。
     """
     data = payload or {}
+    bundle = bundle_for(data.get("room") or room)
     try:
-        call = service_desk.ack(call_id=data.get("id"), by=data.get("by", "") or "")
+        call = bundle.service.ack(call_id=data.get("id"), by=data.get("by", "") or "")
     except service_calls.ServiceCallRejected as exc:
         raise HTTPException(status_code=409,
                             detail={"error": exc.reason, **exc.detail,
-                                    "service": service_state()}) from exc
-    state = service_state()
-    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+                                    "service": service_state(bundle)}) from exc
+    state = service_state(bundle)
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state}, room=bundle.id)
     return {"status": "success", "call": call, "service": state}
 
 
 @app.post("/api/service/resolve")
-async def resolve_service_call(payload: Dict[str, Any] = Body(default=None)):
+async def resolve_service_call(payload: Dict[str, Any] = Body(default=None),
+                               room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """櫃檯處理完了。`reply` 是回給包廂的那一句（「餐點五分鐘後到」）。"""
     data = payload or {}
+    bundle = bundle_for(data.get("room") or room)
     try:
-        call = service_desk.resolve(call_id=data.get("id"),
-                                    reply=data.get("reply", "") or "",
-                                    by=data.get("by", "") or "")
+        call = bundle.service.resolve(call_id=data.get("id"),
+                                      reply=data.get("reply", "") or "",
+                                      by=data.get("by", "") or "")
     except service_calls.ServiceCallRejected as exc:
         raise HTTPException(status_code=409,
                             detail={"error": exc.reason, **exc.detail,
-                                    "service": service_state()}) from exc
-    state = service_state()
-    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+                                    "service": service_state(bundle)}) from exc
+    state = service_state(bundle)
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state}, room=bundle.id)
     return {"status": "success", "call": call, "service": state}
 
 
 @app.post("/api/service/cancel")
-async def cancel_service_call(payload: Dict[str, Any] = Body(default=None)):
+async def cancel_service_call(payload: Dict[str, Any] = Body(default=None),
+                              room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     包廂自己取消（「不用了，我們自己去拿」）。
 
@@ -1247,57 +1630,64 @@ async def cancel_service_call(payload: Dict[str, Any] = Body(default=None)):
     長得一樣的話，「今晚有幾單沒服務到」就永遠問不出來。
     """
     data = payload or {}
+    bundle = bundle_for(room)
     try:
-        call = service_desk.cancel(call_id=data.get("id"), by=data.get("by", "") or "")
+        call = bundle.service.cancel(call_id=data.get("id"), by=data.get("by", "") or "")
     except service_calls.ServiceCallRejected as exc:
         raise HTTPException(status_code=409,
                             detail={"error": exc.reason, **exc.detail,
-                                    "service": service_state()}) from exc
-    state = service_state()
-    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+                                    "service": service_state(bundle)}) from exc
+    state = service_state(bundle)
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state}, room=bundle.id)
     return {"status": "success", "call": call, "service": state}
 
 
 @app.delete("/api/service/history")
-async def clear_service_history():
+async def clear_service_history(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     清掉紀錄（換一桌客人）。**開著的那一張不動** ——
     它對應的是現實世界裡還沒做完的事，不會因為按了「清除紀錄」就做完了。
     """
-    removed = service_desk.clear_history()
-    state = service_state()
-    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state})
+    bundle = bundle_for(room)
+    removed = bundle.service.clear_history()
+    state = service_state(bundle)
+    await ws_manager.broadcast({"type": "SERVICE_UPDATE", "data": state}, room=bundle.id)
     return {"status": "success", "removed": removed, "service": state}
 
 
 @app.post("/api/queue/skip")
-async def skip_song():
-    next_song = await queue_manager.skip_current()
+async def skip_song(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    next_song = await bundle_for(room).queue.skip_current()
     return {"status": "success", "next_song": next_song}
 
 @app.post("/api/queue/restart")
-async def restart_song():
-    await queue_manager.restart_current()
+async def restart_song(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    await bundle_for(room).queue.restart_current()
     return {"status": "success"}
 
 @app.post("/api/seek")
-async def seek_playback(payload: Dict[str, Any] = Body(...)):
+async def seek_playback(payload: Dict[str, Any] = Body(...),
+                        room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """跳到指定秒數：進度條拖曳、段落跳轉、回到 A 點練唱都用這支。"""
-    position = await queue_manager.seek_to(payload.get("position", 0))
+    position = await bundle_for(room).queue.seek_to(payload.get("position", 0))
     return {"status": "success", "position": position}
 
 @app.post("/api/control")
-async def control_playback(payload: Dict[str, Any] = Body(...)):
+async def control_playback(payload: Dict[str, Any] = Body(...),
+                           room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    queue_manager = bundle_for(room).queue
     await queue_manager.update_controls(payload)
     return {"status": "success", "state": queue_manager.get_full_state()}
 
 @app.post("/api/sound-effect")
-async def trigger_sound_effect(payload: Dict[str, str] = Body(...)):
+async def trigger_sound_effect(payload: Dict[str, str] = Body(...),
+                               room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    bundle = bundle_for(room)
     effect_name = payload.get("effect", "cheer")
     await ws_manager.broadcast({
         "type": "SOUND_EFFECT",
         "effect": effect_name
-    })
+    }, room=bundle.id)
     return {"status": "success", "effect": effect_name}
 
 @app.get("/api/rankings")
@@ -1339,18 +1729,33 @@ async def remove_favorite(song_id: str):
 
 
 @app.get("/api/history")
-async def get_history(limit: int = Query(50, ge=1, le=200)):
-    """已唱歷史：最近實際上台演唱過的歌，最新的排最前面。"""
+async def get_history(limit: int = Query(50, ge=1, le=200),
+                      room: str = Query(default=rooms.DEFAULT_ROOM_ID),
+                      all_rooms: bool = Query(default=False)):
+    """
+    已唱歷史：最近實際上台演唱過的歌，最新的排最前面。
+
+    預設只看**這一間**唱過的（那份清單是給包廂裡的人按「再唱一次」的，
+    混進別間的歌就不是他們唱過的東西了）。櫃檯要看全店的用 `all_rooms=true`。
+    """
+    if not all_rooms:
+        bundle_for(room)
+    target = None if all_rooms else room
     return {
-        "history": song_history.recent(limit),
-        "today_count": song_history.today_count(),
-        "total_count": song_history.total_count(),
+        "history": song_history.recent(limit, room=target),
+        "today_count": song_history.today_count(room=target),
+        "total_count": song_history.total_count(room=target),
+        "room_id": None if all_rooms else room,
     }
 
 
 @app.delete("/api/history")
-async def clear_history():
-    song_history.clear()
+async def clear_history(room: str = Query(default=rooms.DEFAULT_ROOM_ID),
+                        all_rooms: bool = Query(default=False)):
+    """清空已唱歷史。預設只清這一間；`all_rooms=true` 才是整台機器。"""
+    if not all_rooms:
+        bundle_for(room)
+    song_history.clear(room=None if all_rooms else room)
     return {"status": "success"}
 
 
@@ -2137,9 +2542,17 @@ async def reset_settings():
 
 @app.post("/api/settings/apply-defaults")
 async def apply_default_controls():
-    """把設定頁的預設調音參數立刻套到現在的演唱狀態（不用重開伺服器）。"""
-    applied = queue_manager.apply_control_defaults()
-    await queue_manager.broadcast_state()
+    """
+    把設定頁的預設調音參數立刻套到現在的演唱狀態（不用重開伺服器）。
+
+    **每一間都套**：這是機台的預設值（櫃檯管理鎖也是這樣分類的），
+    只套一間的話，櫃檯把殘響調小之後只有 101 變了，而其他九間要等到
+    下一次重開伺服器 —— 那個落差沒有任何畫面講得出來。
+    """
+    applied = {}
+    for bundle in room_registry.items():
+        applied = bundle.queue.apply_control_defaults()
+    await broadcast_all_rooms()
     return {"status": "success", "applied": applied}
 
 
@@ -2232,7 +2645,7 @@ async def set_song_lyric_offset(song_id: str, payload: Dict[str, Any] = Body(...
         offset_ms=payload.get("offset_ms"),
         rate=payload.get("rate"),
     )
-    await queue_manager.broadcast_state()
+    await broadcast_all_rooms()
     return {"status": "success", "song_id": song_id, **applied}
 
 
@@ -2240,7 +2653,7 @@ async def set_song_lyric_offset(song_id: str, payload: Dict[str, Any] = Body(...
 async def clear_song_lyric_offset(song_id: str):
     """把這首歌的字幕校正歸零（偏移與速度都回到「沒有校正過」）。"""
     lyric_offsets.clear(song_id)
-    await queue_manager.broadcast_state()
+    await broadcast_all_rooms()
     return {"status": "success", "song_id": song_id, "offset_ms": 0, "rate": 1.0}
 
 
@@ -2267,7 +2680,7 @@ async def rebase_lyric_offsets(payload: Dict[str, Any] = Body(...)):
     裝置那一半是舞台自己寫進 localStorage 的，伺服器只負責這一半。
     """
     result = lyric_offsets.rebase(payload.get("delta_ms"))
-    await queue_manager.broadcast_state()
+    await broadcast_all_rooms()
     return {"status": "success", **result, "count": lyric_offsets.count()}
 
 @app.get("/api/songs/{song_id}/pitch")
@@ -2293,12 +2706,38 @@ async def get_song_sections(song_id: str):
 # --- WebSocket Hub ---
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+async def websocket_endpoint(websocket: WebSocket,
+                             room: str = Query(default=rooms.DEFAULT_ROOM_ID),
+                             desk: bool = Query(default=False)):
+    """
+    一條連線＝一間包廂。
+
+    房號認不得就**直接關掉連線**（4404），不是靜靜地退回 default：
+    退回去的話，那支手機會收到別間包廂的狀態、把歌點進別間，而兩邊都
+    不會發現（見 rooms.py 決定三）。關掉則是前端立刻看得到的錯誤，
+    而且它有得救 —— 重掃一次門口那張 QR。
+
+    `desk=1` 是櫃檯那一頁：它照樣屬於自己選的那一間（要能點歌、切歌），
+    另外**多收**每一間的服務鈴與計時提醒（見 DESK_FORWARD_TYPES）。
+    """
+    bundle = room_registry.get(room)
+    if bundle is None:
+        # accept 之前不能送 close reason，所以先接起來再關 —— 不這樣做的話
+        # 瀏覽器只看得到一個沒有理由的 1006，而那跟「Wi-Fi 斷了」長得一樣。
+        await websocket.accept()
+        await websocket.send_text(json.dumps({
+            "type": "ROOM_UNKNOWN",
+            "data": {"room": room, "rooms": room_registry.rows()},
+        }))
+        await websocket.close(code=4404)
+        return
+
+    await ws_manager.connect(websocket, bundle.id, desk=desk)
     # Send initial state immediately
     await websocket.send_text(json.dumps({
         "type": "STATE_UPDATE",
-        "data": queue_manager.get_full_state()
+        "room": bundle.id,
+        "data": bundle.queue.get_full_state()
     }))
     # 舞台端的片頭卡秒數、結算畫面開關都在設定裡，一連上就要拿到
     await websocket.send_text(json.dumps({
@@ -2311,6 +2750,11 @@ async def websocket_endpoint(websocket: WebSocket):
         "type": "STAFF_LOCK",
         "data": staff_lock.state()
     }))
+    # 包廂清單：點歌台要畫得出「現在在哪一間、可以切到哪幾間」。
+    await websocket.send_text(json.dumps({
+        "type": "ROOMS_UPDATE",
+        "data": room_registry.rows()
+    }))
 
     try:
         while True:
@@ -2321,20 +2765,21 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 if msg_type == "TIME_UPDATE":
                     # Stage screen syncs its current playback time (seconds) to remote clients
-                    await ws_manager.broadcast(msg)
+                    await ws_manager.broadcast(msg, room=bundle.id)
                 elif msg_type == "CONTROL":
-                    await queue_manager.update_controls(msg.get("data", {}))
+                    await bundle.queue.update_controls(msg.get("data", {}))
                 elif msg_type == "SOUND_EFFECT":
-                    await ws_manager.broadcast(msg)
+                    await ws_manager.broadcast(msg, room=bundle.id)
                 elif msg_type == "SONG_ENDED":
-                    logger.info("Song ended notification received from stage player.")
-                    await queue_manager.skip_current()
+                    logger.info(f"[{bundle.id}] Song ended notification received from stage.")
+                    await bundle.queue.skip_current()
                 elif msg_type == "SCORE_EVENT":
-                    await ws_manager.broadcast(msg)
+                    await ws_manager.broadcast(msg, room=bundle.id)
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
 
 # --- Media & Static Files ---
 

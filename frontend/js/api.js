@@ -1,4 +1,25 @@
 // KaraTube API & WebSocket Client
+//
+// 多包廂：這一頁屬於哪一間包廂，從網址的 `?room=` 讀（沒有就是 default）。
+// 房號**只從網址來**，不從 localStorage 記 —— 記起來的話，門口那張 QR 掃進來
+// 的手機會跳回上一次開的那一間，而那正是「唱到別人的歌」的樣子。
+// 切房間走的是換網址（見 switchRoom），所以那件事在網址列上看得見、
+// 上一頁回得去、也複製得出去給別人。
+const ROOM_PARAM = "room";
+const DEFAULT_ROOM_ID = "default";
+
+// 櫃檯那一頁（desk=1）會收到**別間包廂**的這幾種訊息。清單跟後端的
+// DESK_FORWARD_TYPES 是同一份（backend/main.py）—— 多列一種的代價是
+// 櫃檯那一頁被十間包廂的播放時間淹掉，少列一種是櫃檯看不到有人在按鈴。
+const DESK_CROSS_ROOM_TYPES = new Set(["SERVICE_UPDATE", "ROOM_ALERT", "MARQUEE_UPDATE"]);
+
+/** 網址上的房號。認不得的形狀（跟後端同一套規則）一律當成 default。 */
+function roomFromLocation(search) {
+  const raw = new URLSearchParams(search || "").get(ROOM_PARAM) || "";
+  const id = String(raw).trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9-]{0,23}$/.test(id) ? id : DEFAULT_ROOM_ID;
+}
+
 class KaraTubeAPI {
   constructor() {
     this.baseUrl = window.location.origin;
@@ -6,26 +27,117 @@ class KaraTubeAPI {
     this.socket = null;
     this.listeners = new Map();
     this.reconnectTimer = null;
+    // 這一頁在哪一間包廂。所有 /api/ 請求與 WebSocket 都帶著它。
+    this.roomId = roomFromLocation(window.location.search);
+    // 櫃檯那一頁（?desk=1）：照樣屬於自己選的那一間，另外多收全店的服務鈴與計時提醒。
+    this.isDesk = new URLSearchParams(window.location.search).get("desk") === "1";
+    this.rooms = [];
+  }
+
+  /**
+   * 每一個 /api/ 請求都自動帶上房號。
+   *
+   * 做成「一律加」而不是「維護一張分房端點清單」：漏掉一條的後果是那一條
+   * 默默地操作到 default 那一間（在只有一間包廂的機器上完全看不出來，
+   * 直到店裡裝了第二間）。不分房的端點多收一個查詢參數沒有任何影響。
+   */
+  withRoom(url) {
+    try {
+      const u = new URL(url, this.baseUrl);
+      if (!u.pathname.startsWith("/api/")) return url;
+      if (!u.searchParams.has(ROOM_PARAM)) u.searchParams.set(ROOM_PARAM, this.roomId);
+      return u.toString();
+    } catch (e) {
+      return url;
+    }
+  }
+
+  /** 專案裡所有的 fetch 都走這裡（`staffFetch` 也是），房號才不會漏掉。 */
+  fetch(url, options) {
+    return window.fetch(this.withRoom(url), options);
+  }
+
+  /** 切到另一間包廂 = 換網址。整頁重載，沒有任何「上一間的殘留狀態」。 */
+  switchRoom(roomId) {
+    const id = String(roomId || DEFAULT_ROOM_ID);
+    const u = new URL(window.location.href);
+    if (id === DEFAULT_ROOM_ID) u.searchParams.delete(ROOM_PARAM);
+    else u.searchParams.set(ROOM_PARAM, id);
+    window.location.href = u.toString();
+  }
+
+  // --- 包廂 ---
+  async listRooms() {
+    const res = await window.fetch(`${this.baseUrl}/api/rooms`);
+    const data = await res.json();
+    this.rooms = data.rooms || [];
+    return data;
+  }
+
+  async roomsOverview() {
+    const res = await window.fetch(`${this.baseUrl}/api/rooms/overview`);
+    return await res.json();
+  }
+
+  async createRoom(name, id) {
+    const res = await this.staffFetch(`${this.baseUrl}/api/rooms`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.detail && data.detail.error) || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async renameRoom(id, name) {
+    const res = await this.staffFetch(`${this.baseUrl}/api/rooms/${encodeURIComponent(id)}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.detail && data.detail.error) || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async deleteRoom(id, force = false) {
+    const res = await this.staffFetch(
+      `${this.baseUrl}/api/rooms/${encodeURIComponent(id)}?force=${force ? "true" : "false"}`,
+      { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error((data.detail && data.detail.error) || `HTTP ${res.status}`);
+      err.detail = data.detail;
+      throw err;
+    }
+    return data;
+  }
+
+  /** 櫃檯那一頁要的：全店還開著的服務鈴（等最久的排最前面）。 */
+  async deskServiceCalls() {
+    const res = await window.fetch(`${this.baseUrl}/api/service?all_rooms=true`);
+    return await res.json();
   }
 
   // --- REST Endpoints ---
   async getServerInfo() {
-    const res = await fetch(`${this.baseUrl}/api/info`);
+    const res = await this.fetch(`${this.baseUrl}/api/info`);
     return await res.json();
   }
 
   async search(query) {
-    const res = await fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`);
+    const res = await this.fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`);
     return await res.json();
   }
 
   async getCachedSongs() {
-    const res = await fetch(`${this.baseUrl}/api/cached-songs`);
+    const res = await this.fetch(`${this.baseUrl}/api/cached-songs`);
     return await res.json();
   }
 
   async getRankings(limit = 24) {
-    const res = await fetch(`${this.baseUrl}/api/rankings?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/rankings?limit=${limit}`);
     return await res.json();
   }
 
@@ -35,12 +147,12 @@ class KaraTubeAPI {
   }
 
   async getFavorites() {
-    const res = await fetch(`${this.baseUrl}/api/favorites`);
+    const res = await this.fetch(`${this.baseUrl}/api/favorites`);
     return await res.json();
   }
 
   async toggleFavorite(songData) {
-    const res = await fetch(`${this.baseUrl}/api/favorites/toggle`, {
+    const res = await this.fetch(`${this.baseUrl}/api/favorites/toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(songData)
@@ -49,7 +161,7 @@ class KaraTubeAPI {
   }
 
   async getHistory(limit = 50) {
-    const res = await fetch(`${this.baseUrl}/api/history?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/history?limit=${limit}`);
     return await res.json();
   }
 
@@ -59,7 +171,7 @@ class KaraTubeAPI {
   }
 
   async submitScore(resultData) {
-    const res = await fetch(`${this.baseUrl}/api/scores`, {
+    const res = await this.fetch(`${this.baseUrl}/api/scores`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(resultData)
@@ -75,7 +187,7 @@ class KaraTubeAPI {
    * 而且會廣播兩次結算通知，包廂裡每支手機都跳兩則。
    */
   async submitDuetScore(resultData) {
-    const res = await fetch(`${this.baseUrl}/api/scores/duet`, {
+    const res = await this.fetch(`${this.baseUrl}/api/scores/duet`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(resultData)
@@ -84,7 +196,7 @@ class KaraTubeAPI {
   }
 
   async getScores(limit = 50) {
-    const res = await fetch(`${this.baseUrl}/api/scores?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/scores?limit=${limit}`);
     return await res.json();
   }
 
@@ -94,7 +206,7 @@ class KaraTubeAPI {
    */
   async getSongTrend(songId, singer = "") {
     const params = singer ? `?singer=${encodeURIComponent(singer)}` : "";
-    const res = await fetch(`${this.baseUrl}/api/scores/${songId}/trend${params}`);
+    const res = await this.fetch(`${this.baseUrl}/api/scores/${songId}/trend${params}`);
     return await res.json();
   }
 
@@ -113,7 +225,7 @@ class KaraTubeAPI {
       if (key === "mime" || value === undefined || value === null) return;
       params.set(key, String(value));
     });
-    const res = await fetch(`${this.baseUrl}/api/recordings?${params.toString()}`, {
+    const res = await this.fetch(`${this.baseUrl}/api/recordings?${params.toString()}`, {
       method: 'POST',
       headers: { 'Content-Type': (meta && meta.mime) || blob.type || 'audio/webm' },
       body: blob
@@ -126,7 +238,7 @@ class KaraTubeAPI {
   }
 
   async getRecordings(limit = 100) {
-    const res = await fetch(`${this.baseUrl}/api/recordings?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/recordings?limit=${limit}`);
     return await res.json();
   }
 
@@ -142,7 +254,7 @@ class KaraTubeAPI {
    * 所以跨午夜的那一晚是一場，不是兩場。
    */
   async getRecordingSessions() {
-    const res = await fetch(`${this.baseUrl}/api/recordings/sessions`);
+    const res = await this.fetch(`${this.baseUrl}/api/recordings/sessions`);
     if (!res.ok) throw new Error(`場次讀取失敗 (${res.status})`);
     return await res.json();
   }
@@ -171,7 +283,7 @@ class KaraTubeAPI {
   }
 
   async pinRecording(recId, pinned) {
-    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}/pin`, {
+    const res = await this.fetch(`${this.baseUrl}/api/recordings/${recId}/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(pinned === undefined ? {} : { pinned })
@@ -180,7 +292,7 @@ class KaraTubeAPI {
   }
 
   async deleteRecording(recId) {
-    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}`, { method: 'DELETE' });
+    const res = await this.fetch(`${this.baseUrl}/api/recordings/${recId}`, { method: 'DELETE' });
     return await res.json();
   }
 
@@ -200,7 +312,7 @@ class KaraTubeAPI {
     const body = { new: newLink };
     if (ttlHours !== undefined) body.ttl_hours = ttlHours;
     if (maxDownloads !== undefined) body.max_downloads = maxDownloads;
-    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}/share`, {
+    const res = await this.fetch(`${this.baseUrl}/api/recordings/${recId}/share`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -213,25 +325,25 @@ class KaraTubeAPI {
   }
 
   async getRecordingShares(recId) {
-    const res = await fetch(`${this.baseUrl}/api/recordings/${recId}/shares`);
+    const res = await this.fetch(`${this.baseUrl}/api/recordings/${recId}/shares`);
     return await res.json();
   }
 
   async revokeShare(token) {
-    const res = await fetch(`${this.baseUrl}/api/share/${encodeURIComponent(token)}`,
+    const res = await this.fetch(`${this.baseUrl}/api/share/${encodeURIComponent(token)}`,
                             { method: 'DELETE' });
     if (!res.ok) throw new Error(`撤銷失敗 (${res.status})`);
     return await res.json();
   }
 
   async getScoreTrends(limit = 20) {
-    const res = await fetch(`${this.baseUrl}/api/scores/trends?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/scores/trends?limit=${limit}`);
     return await res.json();
   }
 
   // --- 曲庫分類瀏覽 / 新歌榜 / 推薦歌單 ---
   async getLibraryFacets() {
-    const res = await fetch(`${this.baseUrl}/api/library`);
+    const res = await this.fetch(`${this.baseUrl}/api/library`);
     return await res.json();
   }
 
@@ -239,12 +351,12 @@ class KaraTubeAPI {
     const params = new URLSearchParams({ sort, limit });
     if (language) params.set("language", language);
     if (artist) params.set("artist", artist);
-    const res = await fetch(`${this.baseUrl}/api/library/songs?${params}`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/songs?${params}`);
     return await res.json();
   }
 
   async getFindKeys() {
-    const res = await fetch(`${this.baseUrl}/api/library/find/keys`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/find/keys`);
     return await res.json();
   }
 
@@ -252,7 +364,7 @@ class KaraTubeAPI {
     const params = new URLSearchParams({ limit });
     if (q) params.set("q", q);
     if (chars > 0) params.set("chars", chars);
-    const res = await fetch(`${this.baseUrl}/api/library/find?${params}`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/find?${params}`);
     return await res.json();
   }
 
@@ -262,20 +374,20 @@ class KaraTubeAPI {
   async getSongNumbers({ prefix = "", limit = 40 } = {}) {
     const params = new URLSearchParams({ limit });
     if (prefix) params.set("prefix", prefix);
-    const res = await fetch(`${this.baseUrl}/api/library/numbers?${params}`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/numbers?${params}`);
     return await res.json();
   }
 
   // 查一組歌號。打錯、已下架、號碼簿壞掉三種狀況在回覆裡是分開的
   // （見 backend/main.py 的 _number_lookup），畫面才講得出不同的下一步。
   async lookupSongNumber(number) {
-    const res = await fetch(
+    const res = await this.fetch(
       `${this.baseUrl}/api/library/number/${encodeURIComponent(number)}`);
     return await res.json();
   }
 
   async getArtistKeys() {
-    const res = await fetch(`${this.baseUrl}/api/library/artists/keys`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/artists/keys`);
     return await res.json();
   }
 
@@ -285,22 +397,22 @@ class KaraTubeAPI {
     const params = new URLSearchParams({ limit });
     if (q) params.set("q", q);
     if (artist) params.set("artist", artist);
-    const res = await fetch(`${this.baseUrl}/api/library/artists/find?${params}`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/artists/find?${params}`);
     return await res.json();
   }
 
   async getNewSongs(limit = 24) {
-    const res = await fetch(`${this.baseUrl}/api/library/new?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/new?limit=${limit}`);
     return await res.json();
   }
 
   async getRecommendations(limit = 12) {
-    const res = await fetch(`${this.baseUrl}/api/library/recommend?limit=${limit}`);
+    const res = await this.fetch(`${this.baseUrl}/api/library/recommend?limit=${limit}`);
     return await res.json();
   }
 
   async getCacheInfo() {
-    const res = await fetch(`${this.baseUrl}/api/cache`);
+    const res = await this.fetch(`${this.baseUrl}/api/cache`);
     return await res.json();
   }
 
@@ -318,7 +430,7 @@ class KaraTubeAPI {
   // 讓遲到的寫入落到新歌上的窗口，而那正是這個功能要修掉的 bug。
 
   async setSongLyricOffset(songId, offsetMs) {
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`, {
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ offset_ms: offsetMs })
@@ -340,7 +452,7 @@ class KaraTubeAPI {
     // 送一個 undefined 進去會變成 null，那是另一件事。
     if (offsetMs !== undefined) body.offset_ms = offsetMs;
     if (rate !== undefined) body.rate = rate;
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`, {
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -351,7 +463,7 @@ class KaraTubeAPI {
   }
 
   async clearSongLyricOffset(songId) {
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`,
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/lyric-offset`,
                             { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
@@ -359,13 +471,13 @@ class KaraTubeAPI {
   }
 
   async getLyricOffsets() {
-    const res = await fetch(`${this.baseUrl}/api/lyric-offsets`);
+    const res = await this.fetch(`${this.baseUrl}/api/lyric-offsets`);
     return await res.json();
   }
 
   /** 升級成本機基準的另一半：所有已校正的歌各減掉 delta。 */
   async rebaseLyricOffsets(deltaMs) {
-    const res = await fetch(`${this.baseUrl}/api/lyric-offsets/rebase`, {
+    const res = await this.fetch(`${this.baseUrl}/api/lyric-offsets/rebase`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ delta_ms: deltaMs })
@@ -396,7 +508,7 @@ class KaraTubeAPI {
   }
 
   async retryQueueItem(queueId) {
-    const res = await fetch(`${this.baseUrl}/api/queue/${queueId}/retry`, { method: 'POST' });
+    const res = await this.fetch(`${this.baseUrl}/api/queue/${queueId}/retry`, { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
@@ -405,7 +517,7 @@ class KaraTubeAPI {
   // --- 本機曲庫匯入（把 cache/import/ 裡的檔案變成曲庫歌曲）---
   // 掃描是 GET（不鎖），真正建立處理任務走 staffFetch（機器層級的動作）。
   async getLocalImports() {
-    const res = await fetch(`${this.baseUrl}/api/import`);
+    const res = await this.fetch(`${this.baseUrl}/api/import`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
@@ -424,7 +536,7 @@ class KaraTubeAPI {
 
   // --- 排程預處理（半夜把整批歌先跑成伴奏＋字幕）---
   async getBatchState() {
-    const res = await fetch(`${this.baseUrl}/api/batch`);
+    const res = await this.fetch(`${this.baseUrl}/api/batch`);
     return await res.json();
   }
 
@@ -466,7 +578,7 @@ class KaraTubeAPI {
 
   // --- 系統設定 ---
   async getSettings() {
-    const res = await fetch(`${this.baseUrl}/api/settings`);
+    const res = await this.fetch(`${this.baseUrl}/api/settings`);
     return await res.json();
   }
 
@@ -493,18 +605,18 @@ class KaraTubeAPI {
 
   // 自動音量平衡：這首歌該套多少增益（伺服器已依目前設定算好）
   async getLoudness(songId) {
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/loudness`);
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/loudness`);
     if (!res.ok) return { gain_db: 0, enabled: false, measured: false };
     return await res.json();
   }
 
   async getQueue() {
-    const res = await fetch(`${this.baseUrl}/api/queue`);
+    const res = await this.fetch(`${this.baseUrl}/api/queue`);
     return await res.json();
   }
 
   async addToQueue(songData, priority = false) {
-    const res = await fetch(`${this.baseUrl}/api/queue/add`, {
+    const res = await this.fetch(`${this.baseUrl}/api/queue/add`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...songData, priority })
@@ -556,7 +668,7 @@ class KaraTubeAPI {
    * （重送的是他本來就按下去的那個動作，不是機器自己決定要做的事。）
    */
   async staffFetch(url, options = {}) {
-    const send = () => fetch(url, Object.assign({}, options, {
+    const send = () => this.fetch(url, Object.assign({}, options, {
       headers: this.staffHeaders(options.headers),
     }));
 
@@ -581,13 +693,13 @@ class KaraTubeAPI {
   }
 
   async getStaffLock() {
-    const res = await fetch(`${this.baseUrl}/api/staff-lock`);
+    const res = await this.fetch(`${this.baseUrl}/api/staff-lock`);
     return await res.json();
   }
 
   /** 打密碼解鎖。回傳統一形狀給 staff-lock.js 的 unlockMessage() 說話。 */
   async unlockStaff(pin) {
-    const res = await fetch(`${this.baseUrl}/api/staff-lock/unlock`, {
+    const res = await this.fetch(`${this.baseUrl}/api/staff-lock/unlock`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pin })
@@ -608,13 +720,13 @@ class KaraTubeAPI {
 
   /** 上鎖。刻意不需要任何憑據 —— 關門不需要鑰匙。 */
   async lockStaff() {
-    const res = await fetch(`${this.baseUrl}/api/staff-lock/lock`, { method: 'POST' });
+    const res = await this.fetch(`${this.baseUrl}/api/staff-lock/lock`, { method: 'POST' });
     this.setStaffToken('');
     return await res.json();
   }
 
   async setStaffPin(pin, currentPin = '') {
-    const res = await fetch(`${this.baseUrl}/api/staff-lock/pin`, {
+    const res = await this.fetch(`${this.baseUrl}/api/staff-lock/pin`, {
       method: 'POST',
       headers: this.staffHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ pin, current_pin: currentPin })
@@ -627,7 +739,7 @@ class KaraTubeAPI {
   }
 
   async disableStaffLock(currentPin = '') {
-    const res = await fetch(`${this.baseUrl}/api/staff-lock/disable`, {
+    const res = await this.fetch(`${this.baseUrl}/api/staff-lock/disable`, {
       method: 'POST',
       headers: this.staffHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ current_pin: currentPin })
@@ -639,7 +751,7 @@ class KaraTubeAPI {
   }
 
   async setStaffAutoLock(minutes, currentPin = '') {
-    const res = await fetch(`${this.baseUrl}/api/staff-lock/auto-lock`, {
+    const res = await this.fetch(`${this.baseUrl}/api/staff-lock/auto-lock`, {
       method: 'POST',
       headers: this.staffHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ minutes, current_pin: currentPin })
@@ -654,7 +766,7 @@ class KaraTubeAPI {
   // STATE_UPDATE 廣播給包廂裡所有裝置（倒數要是同一個數字）。
 
   async getRoomTimer() {
-    const res = await fetch(`${this.baseUrl}/api/room`);
+    const res = await this.fetch(`${this.baseUrl}/api/room`);
     return await res.json();
   }
 
@@ -692,7 +804,7 @@ class KaraTubeAPI {
   // MARQUEE_UPDATE 廣播出去（點歌台的清單與舞台上跑的要是同一份）。
 
   async getMarquee() {
-    const res = await fetch(`${this.baseUrl}/api/marquee`);
+    const res = await this.fetch(`${this.baseUrl}/api/marquee`);
     return await res.json();
   }
 
@@ -736,12 +848,12 @@ class KaraTubeAPI {
   // 客人那支手機與櫃檯那一端看到的必須是同一張單、同一個等待時間。
 
   async getServiceCalls() {
-    const res = await fetch(`${this.baseUrl}/api/service`);
+    const res = await this.fetch(`${this.baseUrl}/api/service`);
     return await res.json();
   }
 
   async ringService({ items = [], note = '', by = '' } = {}) {
-    const res = await fetch(`${this.baseUrl}/api/service`, {
+    const res = await this.fetch(`${this.baseUrl}/api/service`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items, note, by })
@@ -790,7 +902,7 @@ class KaraTubeAPI {
   }
 
   async reorderQueue(fromIdx, toIdx) {
-    const res = await fetch(`${this.baseUrl}/api/queue/reorder`, {
+    const res = await this.fetch(`${this.baseUrl}/api/queue/reorder`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from_idx: fromIdx, to_idx: toIdx })
@@ -799,23 +911,23 @@ class KaraTubeAPI {
   }
 
   async removeQueueItem(queueId) {
-    const res = await fetch(`${this.baseUrl}/api/queue/${queueId}`, { method: 'DELETE' });
+    const res = await this.fetch(`${this.baseUrl}/api/queue/${queueId}`, { method: 'DELETE' });
     return await res.json();
   }
 
   async skipSong() {
-    const res = await fetch(`${this.baseUrl}/api/queue/skip`, { method: 'POST' });
+    const res = await this.fetch(`${this.baseUrl}/api/queue/skip`, { method: 'POST' });
     return await res.json();
   }
 
   async restartSong() {
-    const res = await fetch(`${this.baseUrl}/api/queue/restart`, { method: 'POST' });
+    const res = await this.fetch(`${this.baseUrl}/api/queue/restart`, { method: 'POST' });
     return await res.json();
   }
 
   // 跳到指定秒數：進度條拖曳、段落跳轉、回到 A 點
   async seek(position) {
-    const res = await fetch(`${this.baseUrl}/api/seek`, {
+    const res = await this.fetch(`${this.baseUrl}/api/seek`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ position })
@@ -833,12 +945,12 @@ class KaraTubeAPI {
   // 自動接歌（沒有人點歌時，機器自己接一首）。開關在系統設定頁，
   // 這兩支是「現在的狀態」與「現在接的話會接哪一首」。
   async getAutofill() {
-    const res = await fetch(`${this.baseUrl}/api/autofill`);
+    const res = await this.fetch(`${this.baseUrl}/api/autofill`);
     return await res.json();
   }
 
   async previewAutofill() {
-    const res = await fetch(`${this.baseUrl}/api/autofill/preview`);
+    const res = await this.fetch(`${this.baseUrl}/api/autofill/preview`);
     if (!res.ok) throw new Error('曲庫裡還沒有可以接的歌');
     return await res.json();
   }
@@ -846,7 +958,7 @@ class KaraTubeAPI {
   // 🎲 來一首：從已備好的曲庫隨機點一首。算人點的，所以跟手動點歌一樣
   // 會被額度與歡唱時間擋下來（409 帶著整份理由回來）。
   async randomPick(requestedBy = '') {
-    const res = await fetch(`${this.baseUrl}/api/autofill/random`, {
+    const res = await this.fetch(`${this.baseUrl}/api/autofill/random`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requested_by: requestedBy })
@@ -862,7 +974,7 @@ class KaraTubeAPI {
   }
 
   async updateControl(controlData) {
-    const res = await fetch(`${this.baseUrl}/api/control`, {
+    const res = await this.fetch(`${this.baseUrl}/api/control`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(controlData)
@@ -871,7 +983,7 @@ class KaraTubeAPI {
   }
 
   async triggerSoundEffect(effectName) {
-    const res = await fetch(`${this.baseUrl}/api/sound-effect`, {
+    const res = await this.fetch(`${this.baseUrl}/api/sound-effect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ effect: effectName })
@@ -880,20 +992,20 @@ class KaraTubeAPI {
   }
 
   async getLyrics(songId) {
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/lyrics`);
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/lyrics`);
     const data = await res.json();
     return data.lyrics;
   }
 
   async getPitch(songId) {
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/pitch`);
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/pitch`);
     const data = await res.json();
     return data.pitch;
   }
 
   // 練唱模式用的曲式分析：副歌位置與段落清單
   async getSections(songId) {
-    const res = await fetch(`${this.baseUrl}/api/songs/${songId}/sections`);
+    const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/sections`);
     if (!res.ok) return { chorus: null, sections: [] };
     return await res.json();
   }
@@ -905,10 +1017,14 @@ class KaraTubeAPI {
     }
 
     try {
-      this.socket = new WebSocket(this.wsUrl);
+      // 房號跟著連線走。斷線重連也一樣 —— 重連時如果掉回 default，
+      // 那台舞台會開始播別間包廂的歌（見 backend/services/rooms.py 決定三）。
+      const params = new URLSearchParams({ room: this.roomId });
+      if (this.isDesk) params.set("desk", "1");
+      this.socket = new WebSocket(`${this.wsUrl}?${params.toString()}`);
 
       this.socket.onopen = () => {
-        console.log("[KaraTube WS] Connected");
+        console.log(`[KaraTube WS] Connected (${this.roomId})`);
         this.emit("ws_connected", true);
         if (this.reconnectTimer) {
           clearInterval(this.reconnectTimer);
@@ -919,6 +1035,20 @@ class KaraTubeAPI {
       this.socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          // 房號認不得：伺服器已經關掉這條連線。不重試（重試永遠不會成功），
+          // 讓畫面講出「這個房號不存在」與下一步（重掃門口那張 QR）。
+          if (msg.type === "ROOM_UNKNOWN") {
+            this.roomUnknown = msg.data || {};
+            this.stopReconnect();
+            this.emit("ROOM_UNKNOWN", msg);
+            return;
+          }
+          // 別間包廂的訊息一律丟掉。正常情況下伺服器不會送過來，
+          // 但櫃檯那一頁（desk=1）**會**收到每一間的服務鈴與計時提醒 ——
+          // 那幾種要讓它收到，其餘的（尤其 STATE_UPDATE）一個都不能畫上自己的畫面。
+          if (msg.room && msg.room !== this.roomId && !DESK_CROSS_ROOM_TYPES.has(msg.type)) {
+            return;
+          }
           this.emit(msg.type, msg);
         } catch (e) {
           console.error("WS Parse error:", e);
@@ -926,8 +1056,9 @@ class KaraTubeAPI {
       };
 
       this.socket.onclose = () => {
-        console.warn("[KaraTube WS] Closed. Reconnecting in 2s...");
         this.emit("ws_connected", false);
+        if (this.roomUnknown) return;   // 房號不存在，重試永遠不會成功
+        console.warn("[KaraTube WS] Closed. Reconnecting in 2s...");
         if (!this.reconnectTimer) {
           this.reconnectTimer = setInterval(() => this.initWebSocket(), 2000);
         }
@@ -938,6 +1069,13 @@ class KaraTubeAPI {
       };
     } catch (err) {
       console.error("[KaraTube WS] Init Error:", err);
+    }
+  }
+
+  stopReconnect() {
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
   }
 

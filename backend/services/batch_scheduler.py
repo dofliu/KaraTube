@@ -27,6 +27,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from backend.services import process_lane
+
+# 批次任務在車道上的「房號」。刻意不是任何一間包廂的 id ——
+# 它跟包廂共用同一條車道，但永遠排在最後（CLASS_BATCH）。
+BATCH_LANE_ROOM = "_batch"
+
 logger = logging.getLogger("KaraTube.BatchScheduler")
 
 # 保留多少筆歷史任務。跑完的任務還留著是為了「昨天那批到底有沒有跑完」，
@@ -150,6 +156,7 @@ class BatchScheduler:
                  settings: Optional[Any] = None,
                  broadcast_cb: Optional[Callable] = None,
                  busy_cb: Optional[Callable[[], bool]] = None,
+                 lane: Optional[Any] = None,
                  clock: Optional[Callable[[], datetime]] = None):
         self.processor = processor
         self.storage = storage
@@ -158,6 +165,11 @@ class BatchScheduler:
         self.broadcast_cb = broadcast_cb
         # 「現在有人在唱歌嗎」。沒給就當作永遠不忙（測試與純批次伺服器用）。
         self.busy_cb = busy_cb or (lambda: False)
+        # 整台機器的流水線車道（可為 None）。`busy_cb` 只擋得住「還沒開始的
+        # 那一首」，已經跑到一半的 Demucs 不會因為有人點歌就停下來 ——
+        # 車道解的是後半段：批次任務照樣排隊，而且永遠排在所有包廂後面
+        # （見 backend/services/process_lane.py 決定三）。
+        self.lane = lane
         self._now = clock or datetime.now
 
         self.jobs: List[Dict[str, Any]] = []
@@ -435,7 +447,18 @@ class BatchScheduler:
 
         try:
             target = item["url"] or item["song_id"]
-            meta = await self.processor.process_song(target, progress_callback=on_progress)
+            if self.lane is None:
+                meta = await self.processor.process_song(target, progress_callback=on_progress)
+            else:
+                def run_pipeline():
+                    return self.processor.process_song(target, progress_callback=on_progress)
+
+                def on_wait(ahead: int, _total: int):
+                    item["status_text"] = ("等包廂先用…" if ahead <= 0
+                                           else f"等包廂先用（前面還有 {ahead} 首）")
+
+                meta = await self.lane.run(BATCH_LANE_ROOM, run_pipeline,
+                                           klass=process_lane.CLASS_BATCH, on_wait=on_wait)
             item["title"] = meta.get("title", item["title"]) or item["title"]
             item["artist"] = meta.get("artist", item["artist"]) or item["artist"]
             item["thumbnail"] = meta.get("thumbnail", item["thumbnail"]) or item["thumbnail"]

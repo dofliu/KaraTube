@@ -12,6 +12,13 @@
   <audio id="audioInst" preload="auto" crossorigin="anonymous"></audio>
   <audio id="audioVoc" preload="auto" crossorigin="anonymous"></audio>
 
+  <!-- 房號不存在（門口那張 QR 印錯、那一間被關掉）。舞台上一定要整頁講清楚：
+       台上那台電視沒有人會去看瀏覽器主控台，而它只會停在一片黑。 -->
+  <div id="stageRoomError" style="display: none; position: fixed; inset: 0; z-index: 10000;
+       background: rgba(10,10,20,0.96); color: #fff; align-items: center;
+       justify-content: center; text-align: center; padding: 40px; font-size: 26px;
+       font-weight: 700; line-height: 1.7;"></div>
+
   <!-- Autoplay / Click to Start Prompt -->
   <div id="audioPromptOverlay" class="audio-prompt-overlay">
     <div class="audio-prompt-box">
@@ -302,6 +309,7 @@
   <!-- 字幕同步的兩個數字（這首歌 vs 這台裝置）的說法。與點歌台共用同一支 -->
   <script src="/js/lyric-sync.js"></script>
   <script src="/js/room-view.js"></script>
+  <script src="/js/rooms-view.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

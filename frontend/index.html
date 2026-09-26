@@ -38,10 +38,18 @@
       <button class="btn btn-secondary" id="serviceBtn" title="叫櫃檯：送餐、加冰塊、清潔、麥克風／音響、結帳">
         🔔 服務鈴<span id="serviceCountBadge" class="marquee-count" style="display: none;"></span>
       </button>
+      <!-- 多包廂：這一頁現在在哪一間。只有一間包廂的機器整顆不出現 ——
+           家裡那台不需要看到一個永遠只有一個選項的切換鍵。
+           按下去會跳到「🏠 包廂」那一頁（櫃檯總覽），不另外開一層 modal：
+           切房間是要看著全店的狀況做的決定，不是從下拉選單裡盲選一個房號。 -->
+      <button class="btn btn-secondary" id="roomSwitchBtn" style="display: none;"
+              title="這一頁現在在哪一間包廂。按一下看全店總覽並切換">🏠 包廂</button>
       <button class="btn btn-secondary" id="nickBtn" title="設定顯示在佇列上的暱稱，讓大家知道是誰點的歌">
         👤 <span id="nickText">設定暱稱</span>
       </button>
-      <a href="/player.html" target="_blank" class="btn btn-primary">
+      <!-- 舞台大螢幕的連結帶著房號（controller.js 開機時補上 ?room=）：
+           不帶的話，在 202 包廂的點歌台按下去會開出一台播 default 的舞台。 -->
+      <a href="/player.html" target="_blank" class="btn btn-primary" id="openPlayerBtn">
         🖥️ 開啟舞台大螢幕
       </a>
       <button class="btn btn-secondary" id="qrBtn">
@@ -57,6 +65,13 @@
               title="櫃檯管理鎖">🔒 <span id="staffLockText">櫃檯管理</span></button>
     </div>
   </header>
+
+  <!-- 房號不存在（打錯字、那一間剛被關掉）。整條橫幅蓋在最上面而不是一個
+       會自己消失的提示：在錯的房號上點的每一首歌都會落空，而使用者不會把
+       「剛剛閃過的那一行字」跟「我點的歌沒出現」聯想在一起。 -->
+  <div id="roomUnknownBanner" style="display: none; margin: 0 20px 16px; padding: 14px 18px;
+       border-radius: 12px; background: rgba(255,0,127,0.15); border: 1px solid #ff007f;
+       color: #fff; font-weight: 600;"></div>
 
   <main class="app-container">
     <!-- Search & Library Column -->
@@ -84,6 +99,7 @@
         <button class="btn btn-secondary lib-tab" data-lib="recordings" title="錄唱回放：把剛剛唱的那一次聽回來（要先到系統設定頁打開錄音）">🎙️ 錄唱回放</button>
         <button class="btn btn-secondary lib-tab" data-lib="cache">🗂️ 快取管理</button>
         <button class="btn btn-secondary lib-tab" data-lib="batch" title="半夜自動把整張播放清單處理好，隔天點下去就是秒播">🌙 排程預處理</button>
+        <button class="btn btn-secondary lib-tab" data-lib="rooms" title="多包廂：一台伺服器帶多組舞台與佇列。這一頁是櫃檯總覽（哪一間在叫櫃檯、哪一間快到時間）">🏠 包廂</button>
         <button class="btn btn-secondary lib-tab" data-lib="import" title="本機匯入：把自己的伴唱影片或音檔放進 cache/import/，跑同一條流水線變成曲庫裡的歌（不必上 YouTube）">📁 本機匯入</button>
         <span id="libSummary" class="lib-summary"></span>
       </div>
@@ -675,6 +691,7 @@
   <!-- 自動接歌的說法（機器接的那一首要講得出「為什麼是這首」與「有人點歌就讓開」）-->
   <script src="/js/autofill-view.js"></script>
   <script src="/js/room-view.js"></script>
+  <script src="/js/rooms-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

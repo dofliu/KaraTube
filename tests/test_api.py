@@ -2649,3 +2649,270 @@ def test_rebuild_lyrics_broadcasts_after_clearing_the_offset(fake_song_with_alig
     assert res.status_code == 200
     assert res.json()["cleared_offset_ms"] == 300
     assert broadcasts, "清掉偏移之後沒有廣播，其他裝置不會知道"
+
+
+# =========================================================================
+# 多包廂（一台伺服器帶多組舞台與佇列）
+# =========================================================================
+
+@pytest.fixture()
+def temp_room():
+    """開一間臨時包廂，測完拆掉（不留在本機的 cache/rooms.json 裡）。"""
+    res = client.post("/api/rooms", json={"name": "測試包廂", "id": "pytest-room"})
+    assert res.status_code == 200
+    yield "pytest-room"
+    main.room_registry.get("pytest-room") and \
+        client.delete("/api/rooms/pytest-room?force=true")
+
+
+def test_rooms_list_has_default():
+    res = client.get("/api/rooms")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["default"] == "default"
+    assert any(r["id"] == "default" for r in data["rooms"])
+
+
+def test_old_calls_without_room_still_hit_the_default_room():
+    """升級的機器一個字都不用改（rooms.py 決定二）。"""
+    plain = client.get("/api/queue").json()
+    explicit = client.get("/api/queue?room=default").json()
+    assert plain["room_id"] == explicit["room_id"] == "default"
+
+
+def test_unknown_room_is_404_not_a_silent_fallback(temp_room):
+    """決定三：退回 default 的話，那支手機會把歌點進別間包廂。"""
+    for path in ["/api/queue?room=no-such-room", "/api/room?room=no-such-room",
+                 "/api/marquee?room=no-such-room", "/api/service?room=no-such-room"]:
+        res = client.get(path)
+        assert res.status_code == 404, path
+        assert res.json()["detail"]["error"] == "no_such_room"
+
+
+def test_bad_room_id_is_rejected_too():
+    res = client.get("/api/queue?room=Room%20A")
+    assert res.status_code == 404
+
+
+def test_create_room_generates_a_slug_from_the_name():
+    res = client.post("/api/rooms", json={"name": "303 包廂"})
+    assert res.status_code == 200
+    try:
+        assert res.json()["room"]["id"] == "303"
+        assert res.json()["room"]["name"] == "303 包廂"
+    finally:
+        client.delete("/api/rooms/303?force=true")
+
+
+def test_duplicate_room_id_is_rejected(temp_room):
+    res = client.post("/api/rooms", json={"name": "另一間", "id": temp_room})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "room_exists"
+
+
+def test_rename_keeps_the_room_id(temp_room):
+    res = client.post(f"/api/rooms/{temp_room}/rename", json={"name": "VIP 大包"})
+    assert res.status_code == 200
+    assert res.json()["room"] == {"id": temp_room, "name": "VIP 大包",
+                                  "created_at": res.json()["room"]["created_at"]}
+
+
+def test_default_room_cannot_be_deleted():
+    res = client.delete("/api/rooms/default")
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "default_room_locked"
+
+
+def test_deleting_a_room_that_is_still_singing_needs_force(temp_room):
+    bundle = main.room_registry.get(temp_room)
+    bundle.queue.queue.append({"queue_id": "busy-1", "song_id": "x", "title": "還在唱",
+                               "status": "READY", "requested_by": ""})
+    res = client.delete(f"/api/rooms/{temp_room}")
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "room_in_use"
+    assert res.json()["detail"]["queue_length"] == 1
+    # force 才過
+    assert client.delete(f"/api/rooms/{temp_room}?force=true").status_code == 200
+
+
+def test_queues_are_independent_between_rooms(temp_room):
+    """這個功能唯一不能出的錯：A 包廂按切歌不會切掉 B 包廂的歌。"""
+    other = main.room_registry.get(temp_room).queue
+    default_q = main.queue_manager
+    saved = list(default_q.queue)
+    try:
+        default_q.queue.append({"queue_id": "d1", "song_id": "s-default",
+                                "status": "READY", "requested_by": ""})
+        other.queue.append({"queue_id": "o1", "song_id": "s-other",
+                            "status": "READY", "requested_by": ""})
+        assert [i["queue_id"] for i in client.get("/api/queue").json()["queue"]] == ["d1"]
+        assert [i["queue_id"] for i in
+                client.get(f"/api/queue?room={temp_room}").json()["queue"]] == ["o1"]
+        # 從另一間刪歌，不該碰到這一間
+        client.delete(f"/api/queue/o1?room={temp_room}")
+        assert [i["queue_id"] for i in client.get("/api/queue").json()["queue"]] == ["d1"]
+    finally:
+        default_q.queue[:] = saved
+        other.queue.clear()
+
+
+def test_room_timer_is_per_room(temp_room):
+    try:
+        client.post(f"/api/room/start?room={temp_room}", json={"minutes": 30})
+        assert client.get(f"/api/room?room={temp_room}").json()["active"] is True
+        assert client.get("/api/room").json()["active"] is False
+    finally:
+        client.post(f"/api/room/stop?room={temp_room}")
+
+
+def test_marquee_is_per_room(temp_room):
+    main.marquee_board.clear()
+    try:
+        res = client.post(f"/api/marquee?room={temp_room}", json={"text": "只給這一間"})
+        assert res.status_code == 200
+        assert len(client.get(f"/api/marquee?room={temp_room}").json()["messages"]) == 1
+        assert client.get("/api/marquee").json()["messages"] == []
+    finally:
+        client.delete(f"/api/marquee?room={temp_room}")
+        main.marquee_board.clear()
+
+
+def test_marquee_broadcast_all_reaches_every_room(temp_room):
+    """櫃檯按十次一定會漏掉一間，而漏掉的那一間正是還沒聽到要打烊的那一間。"""
+    main.marquee_board.clear()
+    try:
+        res = client.post("/api/marquee?broadcast_all=true", json={"text": "本店 23:30 打烊"})
+        assert res.status_code == 200
+        assert len(res.json()["sent"]) == len(main.room_registry.ids())
+        assert len(client.get("/api/marquee").json()["messages"]) == 1
+        assert len(client.get(f"/api/marquee?room={temp_room}").json()["messages"]) == 1
+    finally:
+        client.delete("/api/marquee")
+        client.delete(f"/api/marquee?room={temp_room}")
+        main.marquee_board.clear()
+
+
+def test_service_calls_are_per_room_but_the_desk_sees_all(temp_room, service_clean):
+    settings.update({"service_call_enabled": True})
+    other = main.room_registry.get(temp_room).service
+    try:
+        assert client.post(f"/api/service?room={temp_room}",
+                           json={"items": ["drink"]}).status_code == 200
+        assert client.get(f"/api/service?room={temp_room}").json()["call"] is not None
+        assert client.get("/api/service").json()["call"] is None
+        desk = client.get("/api/service?all_rooms=true").json()
+        assert desk["waiting_count"] == 1
+        # 櫃檯看到的那一列要講得出「端去哪一間」
+        assert desk["open_calls"][0]["room_id"] == temp_room
+        assert desk["open_calls"][0]["room_name"] == "測試包廂"
+    finally:
+        other._open = None
+        other._history = []
+        other._save()
+
+
+def test_history_is_filtered_by_room(temp_room, snapshot_history_and_scores):
+    song_history._entries = []
+    song_history.record({"song_id": "h-default", "title": "這一間"}, room="default")
+    song_history.record({"song_id": "h-other", "title": "那一間"}, room=temp_room)
+    mine = client.get("/api/history").json()
+    assert [e["song_id"] for e in mine["history"]] == ["h-default"]
+    theirs = client.get(f"/api/history?room={temp_room}").json()
+    assert [e["song_id"] for e in theirs["history"]] == ["h-other"]
+    everyone = client.get("/api/history?all_rooms=true").json()
+    assert {e["song_id"] for e in everyone["history"]} == {"h-default", "h-other"}
+
+
+def test_clearing_history_for_one_room_keeps_the_others(temp_room,
+                                                        snapshot_history_and_scores):
+    song_history._entries = []
+    song_history.record({"song_id": "keep-me"}, room="default")
+    song_history.record({"song_id": "drop-me"}, room=temp_room)
+    assert client.delete(f"/api/history?room={temp_room}").status_code == 200
+    assert [e["song_id"] for e in client.get("/api/history").json()["history"]] == ["keep-me"]
+
+
+def test_overview_lists_every_room(temp_room):
+    data = client.get("/api/rooms/overview").json()
+    ids = [r["id"] for r in data["rooms"]]
+    assert "default" in ids and temp_room in ids
+    row = next(r for r in data["rooms"] if r["id"] == temp_room)
+    assert set(row) >= {"name", "is_playing", "queue_length", "room", "service_open"}
+    assert data["lane"]["capacity"] == 1
+
+
+def test_qrcode_for_a_room_points_at_that_room(temp_room):
+    assert client.get(f"/api/qrcode?room={temp_room}").status_code == 200
+    assert client.get("/api/qrcode?room=no-such-room").status_code == 404
+
+
+def test_info_carries_the_room_in_the_urls(temp_room):
+    plain = client.get("/api/info").json()
+    assert "?room=" not in plain["web_url"]
+    scoped = client.get(f"/api/info?room={temp_room}").json()
+    assert scoped["web_url"].endswith(f"?room={temp_room}")
+    assert scoped["player_url"].endswith(f"player.html?room={temp_room}")
+    assert scoped["room_name"] == "測試包廂"
+
+
+def test_websocket_refuses_an_unknown_room():
+    """靜靜地連上 default 的話，那台舞台會開始播別間包廂的歌。"""
+    with client.websocket_connect("/ws?room=no-such-room") as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "ROOM_UNKNOWN"
+
+
+def test_websocket_state_carries_its_room(temp_room):
+    with client.websocket_connect(f"/ws?room={temp_room}") as ws:
+        first = ws.receive_json()
+        assert first["type"] == "STATE_UPDATE"
+        assert first["room"] == temp_room
+        assert first["data"]["room_id"] == temp_room
+
+
+def test_deleting_a_room_takes_its_own_state_files_with_it():
+    """留著的話，同一個房號半年後再開會繼承一場沒有人記得的計時。"""
+    from backend.config import CACHE_DIR
+    from backend.services import rooms as rooms_svc
+
+    client.post("/api/rooms", json={"name": "臨時", "id": "pytest-gone"})
+    client.post("/api/room/start?room=pytest-gone", json={"minutes": 30})
+    folder = rooms_svc.room_dir(CACHE_DIR, "pytest-gone")
+    assert folder.is_dir()
+    assert client.delete("/api/rooms/pytest-gone?force=true").status_code == 200
+    assert not folder.exists()
+    # 整台機器的東西一個都不能被順手帶走
+    assert "pytest-gone" not in [r["id"] for r in client.get("/api/rooms").json()["rooms"]]
+    assert client.get("/api/queue").status_code == 200
+
+
+def test_deleting_a_room_never_touches_the_default_rooms_files():
+    """default 沒有自己的資料夾，所以那幾個原路徑的檔案砍不到（rooms.py 決定二）。"""
+    from backend.config import CACHE_DIR
+    from backend.services import rooms as rooms_svc
+    assert rooms_svc.room_dir(CACHE_DIR, "default") is None
+
+
+def test_desk_connection_sees_other_rooms_bells_but_not_their_playback(temp_room,
+                                                                      service_clean):
+    """
+    櫃檯那一頁要看得到每一間的鈴，但收不到每一間的播放時間 ——
+    十間包廂每秒各推一次，那一頁會被自己的訊息淹掉（見 DESK_FORWARD_TYPES）。
+    """
+    settings.update({"service_call_enabled": True})
+    other = main.room_registry.get(temp_room).service
+    try:
+        with client.websocket_connect("/ws?room=default&desk=1") as ws:
+            for _ in range(4):      # STATE / SETTINGS / STAFF_LOCK / ROOMS
+                ws.receive_json()
+            # 另一間的播放狀態：**不該**送到櫃檯這條連線上
+            client.post(f"/api/sound-effect?room={temp_room}", json={"effect": "cheer"})
+            # 另一間的服務鈴：要送到
+            client.post(f"/api/service?room={temp_room}", json={"items": ["drink"]})
+            msg = ws.receive_json()
+            assert msg["type"] == "SERVICE_UPDATE", f"櫃檯收到的第一則是 {msg['type']}"
+            assert msg["room"] == temp_room
+    finally:
+        other._open = None
+        other._history = []
+        other._save()

@@ -8,6 +8,8 @@ from backend.services.storage import SongStorage
 from backend.services.play_stats import PlayStats
 from backend.services.song_history import SongHistory
 from backend.services import autofill as autofill_rules
+from backend.services import process_lane
+from backend.services import rooms
 from backend.services import rotation as rotation_rules
 from backend.services import room_timer as room_rules
 from backend.services import song_quota
@@ -41,8 +43,17 @@ class QueueManager:
                  room: Optional[Any] = None, library: Optional[Any] = None,
                  favorites: Optional[Any] = None,
                  number_of: Optional[Callable] = None,
-                 lyric_calibration_of: Optional[Callable] = None):
+                 lyric_calibration_of: Optional[Callable] = None,
+                 room_id: str = rooms.DEFAULT_ROOM_ID,
+                 lane: Optional[Any] = None):
         self.processor = song_processor
+        # 這一組佇列屬於哪一間包廂。廣播、已唱歷史與處理車道都認這個字串
+        # —— 一個 QueueManager 從頭到尾只服務一間包廂（見 rooms.py 決定一）。
+        self.room_id = rooms.normalize_id(room_id) or rooms.DEFAULT_ROOM_ID
+        # 整台機器共用的流水線車道（可為 None：測試與單機舊呼叫端）。
+        # 沒有車道時退回原本的行為（丟出去就跑），因為「排隊」是多包廂帶來的
+        # 需求，不該讓只有一間包廂的機器為了它多一層轉接。
+        self.lane = lane
         self.storage = storage
         self.broadcast_cb = broadcast_cb
         self.play_stats = play_stats
@@ -166,6 +177,11 @@ class QueueManager:
                               "lyric_rate": song_rate}
                              if self.current_song else None),
             "queue": self.queue,
+            # 這份狀態屬於哪一間包廂。舞台與點歌台各自只連一間，但那條
+            # WebSocket 斷線重連之後（換 Wi-Fi、手機休眠）有可能連到別處去，
+            # 所以每一則狀態都自己報房號：對不上就整頁不畫，而不是
+            # 默默地把別間包廂的歌畫在自己的螢幕上（見 rooms.py 決定三）。
+            "room_id": self.room_id,
             "history": self.history[-10:],
             "is_playing": self.is_playing,
             "vocal_volume": self.vocal_volume,
@@ -702,7 +718,38 @@ class QueueManager:
             logger.warning(f"歌號查詢失敗 {song_id}: {e}")
             return None
 
+    def _stage_idle(self) -> bool:
+        """台上沒歌在唱。處理車道靠它決定這一間算不算急件（見 process_lane 決定二）。"""
+        return self.current_song is None
+
     async def _process_queue_item(self, item: Dict[str, Any]):
+        """
+        把一首歌送進流水線。多包廂之後這裡多了一層**排隊** ——
+        整台機器同時只跑一首，入場輪流（見 backend/services/process_lane.py）。
+
+        排隊的等待寫在 `status_text` 上而不是靜靜地等：佇列那一行如果只停在
+        0%，包廂裡的人的結論是「這台機器壞了」，而他的下一個動作是再點一次
+        同一首歌 —— 那會讓車道更長。
+        """
+        if self.lane is None:
+            return await self._run_pipeline(item)
+
+        def on_wait(ahead: int, _total: int):
+            if item.get("status") not in ("PENDING", None):
+                return
+            item["status_text"] = ("排隊等處理中…" if ahead <= 0
+                                   else f"排隊等處理中（前面還有 {ahead} 首）")
+            asyncio.create_task(self.broadcast_state())
+
+        return await self.lane.run(
+            self.room_id,
+            lambda: self._run_pipeline(item),
+            klass=process_lane.CLASS_ROOM,
+            urgent=self._stage_idle,
+            on_wait=on_wait,
+        )
+
+    async def _run_pipeline(self, item: Dict[str, Any]):
         song_id = item["song_id"]
 
         def on_progress(sid, msg, pct):
@@ -815,7 +862,7 @@ class QueueManager:
                 if self.play_stats:
                     self.play_stats.record_play(next_item)
                 if self.song_history:
-                    self.song_history.record(next_item)
+                    self.song_history.record(next_item, room=self.room_id)
             await self.broadcast_state()
             return next_item
         else:

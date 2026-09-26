@@ -70,6 +70,14 @@ PROTECTED_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     ("DELETE", "/api/settings", "恢復原廠設定"),
     ("POST", "/api/settings/apply-defaults", "套用預設調音"),
 
+    # --- 多包廂：開關包廂是機台層級的事 ---
+    # 「開一間」「關一間」會影響到每一組客人（關掉的那一間裡的人整頁失效），
+    # 而且新開的那一間會多吃一份 CPU 與記憶體 —— 這是店的決定不是包廂的決定。
+    # 改名也鎖：房號貼在門口，名字改掉之後櫃檯總覽上那一列就對不到現實了。
+    ("POST", "/api/rooms", "新增包廂"),
+    ("POST", "/api/rooms/{room_id}/rename", "包廂改名"),
+    ("DELETE", "/api/rooms/{room_id}", "刪除包廂"),
+
     # --- 櫃檯本來就在用的工具 ---
     ("POST", "/api/room/start", "開始包廂計時"),
     ("POST", "/api/room/extend", "包廂續時"),

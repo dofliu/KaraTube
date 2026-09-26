@@ -1673,6 +1673,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "recordings") loadRecordings();
     else if (which === "cache") loadCacheManager();
     else if (which === "batch") loadBatch();
+    else if (which === "rooms") loadRooms();
     else if (which === "import") loadLocalImports();
     else loadCachedRecommendations();
   }
@@ -2059,7 +2060,7 @@ document.addEventListener("DOMContentLoaded", () => {
     roomPauseBtn.textContent = room.running ? "⏸️" : "▶️";
     roomPauseBtn.title = room.running ? "暫停計時（中場休息）。播放不受影響" : "繼續倒數";
 
-    const line = window.RoomView.roomStatusLine(room, since);
+    const line = window.RoomView.roomDeskLine(room, since);
     roomBar.style.display = line ? "block" : "none";
     roomLineEl.textContent = line;
   }
@@ -4073,7 +4074,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // QR Modal
   qrBtn.addEventListener("click", async () => {
     const info = await window.api.getServerInfo();
-    qrImg.src = "/api/qrcode";
+    // 門口那張 QR 要指到**這一間**：掃進來的手機直接落在這一間的點歌台，
+    // 不必再選一次房號（選錯房號是多包廂最糟的失敗）。
+    qrImg.src = window.api.withRoom("/api/qrcode");
     qrUrlText.textContent = info.web_url;
     qrModal.classList.add("open");
   });
@@ -4137,6 +4140,207 @@ document.addEventListener("DOMContentLoaded", () => {
     const s = Math.floor(seconds % 60);
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   }
+
+
+  // =====================================================================
+  // 多包廂（一台伺服器帶多組舞台與佇列）
+  //
+  // 這一頁屬於哪一間由網址決定（api.js 的 roomFromLocation），所以這裡
+  // 只做三件事：把現在在哪一間寫在頁首、把全店總覽畫出來、讓櫃檯開關包廂。
+  // =====================================================================
+
+  const roomSwitchBtn = document.getElementById("roomSwitchBtn");
+  const roomUnknownBanner = document.getElementById("roomUnknownBanner");
+  let roomsList = [];
+  let roomsOverview = null;
+
+  function currentRoomRow() {
+    return roomsList.find(r => r.id === window.api.roomId) || null;
+  }
+
+  function renderRoomBadge() {
+    if (!roomSwitchBtn) return;
+    const show = shouldShowRoomSwitcher(roomsList);
+    roomSwitchBtn.style.display = show ? "" : "none";
+    if (show) roomSwitchBtn.textContent = roomBadgeText(currentRoomRow() || { id: window.api.roomId });
+  }
+
+  async function refreshRoomsList() {
+    try {
+      const data = await window.api.listRooms();
+      roomsList = data.rooms || [];
+      renderRoomBadge();
+    } catch (e) { /* 清單拿不到不影響唱歌，頁首那顆鍵就維持原樣 */ }
+  }
+
+  async function loadRooms() {
+    try {
+      const [list, overview] = await Promise.all([
+        window.api.listRooms(), window.api.roomsOverview(),
+      ]);
+      roomsList = list.rooms || [];
+      roomsOverview = overview;
+      renderRoomBadge();
+      renderRooms();
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">包廂總覽讀取失敗</div>`;
+    }
+  }
+
+  function roomCardHtml(row) {
+    const here = row.id === window.api.roomId;
+    const call = row.service_open;
+    const bell = call
+      ? `<div style="margin-top:6px; color:${call.status === "waiting" ? "#ff007f" : "var(--accent-cyan)"}; font-weight:700;">
+           🔔 ${call.status === "waiting" ? "等待中" : "櫃檯已收到"}${call.summary ? "：" + escapeHtml(call.summary) : ""}
+         </div>`
+      : "";
+    const timer = row.room && row.room.active
+      ? `<div style="margin-top:6px; color:${Number(row.room.remaining_seconds) <= 600 ? "#ffb700" : "var(--text-muted)"};">
+           ⏱️ ${escapeHtml(row.room.remaining_text || "")}
+         </div>`
+      : "";
+    return `
+      <div class="glass-panel" style="grid-column: 1/-1; padding: 14px 18px; margin-bottom: 10px;
+           border: 1px solid ${here ? "var(--accent-cyan)" : "rgba(255,255,255,0.08)"};">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div style="font-size:17px; font-weight:800;">
+            ${escapeHtml(roomLabel(row))}${here ? ' <span style="font-size:11px; color:var(--accent-cyan);">（你在這一間）</span>' : ""}
+          </div>
+          <div style="margin-left:auto; display:flex; gap:8px; flex-wrap:wrap;">
+            ${here ? "" : `<button class="btn btn-primary" onclick="window.gotoRoom('${escapeAttr(row.id)}')">切到這一間</button>`}
+            <button class="btn btn-secondary" onclick="window.renameRoom('${escapeAttr(row.id)}', '${escapeAttr(row.name || row.id)}')">改名</button>
+            ${row.id === "default" ? "" : `<button class="btn btn-secondary" onclick="window.closeRoom('${escapeAttr(row.id)}')">關閉</button>`}
+          </div>
+        </div>
+        <div style="margin-top:6px; color:var(--text-muted);">${escapeHtml(roomDeskLine(row))}</div>
+        <div style="margin-top:4px; font-size:12px; color:var(--text-muted);">
+          ${row.devices ? `${row.devices} 台裝置連線中` : "沒有裝置連線"}
+        </div>
+        ${bell}
+        ${timer}
+      </div>`;
+  }
+
+  function renderRooms() {
+    const rows = sortRoomsForDesk((roomsOverview && roomsOverview.rooms) || []);
+    const lane = laneSummary(roomsOverview && roomsOverview.lane);
+    const cards = rows.map(roomCardHtml).join("");
+    searchResults.innerHTML = `
+      <div style="grid-column: 1/-1; font-size: 16px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">
+        🏠 包廂總覽（${rows.length} 間）
+      </div>
+      <div style="grid-column: 1/-1; font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+        在叫櫃檯的排最前面，接著是快到時間的 —— 這一頁要回答的只有一個問題：現在該去哪一間。
+        ${lane ? "　｜　" + escapeHtml(lane) : ""}
+      </div>
+      ${cards}
+      <div class="glass-panel" style="grid-column: 1/-1; padding: 14px 18px; margin-top: 6px;">
+        <div style="font-weight:700; margin-bottom:8px;">開一間新包廂</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <input id="newRoomName" class="search-input" style="max-width:220px;" placeholder="名字（101、VIP 大包）">
+          <input id="newRoomId" class="search-input" style="max-width:180px;" placeholder="房號（留白自動產生）">
+          <button class="btn btn-primary" onclick="window.createRoom()">開一間</button>
+        </div>
+        <div style="margin-top:8px; font-size:12px; color:var(--text-muted);">
+          房號會出現在網址與門口的 QR 上（小寫英數與連字號）。開好之後在那一間裡按「📱 手機點歌 QR」印出來貼在門口，
+          掃進來的手機就直接落在那一間。
+        </div>
+      </div>`;
+    libSummary.textContent = `共 ${rows.length} 間`;
+  }
+
+  window.gotoRoom = (id) => window.api.switchRoom(id);
+
+  window.createRoom = async () => {
+    const name = (document.getElementById("newRoomName") || {}).value || "";
+    const id = (document.getElementById("newRoomId") || {}).value || "";
+    const verdict = validateNewRoom(name, id, roomsList.map(r => r.id));
+    if (!verdict.ok) { showNotification(verdict.message, 5000); return; }
+    try {
+      const data = await window.api.createRoom(name.trim(), id.trim() || undefined);
+      showNotification(`已開一間：${roomLabel(data.room)}`, 3500);
+      await loadRooms();
+    } catch (e) {
+      showNotification(roomErrorMessage({ error: e.message }), 5000);
+    }
+  };
+
+  window.renameRoom = async (id, current) => {
+    const name = prompt("這一間叫什麼？（房號不會變，門口那張 QR 不必重印）", current);
+    if (name === null) return;
+    try {
+      await window.api.renameRoom(id, name);
+      await loadRooms();
+    } catch (e) {
+      showNotification(roomErrorMessage({ error: e.message }), 5000);
+    }
+  };
+
+  window.closeRoom = async (id) => {
+    try {
+      await window.api.deleteRoom(id, false);
+      showNotification("已關閉這一間", 3000);
+      await loadRooms();
+      return;
+    } catch (e) {
+      const detail = e.detail || { error: e.message };
+      // 裡面還有人在唱歌：講出裡面有什麼，讓按的人自己決定
+      if (detail.error !== "room_in_use") {
+        showNotification(roomErrorMessage(detail), 5000);
+        return;
+      }
+      if (!confirm(roomErrorMessage(detail))) return;
+    }
+    try {
+      await window.api.deleteRoom(id, true);
+      await loadRooms();
+    } catch (e2) {
+      showNotification(roomErrorMessage(e2.detail || { error: e2.message }), 5000);
+    }
+  };
+
+  if (roomSwitchBtn) {
+    roomSwitchBtn.addEventListener("click", () => switchLibrary("rooms"));
+  }
+
+  // 房號不存在：整條橫幅留在畫面上，並且把「重試」停掉。
+  window.api.on("ROOM_UNKNOWN", (msg) => {
+    if (!roomUnknownBanner) return;
+    roomUnknownBanner.textContent = unknownRoomMessage(window.api.roomId, (msg.data || {}).rooms);
+    roomUnknownBanner.style.display = "";
+  });
+
+  // 包廂清單變了（櫃檯開了一間、關了一間）—— 頁首那顆鍵要跟著變
+  window.api.on("ROOMS_UPDATE", (msg) => {
+    roomsList = msg.data || [];
+    renderRoomBadge();
+    const active = document.querySelector(".lib-tab.active");
+    if (active && active.dataset.lib === "rooms") loadRooms();
+  });
+
+  // 這一間被關掉了。不自動跳走 —— 跳走會讓正在唱歌的那一台電視突然換一間包廂，
+  // 而「為什麼換了」沒有任何畫面講得出來。
+  window.api.on("ROOM_CLOSED", () => {
+    if (!roomUnknownBanner) return;
+    roomUnknownBanner.textContent = "這一間包廂剛剛被櫃檯關掉了。請重新掃描包廂門口的 QR code。";
+    roomUnknownBanner.style.display = "";
+  });
+
+  // 櫃檯那一頁開著時，總覽每 5 秒重畫一次（服務鈴與計時靠 WebSocket 推，
+  // 「誰在唱什麼」那種每秒變十次的東西用輪詢就好，見 backend/main.py）。
+  setInterval(() => {
+    const active = document.querySelector(".lib-tab.active");
+    if (active && active.dataset.lib === "rooms") loadRooms();
+  }, 5000);
+
+  // 舞台大螢幕的連結要帶著這一間的房號
+  const openPlayerBtn = document.getElementById("openPlayerBtn");
+  if (openPlayerBtn && window.api.roomId !== ROOMS_DEFAULT_ID) {
+    openPlayerBtn.href = `/player.html?room=${encodeURIComponent(window.api.roomId)}`;
+  }
+
+  refreshRoomsList();
 
   function escapeAttr(str) {
     if (!str) return "";

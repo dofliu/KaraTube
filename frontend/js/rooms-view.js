@@ -161,6 +161,18 @@ function roomDeskLine(row) {
 }
 
 /**
+ * 總覽那一列的今晚歌王（一句話）。還沒有人上榜就回空字串（整行不畫）。
+ *
+ * 櫃檯總覽上只給一句話：那一頁要回答的是「哪一間需要我過去」，
+ * 而「202 的第四名是誰」不是那個問題 —— 要看整張榜就切到那一間。
+ */
+function roomContestLine(row) {
+  const top = row && row.contest_leader;
+  if (!top || !top.name) return "";
+  return `🥇 ${top.name}　擂台分 ${Number(top.points) || 0}（${Number(top.songs) || 0} 首）`;
+}
+
+/**
  * 處理車道現在的樣子，講給人聽。
  *
  * 「還要幾分鐘」刻意不講：那取決於這首歌多長、CPU 多快、前面那首跑到哪，
@@ -188,6 +200,7 @@ if (typeof module !== "undefined" && module.exports) {
     roomUrgency,
     sortRoomsForDesk,
     roomDeskLine,
+    roomContestLine,
     laneSummary,
   };
 }

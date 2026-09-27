@@ -36,8 +36,8 @@ from backend.services.lyric_offsets import (MAX_OFFSET_MS, MAX_RATE, MIN_RATE,
 from backend.services.artist_index import ArtistFinder
 from backend.services.local_import import LocalImportLibrary
 from backend.services.song_history import SongHistory
-from backend.services import (access_policy, marquee, process_lane, room_timer, rooms,
-                              service_calls, song_quota)
+from backend.services import (access_policy, contest, marquee, process_lane, room_timer,
+                              rooms, service_calls, song_quota)
 from backend.services.staff_lock import StaffLock
 from backend.services.score_history import ScoreHistory
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
@@ -332,21 +332,22 @@ room_roster = rooms.RoomRoster(CACHE_DIR / "rooms.json")
 
 class RoomBundle:
     """
-    一間包廂的那一組服務：佇列、計時、舞台訊息、服務鈴。
+    一間包廂的那一組服務：佇列、計時、舞台訊息、服務鈴、今晚擂台。
 
-    做成一個物件而不是四張 dict，是為了讓「拿到這間包廂」只有一個動作 ——
-    四張表的話，新加的每一支端點都要記得去對四次房號，而漏掉的那一次
+    做成一個物件而不是五張 dict，是為了讓「拿到這間包廂」只有一個動作 ——
+    五張表的話，新加的每一支端點都要記得去對五次房號，而漏掉的那一次
     會變成「切歌切到別間」。
     """
 
-    __slots__ = ("id", "queue", "timer", "marquee", "service")
+    __slots__ = ("id", "queue", "timer", "marquee", "service", "contest")
 
-    def __init__(self, room_id: str, queue, timer, board, desk):
+    def __init__(self, room_id: str, queue, timer, board, desk, arena):
         self.id = room_id
         self.queue = queue
         self.timer = timer
         self.marquee = board
         self.service = desk
+        self.contest = arena
 
 
 def _make_room_bundle(room_id: str) -> RoomBundle:
@@ -361,6 +362,13 @@ def _make_room_bundle(room_id: str) -> RoomBundle:
         rooms.state_path(CACHE_DIR, room_id, "service_calls.json"),
         stale_minutes=settings.service_call_policy()["stale_minutes"],
     )
+    # 今晚擂台要存檔（contest.py 決定六）：伺服器在一場裡重開不會讓那三首歌
+    # 沒有唱過，而掉了的話現場沒有任何辦法算回來。
+    arena = contest.ContestBoard(
+        rooms.state_path(CACHE_DIR, room_id, "contest.json"),
+        gap_hours=float(settings.get("recording_session_gap_hours", DEFAULT_GAP_HOURS) or
+                        DEFAULT_GAP_HOURS),
+    )
     qm = QueueManager(song_processor, storage,
                       # 廣播綁死在這一間上：QueueManager 自己不認識房號分流，
                       # 它只知道「把狀態送出去」，而送到哪由這一層決定。
@@ -373,7 +381,7 @@ def _make_room_bundle(room_id: str) -> RoomBundle:
                       room_id=room_id, lane=pipeline_lane)
     # 開機就把設定頁的「預設調音參數」套進共享狀態，第一台連上來的裝置看到的就是設定值
     qm.apply_control_defaults()
-    return RoomBundle(room_id, qm, timer, board, desk)
+    return RoomBundle(room_id, qm, timer, board, desk, arena)
 
 
 room_registry = rooms.RoomRegistry(room_roster, _make_room_bundle)
@@ -1074,6 +1082,10 @@ def room_overview_row(bundle: "RoomBundle", counts: Dict[str, int]) -> Dict[str,
         "room": qm.room_state(),
         "service_open": open_call,
         "marquee_count": len(bundle.marquee.snapshot().get("messages", [])),
+        # 今晚擂台只給一句話（誰領先），整張榜要點進那一間才拿 ——
+        # 十間包廂各一張榜會讓這支端點回好幾十 KB，而櫃檯要的是
+        # 「哪一間需要我過去」，不是「202 的第四名是誰」。
+        "contest_leader": bundle.contest.leader(),
     }
 
 
@@ -1760,18 +1772,28 @@ async def clear_history(room: str = Query(default=rooms.DEFAULT_ROOM_ID),
 
 
 @app.post("/api/scores")
-async def submit_score(payload: Dict[str, Any] = Body(...)):
-    """唱畢結算：舞台端送來總分，回傳含個人最佳與擊敗比例的結算資料。"""
+async def submit_score(payload: Dict[str, Any] = Body(...),
+                       room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    """
+    唱畢結算：舞台端送來總分，回傳含個人最佳與擊敗比例的結算資料。
+
+    評分歷史是**整台機器**的（跟著人走，不跟著房間走），今晚擂台是
+    **這一間**的 —— 同一張成績單同時餵兩邊，分界見 rooms.py 與 contest.py。
+    """
+    bundle = bundle_for(room)
     result = score_history.record(payload)
     if result is None:
         raise HTTPException(status_code=400, detail="Missing song_id or invalid score")
+    result["contest"] = bundle.contest.record(contest_take(payload, payload))
     # 廣播給所有端（點歌台 / 手機）同步顯示結算結果
-    await ws_manager.broadcast({"type": "SCORE_FINAL", "data": result})
+    await ws_manager.broadcast({"type": "SCORE_FINAL", "data": result}, room=bundle.id)
+    await broadcast_contest(bundle)
     return {"status": "success", "result": result}
 
 
 @app.post("/api/scores/duet")
-async def submit_duet_score(payload: Dict[str, Any] = Body(...)):
+async def submit_duet_score(payload: Dict[str, Any] = Body(...),
+                            room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
     """
     對唱模式的唱畢結算：兩位演唱者的成績一起送、一起記、廣播一則通知。
 
@@ -1779,11 +1801,71 @@ async def submit_duet_score(payload: Dict[str, Any] = Body(...)):
     分兩次呼叫 `/api/scores` 也能記到分，但中間斷線就會留下一場
     只有一個人的對唱，而且包廂裡每支手機會跳兩則結算通知。
     """
+    bundle = bundle_for(room)
     result = score_history.record_duet(payload)
     if result is None:
         raise HTTPException(status_code=400, detail="Missing song_id / a / b or invalid score")
-    await ws_manager.broadcast({"type": "SCORE_FINAL", "data": result})
+    # 兩位各記一次。對唱那一側的名字用 payload 裡的原始值，**不是** score_history
+    # 補過的「A 麥」「B 麥」—— 那兩個預設值是給成績單看的，但榜上不能有一位
+    # 叫「A 麥」的歌王（它今晚是三個不同的人）。
+    result["contest"] = {
+        "a": bundle.contest.record(contest_take(payload, payload.get("a") or {})),
+        "b": bundle.contest.record(contest_take(payload, payload.get("b") or {})),
+    }
+    await ws_manager.broadcast({"type": "SCORE_FINAL", "data": result}, room=bundle.id)
+    await broadcast_contest(bundle)
     return {"status": "success", "result": result}
+
+
+def contest_take(payload: Dict[str, Any], side: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    成績單 → 擂台要的那幾個欄位。
+
+    `side` 單人演唱時就是整份 payload，對唱時是 `a` / `b` 其中一側 ——
+    曲目資訊在外層、唱的人與命中率在側邊，所以兩個都要收。
+
+    `performer` 單人用 `performer`（舞台端填的是「誰點的」，那是包廂裡唯一
+    知道的名字），對唱用那一側的 `singer`。
+    """
+    return {
+        "song_id": payload.get("song_id") or payload.get("id"),
+        "title": payload.get("title", ""),
+        # `performer` 在就用它，**即使是空字串** —— 對唱那一側沒取名時
+        # `singer` 是補過的「A 麥」，拿它當退路等於把決定四繞過去。
+        # 退路只給更早版本的舞台端（沒有 performer 這個欄位）。
+        "performer": side.get("performer", side.get("singer", "")),
+        "accuracy": side.get("accuracy"),
+        "score": side.get("score"),
+        "grade": side.get("grade", ""),
+        "note_frames": side.get("note_frames"),
+    }
+
+
+async def broadcast_contest(bundle: "RoomBundle"):
+    """榜變了就推給這一間的每一台裝置（點歌台的擂台分頁不必自己輪詢）。"""
+    await ws_manager.broadcast({"type": "CONTEST_UPDATE",
+                                "data": bundle.contest.snapshot()}, room=bundle.id)
+
+
+@app.get("/api/contest")
+async def get_contest(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    """今晚擂台：這一間這一場的歌王榜。"""
+    return {"contest": bundle_for(room).contest.snapshot()}
+
+
+@app.post("/api/contest/reset")
+async def reset_contest(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    """
+    手動開新的一場（換一批客人）。
+
+    跟輪唱的「重新排」是同一顆鍵的意思，所以也跟它一樣要櫃檯解鎖 ——
+    按下去會抹掉還在包廂裡的那幾位今晚的成績，而那是拿不回來的。
+    平常不必按：隔了 6 小時沒有人唱，榜自己就翻新了（contest.py 決定五）。
+    """
+    bundle = bundle_for(room)
+    board = bundle.contest.reset()
+    await broadcast_contest(bundle)
+    return {"status": "success", "contest": board}
 
 
 @app.get("/api/scores")
@@ -2521,12 +2603,26 @@ async def _broadcast_settings():
     await ws_manager.broadcast({"type": "SETTINGS_UPDATE", "data": settings.all()})
 
 
+def _apply_session_gap(updated: Dict[str, Any]):
+    """
+    「一場的空檔」改了，每一間的擂台榜跟著改。
+
+    系統裡「一場」只能有一個定義（settings.py），所以這個欄位同時是整晚打包、
+    公平輪唱與今晚擂台的換場門檻 —— 三個地方各讀各的話，使用者會看到
+    「打包說這是同一場、榜說換了一場」這種自相矛盾的畫面。
+    """
+    gap = updated.get("recording_session_gap_hours", DEFAULT_GAP_HOURS)
+    for bundle in room_registry.items():
+        bundle.contest.set_gap_hours(gap)
+
+
 @app.post("/api/settings")
 async def update_settings(payload: Dict[str, Any] = Body(...)):
     """更新設定。認不得的欄位與越界的值會被忽略／夾回範圍，不會回 500。"""
     updated = settings.update(payload)
     # 響度目標改了，之後新處理的歌要照新目標量測
     song_processor.loudness_target_lufs = updated.get("loudness_target_lufs", -14.0)
+    _apply_session_gap(updated)
     await _broadcast_settings()
     return {"status": "success", "settings": updated}
 
@@ -2536,6 +2632,7 @@ async def reset_settings():
     """一鍵恢復原廠設定。"""
     updated = settings.reset()
     song_processor.loudness_target_lufs = updated.get("loudness_target_lufs", -14.0)
+    _apply_session_gap(updated)
     await _broadcast_settings()
     return {"status": "success", "settings": updated}
 

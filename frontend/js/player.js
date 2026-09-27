@@ -733,6 +733,17 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   /**
+   * 對唱那一側**真正打進去的**暱稱，沒取名就是空字串。
+   *
+   * 今晚擂台用它而不是 `singerName()`：後者沒取名時會補「A 麥」「B 麥」，
+   * 而那兩個字在成績單上是對的（畫面總要有個稱呼），在榜上卻是錯的 ——
+   * 一位叫「A 麥」的歌王今晚其實是三個不同的人（見 contest.py 決定四）。
+   */
+  function rawSingerName(which) {
+    return ((which === "a" ? duetNameA : duetNameB) || "").trim();
+  }
+
+  /**
    * 共享狀態裡的對唱設定變了。
    *
    * 開關要真的去開／關第二支麥克風的硬體，所以這裡是非同步的；
@@ -923,6 +934,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const settleSections = document.getElementById("settleSections");
   const settleDuet = document.getElementById("settleDuet");
   const settleTrend = document.getElementById("settleTrend");
+  const settleContest = document.getElementById("settleContest");
   const settleGuide = document.getElementById("settleGuide");
   const settleMic = document.getElementById("settleMic");
   let settlementTimer = null;
@@ -985,6 +997,51 @@ document.addEventListener("DOMContentLoaded", () => {
    * 中線是「這個人自己的平均」，往右是主場、往左是弱點；沒被點名的段落畫淡色
    * （幅度不夠或方向不一致），代表那一段還沒有結論而不是「剛好是 0」。
    */
+  /**
+   * 對唱的擂台那一行：兩位各一句，沒進榜的那一位整句不畫。
+   *
+   * 兩位都沒進榜（都沒取暱稱）時整塊收起來 —— 對唱結算畫面已經很滿了，
+   * 一句「你們兩個都沒掛名字」不值得再佔一行。
+   */
+  function renderDuetContest(data) {
+    if (!settleContest) return;
+    const view = window.ContestView;
+    const lines = ["a", "b"].map((which) => {
+      const summary = view ? view.describeVerdict((data || {})[which]) : { kind: "none" };
+      if (summary.kind === "none" || summary.kind === "no_name") return "";
+      const detail = summary.detail
+        ? `<span class="settlement-contest-detail">${escapeHtml(summary.detail)}</span>` : "";
+      return `<div class="settlement-contest-headline">${escapeHtml(summary.headline)}　${detail}</div>`;
+    }).filter(Boolean).join("");
+    settleContest.classList.remove("is-lead");
+    settleContest.style.display = lines ? "block" : "none";
+    settleContest.innerHTML = lines;
+  }
+
+  /**
+   * 今晚擂台那一行：這一首把他推到第幾名。
+   *
+   * 「這一首搶下第一」會多一道高亮（`is-lead`），純粹報名次的不會 ——
+   * 每首歌都亮同一種金色的話，真的易主的那一刻反而沒有人注意到。
+   */
+  function renderContest(verdict) {
+    if (!settleContest) return;
+    const view = window.ContestView;
+    const summary = view ? view.describeVerdict(verdict) : { kind: "none" };
+    if (summary.kind === "none") {
+      settleContest.style.display = "none";
+      settleContest.innerHTML = "";
+      settleContest.classList.remove("is-lead");
+      return;
+    }
+    settleContest.classList.toggle("is-lead", summary.kind === "lead");
+    settleContest.style.display = "block";
+    const detail = summary.detail
+      ? `<div class="settlement-contest-detail">${escapeHtml(summary.detail)}</div>` : "";
+    settleContest.innerHTML =
+      `<div class="settlement-contest-headline">${escapeHtml(summary.headline)}</div>${detail}`;
+  }
+
   function renderTrend(trend) {
     if (!settleTrend) return;
     const view = window.TrendView;
@@ -1240,14 +1297,23 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   /** 送進 /api/scores 的成績單。段落點名只送標籤，長條圖是現場資訊不必入庫。 */
-  function scorePayload(song, result) {
+  function scorePayload(song, result, performer) {
     return {
       song_id: song.song_id,
       title: song.title,
       artist: song.artist,
       thumbnail: song.thumbnail,
+      // 今晚擂台要掛誰的名字。單人演唱用點歌人 —— 那是包廂裡唯一知道的名字
+      // （跟錄音掛名同一個理由，見 takeSinger），所以畫面上寫的是「誰點的」
+      // 而不是斷言誰唱的。
+      // 對唱開著但只有一個人唱時，呼叫端會指定是哪一位 —— 那時候用點歌人
+      // 就錯了（他可能是桌上那支沒人拿的麥克風的主人）。
+      performer: performer !== undefined ? performer
+                 : ((currentSongMeta && currentSongMeta.requested_by) || ""),
       score: result.score,
       accuracy: result.accuracy,
+      // 擂台要分辨「沒唱好」與「這首歌沒有導唱音符」（見 contest.py 決定七）
+      note_frames: result.note_frames,
       max_combo: result.max_combo,
       grade: result.grade,
       best_section: result.best_section ? result.best_section.label : "",
@@ -1256,12 +1322,12 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  async function showSettlement(song, result) {
+  async function showSettlement(song, result, performer) {
     hideIntroCard(); // 極短的歌可能唱完時片頭卡還亮著
     if (!settlementOverlay || !settlementEnabled) {
       // 設定關掉結算畫面時仍要記成績，只是不佔用畫面時間，直接進下一首
       if (settlementEnabled === false && song) {
-        window.api.submitScore(scorePayload(song, result)).catch(() => {});
+        window.api.submitScore(scorePayload(song, result, performer)).catch(() => {});
       }
       window.api.send("SONG_ENDED");
       return;
@@ -1281,6 +1347,8 @@ document.addEventListener("DOMContentLoaded", () => {
     renderSectionBreakdown(result);
     // 趨勢要等 /api/scores 回來才知道（含這一次的歷史才算數），先收起來
     renderTrend(null);
+    // 擂台名次同理：要等這一首算進去之後才知道是第幾名
+    renderContest(null);
     renderGuideIndependence();
     renderMicAdvice();
     settlementOverlay.classList.add("show");
@@ -1289,7 +1357,7 @@ document.addEventListener("DOMContentLoaded", () => {
     settlementTimer = setTimeout(finishSettlement, settlementMs);
 
     try {
-      const res = await window.api.submitScore(scorePayload(song, result));
+      const res = await window.api.submitScore(scorePayload(song, result, performer));
       const r = (res && res.result) || {};
       if (r.is_new_best) {
         settleBest.textContent = r.previous_best != null
@@ -1302,6 +1370,7 @@ document.addEventListener("DOMContentLoaded", () => {
         settleBeat.textContent = `擊敗全場 ${r.beat_percent}% 的演唱`;
       }
       renderTrend(r.trend);
+      renderContest(r.contest);
     } catch (e) {
       console.warn("結算成績上傳失敗:", e);
     }
@@ -1316,8 +1385,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const spot = which === "a" ? duel.a_best : duel.b_best;
       return {
         singer: singerName(which),
+        // 榜上掛的名字（沒取名就是空字串，不進榜）——「A 麥」只適合成績單
+        performer: rawSingerName(which),
         score: result.score,
         accuracy: result.accuracy,
+        note_frames: result.note_frames,
         max_combo: result.max_combo,
         grade: result.grade,
         best_section: result.best_section ? result.best_section.label : "",
@@ -1481,6 +1553,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     renderDuetVerdict(verdict, resultA, resultB);
     renderTrend(null);
+    renderContest(null);
     renderGuideIndependence();
     renderMicAdvice();
     settlementOverlay.classList.add("show");
@@ -1504,6 +1577,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
       renderDuetTrends(data);
+      renderDuetContest(data.contest);
     } catch (e) {
       console.warn("對唱結算成績上傳失敗:", e);
     }
@@ -2660,7 +2734,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // 對唱模式開著但只有一個人唱（另一支麥克風放在桌上）：
       // 亮那一位的單人成績單，硬要比出勝負只會是誤會
       if (verdict.winner === "b" && resultB.sang) {
-        showSettlement(currentSongMeta, resultB);
+        showSettlement(currentSongMeta, resultB, rawSingerName("b"));
         return;
       }
       if (verdict.winner !== "a" && !result.sang) {
@@ -2674,8 +2748,10 @@ document.addEventListener("DOMContentLoaded", () => {
     finishTake(currentSongMeta, result);
 
     if (result.sang && currentSongMeta) {
-      // 有真的開口唱才亮結算畫面；純放歌（沒人唱）直接進下一首
-      showSettlement(currentSongMeta, result);
+      // 有真的開口唱才亮結算畫面；純放歌（沒人唱）直接進下一首。
+      // 對唱開著但只有 A 唱：榜上掛 A 的名字，不是點歌人的。
+      showSettlement(currentSongMeta, result,
+                     duetActive ? rawSingerName("a") : undefined);
     } else {
       window.api.send("SONG_ENDED");
     }

@@ -2916,3 +2916,142 @@ def test_desk_connection_sees_other_rooms_bells_but_not_their_playback(temp_room
         other._open = None
         other._history = []
         other._save()
+
+
+# --- 今晚擂台（contest）---
+
+@pytest.fixture()
+def clean_contest():
+    """
+    每一條都用自己的榜，不碰開發機上的 cache/contest.json。
+
+    直接換掉 default 那一間 bundle 上的物件 —— `RoomBundle` 用 `__slots__`，
+    所以打錯欄位名會當場 AttributeError，不會默默地測到舊的那一張榜。
+    """
+    from backend.services.contest import ContestBoard
+    bundle = main.room_registry.get("default")
+    saved = bundle.contest
+    bundle.contest = ContestBoard(None)
+    yield bundle.contest
+    bundle.contest = saved
+
+
+def sing_for_contest(song_id, performer, accuracy, score=1000):
+    return client.post("/api/scores", json={
+        "song_id": song_id, "title": song_id, "performer": performer,
+        "score": score, "accuracy": accuracy, "note_frames": 4000, "grade": "A",
+    })
+
+
+def test_contest_empty_board(clean_contest):
+    board = client.get("/api/contest").json()["contest"]
+    assert board["ranked"] == [] and board["waiting"] == []
+    assert board["rank_songs"] == 3
+
+
+def test_contest_fills_from_score_submissions(snapshot_history_and_scores, clean_contest):
+    for i, accuracy in enumerate((0.9, 0.8, 0.7)):
+        res = sing_for_contest(f"test_contest_{i}", "小明", accuracy)
+        assert res.status_code == 200
+    # 結算畫面要的那一句話跟著成績單一起回來，舞台端不必再問一次
+    assert res.json()["result"]["contest"]["rank"] == 1
+
+    board = client.get("/api/contest").json()["contest"]
+    assert board["ranked"][0]["name"] == "小明"
+    assert board["ranked"][0]["points"] == 80
+
+
+def test_contest_ignores_songs_without_guide_notes(snapshot_history_and_scores,
+                                                   clean_contest):
+    """沒有導唱音符的歌命中率是沒得算，不該變成一首拉低平均的歌。"""
+    res = client.post("/api/scores", json={
+        "song_id": "test_contest_nopitch", "performer": "小明",
+        "score": 0, "accuracy": 0, "note_frames": 0})
+    assert res.json()["result"]["contest"]["reason"] == "no_pitch_data"
+    assert client.get("/api/contest").json()["contest"]["total_takes"] == 0
+
+
+def test_contest_reports_unnamed_takes(snapshot_history_and_scores, clean_contest):
+    res = sing_for_contest("test_contest_anon", "", 0.9)
+    assert res.json()["result"]["contest"]["reason"] == "no_name"
+    assert client.get("/api/contest").json()["contest"]["unnamed_takes"] == 1
+
+
+def test_contest_duet_uses_the_raw_names(snapshot_history_and_scores, clean_contest):
+    """
+    對唱那一側沒取名時成績單上是「A 麥」，但榜上不能有一位叫「A 麥」的歌王
+    —— 它今晚是好幾個不同的人。
+    """
+    res = client.post("/api/scores/duet", json={
+        "song_id": "test_contest_duet", "title": "對唱",
+        "a": {"singer": "小美", "performer": "小美", "score": 4000,
+              "accuracy": 0.8, "note_frames": 4000},
+        "b": {"singer": "B 麥", "performer": "", "score": 2000,
+              "accuracy": 0.5, "note_frames": 4000},
+    })
+    assert res.status_code == 200
+    verdicts = res.json()["result"]["contest"]
+    assert verdicts["a"]["accepted"] is True
+    assert verdicts["b"]["reason"] == "no_name"
+    board = client.get("/api/contest").json()["contest"]
+    assert [w["name"] for w in board["waiting"]] == ["小美"]
+
+
+def test_contest_falls_back_to_singer_for_older_stages(snapshot_history_and_scores,
+                                                       clean_contest):
+    """更早版本的舞台端沒有 performer 這個欄位，那時候只好用 singer。"""
+    client.post("/api/scores/duet", json={
+        "song_id": "test_contest_old", "title": "舊版",
+        "a": {"singer": "小明", "score": 4000, "accuracy": 0.8, "note_frames": 4000},
+        "b": {"singer": "小美", "score": 2000, "accuracy": 0.5, "note_frames": 4000},
+    })
+    board = client.get("/api/contest").json()["contest"]
+    assert {w["name"] for w in board["waiting"]} == {"小明", "小美"}
+
+
+def test_contest_is_per_room(snapshot_history_and_scores, clean_contest):
+    """榜是分房的：A 包廂的歌王不該出現在 B 包廂的畫面上。"""
+    from backend.services.contest import ContestBoard
+    row = main.room_registry.create("擂台測試房", "contest-test")
+    bundle = main.room_registry.get(row["id"])
+    bundle.contest = ContestBoard(None)
+    try:
+        for i, accuracy in enumerate((0.9, 0.9, 0.9)):
+            client.post(f"/api/scores?room={row['id']}", json={
+                "song_id": f"test_room_contest_{i}", "performer": "阿華",
+                "score": 1000, "accuracy": accuracy, "note_frames": 4000})
+        here = client.get(f"/api/contest?room={row['id']}").json()["contest"]
+        assert here["ranked"][0]["name"] == "阿華"
+        assert client.get("/api/contest").json()["contest"]["ranked"] == []
+    finally:
+        main.room_registry.remove(row["id"])
+
+
+def test_contest_unknown_room_is_a_404(clean_contest):
+    assert client.get("/api/contest?room=nope-nope").status_code == 404
+    assert client.post("/api/contest/reset?room=nope-nope").status_code == 404
+
+
+def test_contest_reset_clears_the_board(snapshot_history_and_scores, clean_contest):
+    for i in range(3):
+        sing_for_contest(f"test_contest_reset_{i}", "小明", 0.9)
+    assert client.get("/api/contest").json()["contest"]["ranked"]
+    res = client.post("/api/contest/reset")
+    assert res.status_code == 200
+    assert res.json()["contest"]["ranked"] == []
+
+
+def test_contest_reset_needs_the_staff_pin(staff_lock_clean, clean_contest):
+    assert client.post("/api/staff-lock/pin", json={"pin": "1234"}).status_code == 200
+    assert client.post("/api/contest/reset").status_code == 403
+    assert client.post("/api/contest/reset", headers=staff_unlock()).status_code == 200
+
+
+def test_room_overview_carries_the_contest_leader(snapshot_history_and_scores,
+                                                  clean_contest):
+    assert client.get("/api/rooms/overview").json()["rooms"][0]["contest_leader"] is None
+    for i in range(3):
+        sing_for_contest(f"test_contest_overview_{i}", "小明", 0.9)
+    rows = client.get("/api/rooms/overview").json()["rooms"]
+    leader = next(r["contest_leader"] for r in rows if r["id"] == "default")
+    assert leader["name"] == "小明" and leader["points"] == 90

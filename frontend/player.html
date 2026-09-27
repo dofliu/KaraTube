@@ -191,6 +191,8 @@
         <div id="settleDuet" class="settlement-duet" style="display: none;"></div>
         <!-- 跨場次趨勢：這首歌你「一向」強在哪一段（唱滿三次才出現，由 player.js 產生） -->
         <div id="settleTrend" class="settlement-trend" style="display: none;"></div>
+        <!-- 今晚擂台：這一首在這一場的名次（沒掛名字或沒有導唱音符時不出現） -->
+        <div id="settleContest" class="settlement-contest" style="display: none;"></div>
         <!-- 導唱獨立度：導唱自動淡出的時間比例（導唱沒開或唱太短就不顯示） -->
         <div id="settleGuide" class="settlement-guide" style="display: none;"></div>
         <!-- 麥克風建議：自動增益一直大幅補償時，提示拿近／拿遠一點 -->
@@ -296,6 +298,8 @@
   <script src="/js/ambient-stage.js"></script>
   <!-- 跨場次段落趨勢的呈現（純邏輯，點歌台也載同一支，兩邊才會講同一句話） -->
   <script src="/js/trend-view.js"></script>
+  <!-- 今晚擂台的呈現（同上：舞台講「你第幾名」，點歌台畫整張榜，同一支模組） -->
+  <script src="/js/contest-view.js"></script>
   <!-- 錄唱回放：take-rules.js 是判斷規則（純邏輯，有測試，點歌台也載同一支），
        take-recorder.js 是真的去操作 MediaRecorder 的那一支，必須排在它後面。 -->
   <script src="/js/take-rules.js"></script>

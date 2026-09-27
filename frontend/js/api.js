@@ -336,6 +336,25 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // --- 今晚擂台 ---
+
+  /** 這一間這一場的歌王榜（房號由 withRoom 自動帶上）。 */
+  async getContest() {
+    const res = await this.fetch(`${this.baseUrl}/api/contest`);
+    return await res.json();
+  }
+
+  /**
+   * 開新的一場（換一批客人）。要櫃檯解鎖，所以走 staffFetch。
+   *
+   * 平常不必呼叫：隔了「一場的空檔」沒有人唱，榜自己就翻新了。
+   */
+  async resetContest() {
+    const res = await this.staffFetch(`${this.baseUrl}/api/contest/reset`, { method: "POST" });
+    if (!res.ok) throw new Error(`重設失敗 (${res.status})`);
+    return await res.json();
+  }
+
   async getScoreTrends(limit = 20) {
     const res = await this.fetch(`${this.baseUrl}/api/scores/trends?limit=${limit}`);
     return await res.json();

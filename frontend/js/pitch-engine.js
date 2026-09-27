@@ -294,6 +294,10 @@ class PitchEngine {
       accuracy: Math.round(accuracy * 1000) / 1000,
       max_combo: this.maxCombo,
       perfect_frames: this.perfectFrames,
+      // 命中率的**分母**。今晚擂台要靠它分辨「唱了整首但一句都沒中」
+      // 與「這首歌根本沒有導唱音符」—— 後者的命中率是沒得算，不是 0 分，
+      // 算進平均的話會白白拉低一位演唱者的代表分（見 contest.py 決定七）。
+      note_frames: this.noteFrames,
       grade: gradeForAccuracy(accuracy),
       // 唱不到一秒（約 60 幀偵測到聲音）視同沒唱，不出結算畫面
       sang: this.sangFrames >= 60 && this.noteFrames > 0,

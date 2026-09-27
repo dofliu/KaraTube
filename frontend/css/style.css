@@ -2495,3 +2495,143 @@ input[type="range"] {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
+
+/* --- 今晚擂台（點歌台的 🥇 分頁） --- */
+.contest-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contest-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contest-headline {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--accent-yellow);
+}
+
+.contest-detail {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* 規則那一行一直留在畫面上而不是收進 tooltip：
+   「為什麼他唱了八首還排在我後面」是這個榜每晚都會被問一次的問題，
+   而答案只有一句話（代表分是最好的三首的平均，不是總和）。 */
+.contest-rule {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.contest-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.contest-row.is-leader {
+  background: linear-gradient(135deg, rgba(255, 196, 0, 0.16), rgba(255, 255, 255, 0.04));
+  border-color: rgba(255, 196, 0, 0.45);
+}
+
+.contest-rank {
+  font-size: 24px;
+  font-weight: 800;
+  min-width: 44px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.contest-who {
+  flex: 1;
+  min-width: 0;
+}
+
+.contest-name {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+/* 那三首歌的名字在窄畫面上一定塞不下，截斷比換行好：
+   換行會把每一列撐成三行高，整張榜就看不到第四名了。 */
+.contest-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contest-points {
+  text-align: center;
+  min-width: 64px;
+}
+
+.contest-points-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--accent-cyan);
+  line-height: 1.1;
+}
+
+.contest-points-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.contest-songs {
+  min-width: 72px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.contest-takes {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.contest-waiting {
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+.contest-waiting-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.contest-waiting-row {
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.contest-hint,
+.contest-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 10px 14px;
+  text-align: center;
+}

@@ -1675,3 +1675,35 @@ body.duet-mode .score-card {
 .stage-panel-promote:hover {
   background: rgba(0, 240, 255, 0.16);
 }
+
+/* --- 今晚擂台：唱畢結算畫面上的名次那一行 --- */
+/* 版面刻意跟跨場次趨勢那一塊一致（同樣的圓角、底色、字級）：
+   兩塊都是「這一首之外的事」，長得不一樣只會讓九秒的畫面更亂。 */
+.settlement-contest {
+  margin: 4px 0 12px;
+  padding: 10px 18px 9px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 搶下第一的那一首才鍍金。每一首都亮的話，真的易主的那一刻沒有人會注意到。 */
+.settlement-contest.is-lead {
+  background: linear-gradient(135deg, rgba(255, 196, 0, 0.22), rgba(255, 120, 0, 0.12));
+  border-color: rgba(255, 196, 0, 0.55);
+  box-shadow: 0 0 24px rgba(255, 196, 0, 0.22);
+}
+
+.settlement-contest-headline {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--accent-yellow);
+  line-height: 1.5;
+}
+
+.settlement-contest-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}

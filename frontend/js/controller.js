@@ -276,6 +276,84 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // --- 今晚擂台 ---
+
+  // 現在畫面上是不是擂台分頁。CONTEST_UPDATE 進來時只有在這一頁才重畫 ——
+  // 在別的分頁重畫會把使用者正在看的清單換掉（整晚每唱完一首就被踢一次）。
+  let contestTabOpen = false;
+
+  async function loadContest() {
+    try {
+      const res = await window.api.getContest();
+      renderContestBoard(res.contest || {});
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">擂台讀取失敗</div>`;
+    }
+  }
+
+  function renderContestBoard(contest) {
+    const view = window.ContestView;
+    const summary = view.describeBoard(contest);
+    const rows = view.boardRows(contest);
+    const waiting = view.waitingRows(contest);
+    const hint = view.unnamedHint(contest);
+    const need = Number(contest.rank_songs) || 3;
+
+    libSummary.textContent = rows.length
+      ? `${rows.length} 位上榜 ・ 今晚共 ${Number(contest.total_takes) || 0} 首`
+      : `還沒有人上榜（唱滿 ${need} 首不同的歌就上榜）`;
+
+    const board = rows.map(r => `
+      <div class="contest-row${r.isLeader ? " is-leader" : ""}">
+        <div class="contest-rank">${escapeHtml(r.medal)}</div>
+        <div class="contest-who">
+          <div class="contest-name">${escapeHtml(r.name)}</div>
+          <div class="contest-sub" title="${escapeAttr(r.subtitle)}">${escapeHtml(r.subtitle)}</div>
+        </div>
+        <div class="contest-points">
+          <div class="contest-points-value">${r.points}</div>
+          <div class="contest-points-label">擂台分</div>
+        </div>
+        <div class="contest-songs">${r.songs} 首<br><span class="contest-takes">唱了 ${r.takes} 次</span></div>
+      </div>`).join("");
+
+    const waitList = waiting.length
+      ? `<div class="contest-waiting">
+           <div class="contest-waiting-title">差一點就上榜</div>
+           ${waiting.map(w => `<div class="contest-waiting-row"><b>${escapeHtml(w.name)}</b>　${escapeHtml(w.text)}（目前 ${w.songs}/${need} 首）</div>`).join("")}
+         </div>` : "";
+
+    const hintHtml = hint
+      ? `<div class="contest-hint">🏷️ ${escapeHtml(hint)}</div>` : "";
+
+    searchResults.innerHTML = `
+      <div class="contest-panel">
+        <div class="contest-head">
+          <div>
+            <div class="contest-headline">${escapeHtml(summary.headline)}</div>
+            <div class="contest-detail">${escapeHtml(summary.detail)}</div>
+          </div>
+          <button class="btn btn-secondary" onclick="window.resetContest()"
+                  title="換一批客人時按：抹掉這一場的成績重新開始。隔了一場的空檔沒有人唱，榜自己就會翻新，平常不必按">🔄 重開一場</button>
+        </div>
+        <div class="contest-rule">代表分＝最好的 ${need} 首<b>不同的歌</b>的平均命中率（同一首只算最好的那一次）。唱得越多只會越好，不會把自己的平均拉下來。</div>
+        ${board || `<div class="contest-empty">這一場還沒有人上榜</div>`}
+        ${waitList}
+        ${hintHtml}
+      </div>`;
+  }
+
+  window.resetContest = async function () {
+    if (!confirm("重開一場？\n\n這會抹掉今晚擂台上所有人的成績，而且拿不回來。\n（換一批客人時才需要按 —— 隔了一場的空檔沒有人唱，榜自己就會翻新。）")) return;
+    try {
+      const res = await window.api.resetContest();
+      renderContestBoard(res.contest || {});
+      showNotification("🥇 擂台已重開一場");
+    } catch (e) {
+      alert("重設失敗（需要櫃檯解鎖）: " + e.message);
+    }
+  };
+
   function renderTrendCard(trend) {
     const view = window.TrendView;
     const summary = view.describeTrend(trend);
@@ -1661,6 +1739,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function switchLibrary(which) {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
+    // 離開擂台分頁就不再接 CONTEST_UPDATE 的重畫（見那支監聽器的說明）
+    contestTabOpen = which === "contest";
     if (which === "rankings") loadRankings();
     else if (which === "browse") loadBrowse();
     else if (which === "find") loadFind();
@@ -1670,6 +1750,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
     else if (which === "trends") loadTrends();
+    else if (which === "contest") loadContest();
     else if (which === "recordings") loadRecordings();
     else if (which === "cache") loadCacheManager();
     else if (which === "batch") loadBatch();
@@ -4086,6 +4167,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // 舞台端唱完一首會廣播結算結果，點歌台同步顯示，讓包廂裡每支手機都看得到
+  // 榜變了就重畫 —— 但只有在擂台分頁開著的時候（不然整晚每唱完一首，
+  // 正在翻曲庫的人就會被踢回擂台一次）。
+  window.api.on("CONTEST_UPDATE", (msg) => {
+    if (!contestTabOpen) return;
+    renderContestBoard(msg.data || {});
+  });
+
   window.api.on("SCORE_FINAL", (msg) => {
     const r = msg.data || {};
     // 對唱模式送來的是兩位的成績（形狀不一樣：a / b / winner），要分開講
@@ -4195,6 +4283,7 @@ document.addEventListener("DOMContentLoaded", () => {
            🔔 ${call.status === "waiting" ? "等待中" : "櫃檯已收到"}${call.summary ? "：" + escapeHtml(call.summary) : ""}
          </div>`
       : "";
+    const contestLine = roomContestLine(row);
     const timer = row.room && row.room.active
       ? `<div style="margin-top:6px; color:${Number(row.room.remaining_seconds) <= 600 ? "#ffb700" : "var(--text-muted)"};">
            ⏱️ ${escapeHtml(row.room.remaining_text || "")}
@@ -4214,6 +4303,7 @@ document.addEventListener("DOMContentLoaded", () => {
           </div>
         </div>
         <div style="margin-top:6px; color:var(--text-muted);">${escapeHtml(roomDeskLine(row))}</div>
+        ${contestLine ? `<div style="margin-top:4px; font-size:12px; color:var(--accent-yellow);">${escapeHtml(contestLine)}</div>` : ""}
         <div style="margin-top:4px; font-size:12px; color:var(--text-muted);">
           ${row.devices ? `${row.devices} 台裝置連線中` : "沒有裝置連線"}
         </div>

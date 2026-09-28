@@ -898,6 +898,38 @@ body.hide-pitch .pitch-visualizer-container {
    疊在導唱淡出徽章之上（同一欄第三層），三個同時亮著也不會互相蓋掉。
    顏色刻意用黃色而不是青色：導唱淡出是「機器在放手」，
    自動增益是「機器在補償你的收音」，兩件事同時發生時要分得出來是哪一個在動。 */
+/* 防嘯叫徽章。疊在自動增益徽章上方（兩個都亮的時候是上下排）。
+   壓不住的那一種用紅色 —— 那一刻需要的是有人站起來把麥克風拿開，
+   跟「機器正在正常工作」必須一眼分得出來。 */
+.feedback-badge {
+  position: absolute;
+  bottom: 156px;
+  right: 40px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-cyan, #4dd0e1);
+  border-left: 3px solid var(--accent-cyan, #4dd0e1);
+  animation: guideDuckFadeIn 0.4s ease-out;
+}
+
+.feedback-badge[data-state="overload"] {
+  color: #ff6b6b;
+  border-left-color: #ff6b6b;
+  background: rgba(60, 0, 0, 0.6);
+}
+
+.feedback-icon {
+  font-size: 14px;
+}
+
 .mic-agc-badge {
   position: absolute;
   bottom: 112px;

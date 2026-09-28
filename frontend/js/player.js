@@ -92,6 +92,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const micMeterText = document.getElementById("micMeterText");
   const micAgcBadge = document.getElementById("micAgcBadge");
   const micAgcBadgeText = document.getElementById("micAgcBadgeText");
+  const feedbackBadge = document.getElementById("feedbackBadge");
+  const feedbackBadgeText = document.getElementById("feedbackBadgeText");
   const recordingBadge = document.getElementById("recordingBadge");
   const harmonyBadge = document.getElementById("harmonyBadge");
   const harmonyBadgeText = document.getElementById("harmonyBadgeText");
@@ -131,6 +133,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // 麥克風自動增益：把不同人、不同距離的音量拉到差不多，換人唱不用重調滑桿。
   // 參數同樣由設定頁決定；加成上限還會再依演唱模式收緊（多人模式離回授更近）。
   const micAgc = new MicAutoGain({ enabled: true, targetDb: -18 });
+  // 防嘯叫：找出正在自激的那個頻率，在那一點上挖一個很窄的凹槽。
+  // 只在多人模式（人聲真的會從喇叭出來）才作用 —— 單人模式沒有回授迴路，
+  // 那時候挖凹槽等於在沒有病的地方開刀（見 feedback-guard.js 的決定 1）。
+  const feedbackGuard = new FeedbackGuard({ enabled: true });
+  // 麥克風頻譜的重複使用緩衝區。每幀 new 一個 Float32Array 在 60fps 下
+  // 是每秒 60 次 4KB 配置，GC 會週期性地讓舞台掉一幀。
+  let micSpectrum = null;
   // 和聲（雙聲部）：跟著旋律在音階上疊三度／五度／低八度。
   // 開關與風格是共享控制參數（點歌台可改），這裡先照預設值建。
   const harmony = new HarmonyPlanner({ enabled: false, style: "third", level: 0.5 });
@@ -409,6 +418,16 @@ document.addEventListener("DOMContentLoaded", () => {
       window.audioEngine.setMicAutoGainB(micAgcB.enabled ? micAgcB.level : 1.0);
       renderMicMeter();
     }
+    if (s.feedback_guard_enabled !== undefined || s.feedback_guard_max_filters !== undefined) {
+      feedbackGuard.configure({
+        enabled: s.feedback_guard_enabled,
+        maxFilters: s.feedback_guard_max_filters,
+      });
+      // 關掉（或調小上限）的當下就要把凹槽放掉，不能等下一幀：
+      // 下一幀可能是暫停中，而凹槽留在音訊圖上就是留在人聲上。
+      window.audioEngine.setFeedbackNotches(feedbackGuard.notches());
+      renderFeedbackBadge();
+    }
     // 情境背景：模式／主題／亮度，改完當下就要看得到（不能等下一首）
     if (s.ambient_bg_mode !== undefined || s.ambient_bg_theme !== undefined ||
         s.ambient_bg_brightness !== undefined) {
@@ -499,12 +518,67 @@ document.addEventListener("DOMContentLoaded", () => {
     if (dt > 0) {
       micAgc.update(dt, { rms });
       window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
+      updateFeedbackGuard(dt);
     }
     // 60fps 直接寫 textContent 會讓瀏覽器每幀重排一次版面，10fps 已經夠即時
     if (nowMs - lastMicUiMs > 100) {
       lastMicUiMs = nowMs;
       renderMicMeter();
     }
+  }
+
+  /**
+   * 防嘯叫：餵一幀麥克風頻譜，把算出來的凹槽送進音訊圖。
+   *
+   * 跟自動增益同一個節拍（同一個 dt），因為兩者量的是同一條訊號 ——
+   * 各跑各的計時器會讓兩邊在「剛開麥克風」那幾秒看到不一樣的世界。
+   *
+   * 取頻譜的地方是 micAnalyser，它接在 micSource 上、在凹槽**之前**：
+   * 量凹槽之後的訊號會讓證據隨著凹槽一起消失，深度永遠停在第一格。
+   */
+  function updateFeedbackGuard(dt) {
+    // 單人模式（預設值，也是多數時間）根本沒有回授迴路，連頻譜都不必取 ——
+    // getFloatFrequencyData 每一幀都是一次 FFT，而舞台那條迴圈的預算很緊。
+    // 只有在還掛著凹槽的時候要多走一趟，把它們放掉。
+    if (!feedbackGuard.enabled || !feedbackGuard.armed) {
+      if (feedbackGuard.notches().length) {
+        feedbackGuard.update(dt, null);
+        window.audioEngine.setFeedbackNotches([]);
+      }
+      return;
+    }
+    const analyser = window.audioEngine.micAnalyser;
+    if (!analyser) return;
+    if (!micSpectrum || micSpectrum.length !== analyser.frequencyBinCount) {
+      micSpectrum = new Float32Array(analyser.frequencyBinCount);
+    }
+    analyser.getFloatFrequencyData(micSpectrum);
+    const notches = feedbackGuard.update(dt, {
+      spectrum: micSpectrum,
+      sampleRate: analyser.context.sampleRate,
+      fftSize: analyser.fftSize,
+    });
+    window.audioEngine.setFeedbackNotches(notches);
+  }
+
+  /**
+   * 舞台徽章：機器正在壓著某幾個頻率時亮出來。
+   *
+   * 為什麼一定要有：防嘯叫做得好的時候，現場什麼都聽不到 —— 叫聲沒出現，
+   * 人聲聽起來也一樣。那正是問題：櫃檯會以為這個功能沒在動。
+   * 而壓不住的時候更需要講話，因為那一刻只有**實體**的解法
+   * （麥克風離喇叭遠一點），機器再聰明也沒有用。
+   */
+  function renderFeedbackBadge() {
+    if (!feedbackBadge) return;
+    const summary = feedbackGuard.summary();
+    const show = feedbackGuard.isActive() || summary.overloaded;
+    feedbackBadge.style.display = show ? "flex" : "none";
+    if (!show) return;
+    feedbackBadge.dataset.state = summary.overloaded ? "overload" : "ok";
+    feedbackBadgeText.textContent = summary.overloaded
+      ? "回授壓不住了：請把麥克風拿離喇叭"
+      : `防嘯叫　壓住 ${summary.notches} 個頻點（最深 ${summary.deepest_db} dB）`;
   }
 
   /** 音量表與自動增益讀數（設定面板）＋舞台角落的自動增益徽章。 */
@@ -530,6 +604,8 @@ document.addEventListener("DOMContentLoaded", () => {
       micAgcBadge.style.display = show ? "flex" : "none";
       if (show) micAgcBadgeText.textContent = `麥克風自動增益 ${signed}`;
     }
+
+    renderFeedbackBadge();
 
     // 第二支麥克風的音量表。對唱模式最常見的現場問題是「B 麥根本沒進訊號」
     // （選錯裝置、介面右聲道沒插），有一條自己的表頭三秒就看得出來。
@@ -579,6 +655,10 @@ document.addEventListener("DOMContentLoaded", () => {
     micAgcB.reset();
     lastMicFrameMsB = 0;
     window.audioEngine.setMicAutoGainB(1.0);
+    // 凹槽也一起放掉：那幾個頻率是「上一支麥克風擺在那個位置」的答案，
+    // 換了麥克風（或換了擺放位置）之後它們只是憑空挖在人聲上的洞。
+    feedbackGuard.reset();
+    window.audioEngine.setFeedbackNotches([]);
     renderMicMeter();
   }
 
@@ -1946,6 +2026,11 @@ document.addEventListener("DOMContentLoaded", () => {
     window.audioEngine.setMicAutoGain(micAgc.enabled ? micAgc.level : 1.0);
     micAgcB.configure({ maxBoostDb: isParty ? 6 : 9 });
     window.audioEngine.setMicAutoGainB(micAgcB.enabled ? micAgcB.level : 1.0);
+    // 防嘯叫只在人聲真的會從喇叭出來時作用。切回單人模式時 setArmed(false)
+    // 會把凹槽全部放掉（迴路已經被物理性切斷了），所以要同步送進音訊圖。
+    feedbackGuard.setArmed(isParty);
+    if (!isParty) window.audioEngine.setFeedbackNotches([]);
+    renderFeedbackBadge();
     modeSoloBtn.classList.toggle("active", !isParty);
     modePartyBtn.classList.toggle("active", isParty);
     modeHint.innerHTML = isParty

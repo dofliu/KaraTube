@@ -3021,6 +3021,9 @@ document.addEventListener("DOMContentLoaded", () => {
     guide_duck_depth: { label: "淡出深度", hint: "最多壓多少", percent: true },
     mic_agc_enabled: { label: "麥克風自動增益", hint: "換人唱免調音量" },
     mic_agc_target_db: { label: "目標收音電平", unit: " dBFS", step: 1 },
+    feedback_guard_enabled: { label: "防嘯叫", hint: "多人模式才作用" },
+    feedback_guard_max_filters: { label: "最多壓幾個頻點", unit: " 個", step: 1,
+                                  hint: "每一個都從人聲裡拿掉一小段；要超過 4 個多半是擺位問題" },
     cache_limit_gb: { label: "快取上限", unit: " GB", hint: "0 = 不限制", step: 1 },
     cache_auto_cleanup: { label: "自動清理最舊的歌", hint: "超過上限時" },
     batch_enabled: { label: "啟用排程預處理" },
@@ -3145,6 +3148,19 @@ document.addEventListener("DOMContentLoaded", () => {
       hint: "換人唱不用重調麥克風音量：機器把每個人的收音電平拉到同一個目標（要降立刻降、要升慢慢升）。" +
             "安靜的時候絕不加大 —— 否則底噪會被一起放大。舞台端按 S 可以看即時電平表。",
       keys: ["mic_agc_enabled", "mic_agc_target_db"],
+    },
+    {
+      title: "🔇 防嘯叫（回授抑制）",
+      hint: "麥克風對著喇叭時那一聲尖叫，是「喇叭 → 空氣 → 麥克風 → 喇叭」在房間共振" +
+            "最強的那個頻率上自激。機器聽得出那根孤峰（釘在同一個頻率、只會變大、" +
+            "沒有諧波），在那一點上挖一個很窄的凹槽把迴路切斷 —— 唱歌幾乎聽不出差別，" +
+            "但那正好是迴路唯一的糧食。從 −6 dB 開始，壓不住才加深。" +
+            "只在多人模式作用：單人模式人聲不進喇叭，根本沒有回授迴路。" +
+            "壓住之後機器**看不到**「麥克風已經拿開了」（叫聲連同證據一起消失），" +
+            "所以每 45 秒放掉一格試試看，而且同時只放一個。" +
+            "舞台角落會顯示現在壓著幾個頻點；壓不住的時候會轉紅字，" +
+            "那一刻唯一有效的是把麥克風拿離喇叭。",
+      keys: ["feedback_guard_enabled", "feedback_guard_max_filters"],
     },
     {
       title: "🗂️ 快取",

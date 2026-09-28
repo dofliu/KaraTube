@@ -123,6 +123,15 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "mic_agc_enabled": {"type": "bool", "default": True},
     "mic_agc_target_db": {"type": "float", "default": -18.0, "min": -30.0, "max": -6.0},
 
+    # --- 防嘯叫（回授抑制）---
+    # 多人模式（人聲從喇叭出來）時，找出正在自激的那個頻率，在那一點上挖一個
+    # 很窄的凹槽。凹槽數量是「音色代價」與「壓得住多少」之間的取捨：
+    # 每一個凹槽都從人聲裡拿掉約 1/10 倍頻，4 個幾乎聽不出來，8 個開始悶。
+    # 需要超過 4 個才壓得住，通常代表麥克風離喇叭太近（那是擺位問題，不是參數問題）。
+    # 上限與 frontend/js/feedback-guard.js 的 NOTCH_HARD_MAX 必須一致。
+    "feedback_guard_enabled": {"type": "bool", "default": True},
+    "feedback_guard_max_filters": {"type": "int", "default": 4, "min": 1, "max": 8},
+
     # --- 快取 ---
     # 0 = 不限制。超過上限時從最舊、且不在佇列裡的歌開始刪。
     "cache_limit_gb": {"type": "float", "default": 0.0, "min": 0.0, "max": 2000.0},

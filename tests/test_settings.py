@@ -217,6 +217,52 @@ def test_ambient_theme_choices_match_the_frontend():
     assert js_themes == set(AMBIENT_THEME_CHOICES) - {"auto"}
 
 
+def test_feedback_guard_limits_match_the_frontend():
+    """
+    防嘯叫的凹槽上限要三邊一致：設定頁的 max、feedback-guard.js 的 NOTCH_HARD_MAX、
+    audio-effects.js 常駐的濾波器數量 FEEDBACK_NOTCH_SLOTS。
+
+    對不上的方向決定災情：設定頁能調到比濾波器多的話，最後那幾個凹槽會
+    **靜靜地沒接上去** —— 使用者看到「已壓住 6 個頻點」，但房間繼續叫，
+    而且畫面說的跟聽到的正好相反。這種錯誤現場完全查不出來。
+    """
+    import re
+    from pathlib import Path
+
+    from backend.services.settings import SETTINGS_SPEC
+
+    frontend = Path(__file__).resolve().parents[1] / "frontend" / "js"
+    guard = (frontend / "feedback-guard.js").read_text(encoding="utf-8")
+    effects = (frontend / "audio-effects.js").read_text(encoding="utf-8")
+
+    hard_max = re.search(r"^const NOTCH_HARD_MAX = (\d+);", guard, re.M)
+    slots = re.search(r"^const FEEDBACK_NOTCH_SLOTS = (\d+);", effects, re.M)
+    assert hard_max, "找不到 feedback-guard.js 的 NOTCH_HARD_MAX"
+    assert slots, "找不到 audio-effects.js 的 FEEDBACK_NOTCH_SLOTS"
+
+    schema_max = SETTINGS_SPEC["feedback_guard_max_filters"]["max"]
+    assert schema_max == int(hard_max.group(1))
+    assert int(slots.group(1)) >= schema_max
+
+
+def test_feedback_guard_defaults_to_on_with_four_notches(settings):
+    """
+    防嘯叫預設開著，而且預設四個凹槽。
+
+    預設開著是因為它的失敗模式不對稱：沒開的代價是包廂裡一聲尖叫（會嚇到人、
+    傷喇叭），開著的代價是在真的自激的那一刻，人聲少掉一段 1/10 倍頻。
+    四個是「幾乎聽不出來」與「壓得住一般包廂」的交界 —— 需要更多通常代表
+    麥克風離喇叭太近，那是擺位問題，調參數只會把人聲愈挖愈空。
+    """
+    assert settings.get("feedback_guard_enabled") is True
+    assert settings.get("feedback_guard_max_filters") == 4
+    # 手滑滑到界外要被夾回來，不是回 500
+    settings.update({"feedback_guard_max_filters": 99})
+    assert settings.get("feedback_guard_max_filters") == 8
+    settings.update({"feedback_guard_max_filters": 0})
+    assert settings.get("feedback_guard_max_filters") == 1
+
+
 def test_pending_limit_defaults_to_unlimited_and_reaches_the_queue(settings):
     """
     每人待唱上限：預設 0＝不限（跟輪唱一樣，會改變「我點不點得了歌」的規則

@@ -119,6 +119,13 @@
       <span id="micAgcBadgeText">麥克風自動增益</span>
     </div>
 
+    <!-- 防嘯叫徽章：機器正壓著某幾個頻率時亮。做得好的時候現場什麼都聽不到，
+         櫃檯會以為這個功能沒在動；壓不住的時候更要講話，因為那時只有實體解法。 -->
+    <div id="feedbackBadge" class="feedback-badge" style="display: none;">
+      <span class="feedback-icon">🔇</span>
+      <span id="feedbackBadgeText">防嘯叫</span>
+    </div>
+
     <!-- 和聲徽章：和聲開著時常駐，並顯示判到的調性（和聲不對時這是唯一有用的線索） -->
     <div id="harmonyBadge" class="harmony-badge" style="display: none;">
       <span class="harmony-icon">🎶</span>
@@ -286,6 +293,7 @@
   <script src="/js/guide-ducker.js"></script>
   <!-- 麥克風自動增益的純邏輯，player.js 會 new MicAutoGain() -->
   <script src="/js/mic-agc.js"></script>
+  <script src="/js/feedback-guard.js"></script>
   <!-- 和聲規劃的純邏輯（調性判定與音階度數），player.js 會 new HarmonyPlanner()。
        實際移調的 harmony-worklet.js 不從這裡載入 —— 它是 AudioWorklet 模組，
        由 audio-effects.js 用 audioWorklet.addModule() 載進音訊執行緒。 -->

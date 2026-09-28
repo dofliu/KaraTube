@@ -1,4 +1,14 @@
 // Web Audio API Audio Engine & Effects Processor
+
+// 防嘯叫的凹槽組要留幾顆濾波器。必須 >= feedback-guard.js 的 NOTCH_HARD_MAX
+// （設定頁能調到的最大值），否則設定調到上限時最後幾個凹槽會靜靜地沒接上去 ——
+// 那是「防嘯叫開著但沒作用」，現場無從分辨。tests/test_settings.py 有一條測試
+// 把這個數字、NOTCH_HARD_MAX 與設定頁的上限三個釘在一起。
+const FEEDBACK_NOTCH_SLOTS = 8;
+
+// 一顆濾波器放掉之後要多久才可以再拿去用（秒）。見 _applyNotches 的說明。
+const NOTCH_COOLDOWN_SECONDS = 0.3;
+
 class AudioEngine {
   constructor() {
     this.ctx = null;
@@ -518,6 +528,11 @@ class AudioEngine {
       // Pitch Analyser
       this.micAnalyser = this.ctx.createAnalyser();
       this.micAnalyser.fftSize = 2048;
+      // 頻譜的時間平滑。預設 0.8 對防嘯叫太重：它會讓一根間歇出現的峰
+      // 看起來像一直都在，而「間歇」正是抖音與嘯叫最主要的差別。
+      // 0.3 夠壓掉單幀的 FFT 抖動，又不會把間歇抹成連續。
+      // 音準評分不受影響 —— 它讀的是時域波形，平滑只作用在頻域。
+      this.micAnalyser.smoothingTimeConstant = 0.3;
 
       // 麥克風處理鏈。monitorGain 是「要不要從喇叭放出人聲」的總開關，
       // 放在效果送出之前，單人模式才能連殘響與回音一起靜音。
@@ -570,6 +585,25 @@ class AudioEngine {
     highpass.frequency.value = 110;
     highpass.Q.value = 0.7;
 
+    // 防嘯叫的凹槽組。常駐 FEEDBACK_NOTCH_SLOTS 個 peaking 濾波器，沒用到的
+    // 增益就是 0 dB —— peaking 在 0 dB 時的係數是恆等式（b 與 a 相同），
+    // 所以「沒在用」是真的一點都不動到聲音，不是「影響很小」。
+    //
+    // 常駐而不是要用才接，是因為在有訊號流過的時候增刪節點會有「咖」的一聲，
+    // 而這個功能唯一會動作的時機，正好就是房間已經在叫的那一刻。
+    //
+    // 位置在高通之後、高頻柔化之前：凹槽要挖在最接近原始訊號的地方，
+    // 而高通之前的那段低頻本來就不在防嘯叫的守備範圍裡。
+    const notches = [];
+    for (let i = 0; i < FEEDBACK_NOTCH_SLOTS; i++) {
+      const notch = this.ctx.createBiquadFilter();
+      notch.type = "peaking";
+      notch.frequency.value = 1000;
+      notch.Q.value = 14;
+      notch.gain.value = 0;
+      notches.push(notch);
+    }
+
     const deEss = this.ctx.createBiquadFilter();
     deEss.type = "highshelf";
     deEss.frequency.value = 5500;
@@ -588,11 +622,22 @@ class AudioEngine {
     limiter.attack.value = 0.003;
     limiter.release.value = 0.15;
 
-    highpass.connect(deEss);
+    let tail = highpass;
+    for (const notch of notches) {
+      tail.connect(notch);
+      tail = notch;
+    }
+    tail.connect(deEss);
     deEss.connect(agcGain);
     agcGain.connect(limiter);
 
-    return { highpass, deEss, agcGain, limiter, agcLevel: 1.0 };
+    // assign：凹槽 id -> 濾波器索引。防嘯叫那邊的凹槽會增減，
+    // 這張表讓同一個凹槽從頭到尾都待在同一顆濾波器上（見 feedback-guard 的 notches()）。
+    return {
+      highpass, notches, deEss, agcGain, limiter, agcLevel: 1.0,
+      assign: new Map(),   // 凹槽 id -> 濾波器索引
+      cooling: new Map(),  // 剛放掉的濾波器索引 -> 放掉的時刻（見 _applyNotches）
+    };
   }
 
   _buildMicChain() {
@@ -600,6 +645,7 @@ class AudioEngine {
 
     const chain = this._createMicChain();
     this.micHighpass = chain.highpass;
+    this.micChain = chain;
     this.micDeEss = chain.deEss;
     this.micAgcGain = chain.agcGain;
     this.micAgcLevel = 1.0;
@@ -664,6 +710,72 @@ class AudioEngine {
       this.monitorGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.08);
     }
     return this.singMode;
+  }
+
+  /**
+   * 防嘯叫：把這一幀該有的凹槽送進麥克風前級鏈。
+   *
+   * 由 feedback-guard.js 決定要挖在哪裡、挖多深（它量的是 micAnalyser 上的
+   * **原始訊號**，在這些濾波器之前），這裡只負責接線。
+   *
+   * 兩支麥克風共用同一組凹槽是刻意的：自激是**房間**的性質（喇叭 → 空氣 →
+   * 麥克風），而兩支麥克風在同一個房間、進同一組喇叭。各自偵測各自挖的話，
+   * 兩支麥克風會慢慢長出不同的頻率響應，而那種差異在包廂裡只會被講成
+   * 「B 麥比較悶」，沒有人會想到是防嘯叫。
+   *
+   * @param {Array<{id:number, freq:number, gainDb:number, q:number}>} notches
+   */
+  setFeedbackNotches(notches) {
+    const list = Array.isArray(notches) ? notches : [];
+    for (const chain of [this.micChain, this.chainB]) {
+      if (chain && chain.notches) this._applyNotches(chain, list);
+    }
+  }
+
+  /** 一條鏈的凹槽套用。id -> 濾波器索引的對應留著，凹槽才不會在濾波器之間跳。 */
+  _applyNotches(chain, list) {
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    const filters = chain.notches;
+    const assign = chain.assign;
+    const cooling = chain.cooling;
+
+    // 先把不再需要的位置讓出來，新的凹槽才有空位可挑
+    for (const [id, index] of Array.from(assign)) {
+      if (!list.some((n) => n.id === id)) {
+        filters[index].gain.setTargetAtTime(0, now, 0.05);
+        assign.delete(id);
+        cooling.set(index, now);
+      }
+    }
+
+    // 剛放掉的那幾顆先不要馬上拿去用。setTargetAtTime 是指數趨近，
+    // 「已經放掉」的增益在下一幀其實還有七成 —— 這時候換頻率，
+    // 那顆濾波器會帶著還沒消掉的凹槽掃過去，在包廂裡是一聲「咻」。
+    // 0.3 秒之後殘量約 −0.1 dB，聽不到了。
+    const taken = new Set(assign.values());
+    for (const [index, at] of Array.from(cooling)) {
+      if (now - at >= NOTCH_COOLDOWN_SECONDS) cooling.delete(index);
+      else taken.add(index);
+    }
+    for (const notch of list) {
+      let index = assign.get(notch.id);
+      if (index === undefined) {
+        index = filters.findIndex((_, i) => !taken.has(i));
+        if (index < 0) continue;   // 濾波器不夠（設定值超過 FEEDBACK_NOTCH_SLOTS）
+        assign.set(notch.id, index);
+        taken.add(index);
+        // 頻率在增益還是 0 dB 的時候設定 —— 這時候改頻率完全聽不到。
+        // 反過來（先開增益再掃頻）在包廂裡是一聲掃頻的「咻」。
+        filters[index].frequency.setValueAtTime(notch.freq, now);
+        filters[index].Q.setValueAtTime(notch.q, now);
+      } else {
+        // 已經在作用中的凹槽只會換深度，頻率不動（換頻率的那一聲比嘯叫還突兀）
+        filters[index].Q.setTargetAtTime(notch.q, now, 0.05);
+      }
+      // 30ms：快到在「開始叫」與「已經很大聲」之間就壓下去，
+      // 又慢到不會有階梯式的爆音。
+      filters[index].gain.setTargetAtTime(notch.gainDb, now, 0.03);
+    }
   }
 
   // 高頻柔化。0 = 不處理，1 = -12dB @5.5kHz。尖銳與回授都吃這一刀。
@@ -734,6 +846,7 @@ class AudioEngine {
       this.chainB = this._createMicChain();
       this.micAnalyserB = this.ctx.createAnalyser();
       this.micAnalyserB.fftSize = 2048;
+      this.micAnalyserB.smoothingTimeConstant = 0.3;
       this.micGainB = this.ctx.createGain();
       this.micGainB.gain.value = 1.0;
       this.chainB.limiter.connect(this.micGainB);

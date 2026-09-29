@@ -122,6 +122,11 @@ OPEN_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     ("POST", "/api/scores", "上傳演唱成績"),
     ("POST", "/api/scores/duet", "上傳對唱成績"),
     ("POST", "/api/favorites/toggle", "收藏歌曲"),
+    # 音域：收的是這個人自己的聲音，刪的也是他自己那一份。
+    # 重設刻意不鎖 —— 公用機器上同一個暱稱換了一個人時，那是唯一的交棒方法，
+    # 而「要櫃檯拿鑰匙才能刪掉自己的聲音」等於這個功能在包廂裡不存在。
+    ("POST", "/api/vocal-range", "累積自己的音域"),
+    ("DELETE", "/api/vocal-range", "重設自己的音域檔案"),
     ("DELETE", "/api/favorites/{song_id}", "取消收藏"),
     # --- 錄音：自己那一次 ---
     # 單筆刪除刻意不鎖：唱壞的那一次是本人最想立刻刪掉的東西，

@@ -263,6 +263,21 @@ def test_feedback_guard_defaults_to_on_with_four_notches(settings):
     assert settings.get("feedback_guard_max_filters") == 1
 
 
+def test_vocal_range_defaults_to_on(settings):
+    """
+    音域檢測預設開著。
+
+    它沒有音訊上的副作用（一顆濾波器都不動），也不佔 CPU（音高是評分本來就在
+    偵測的東西），而且沒有暱稱就不建檔 —— 也就是說「預設開著」對一個
+    沒取暱稱的包廂是完全隱形的。真正的取捨只有一個：要不要在機器裡留下
+    「這個暱稱的聲音長什麼樣子」。所以開關留著、而且關掉的語意是
+    **不再收集**（不是只停用建議），已經建好的檔案由使用者自己刪。
+    """
+    assert settings.get("vocal_range_enabled") is True
+    settings.update({"vocal_range_enabled": False})
+    assert settings.get("vocal_range_enabled") is False
+
+
 def test_pending_limit_defaults_to_unlimited_and_reaches_the_queue(settings):
     """
     每人待唱上限：預設 0＝不限（跟輪唱一樣，會改變「我點不點得了歌」的規則

@@ -294,6 +294,8 @@
   <!-- 麥克風自動增益的純邏輯，player.js 會 new MicAutoGain() -->
   <script src="/js/mic-agc.js"></script>
   <script src="/js/feedback-guard.js"></script>
+  <!-- 音域採集：把唱出來的音高累積成直方圖（純資料邏輯，吃 pitch-engine 的判定） -->
+  <script src="/js/vocal-range.js"></script>
   <!-- 和聲規劃的純邏輯（調性判定與音階度數），player.js 會 new HarmonyPlanner()。
        實際移調的 harmony-worklet.js 不從這裡載入 —— 它是 AudioWorklet 模組，
        由 audio-effects.js 用 audioWorklet.addModule() 載進音訊執行緒。 -->

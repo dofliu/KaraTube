@@ -132,6 +132,13 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "feedback_guard_enabled": {"type": "bool", "default": True},
     "feedback_guard_max_filters": {"type": "int", "default": 4, "min": 1, "max": 8},
 
+    # --- 音域檢測與建議 Key ---
+    # 每一首唱完把麥克風收到的音高直方圖累積成「這個人的音域」，
+    # 之後對每一首歌說「這首對你偏高，建議 −2」。
+    # 關掉的意思是**不要收集我的聲音**：關著的時候一幀都不收、也不給建議，
+    # 已經建好的檔案留著（重開就回來）。要清掉是「重新認識我的聲音」那顆鍵。
+    "vocal_range_enabled": {"type": "bool", "default": True},
+
     # --- 快取 ---
     # 0 = 不限制。超過上限時從最舊、且不在佇列裡的歌開始刪。
     "cache_limit_gb": {"type": "float", "default": 0.0, "min": 0.0, "max": 2000.0},

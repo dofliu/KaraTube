@@ -463,6 +463,35 @@ input[type="range"] {
   text-align: center;
 }
 
+/* 建議 Key：調音台裡「升降 Key」底下那一列。
+   文字會換行（那一句話說得出為什麼），所以整列不用 nowrap；
+   套用鍵靠右並且不被壓縮 —— 它是這一列唯一要按的東西。 */
+.key-advice-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.key-advice-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--accent-cyan);
+}
+
+/* 三種語氣分開：合身是好消息（綠）、還在學是中性（灰）、
+   調到底還是超出去是要注意的那一種（黃）。建議本身維持 cyan。 */
+.key-advice-text[data-status="fit"] { color: #7cf6a0; }
+.key-advice-text[data-status="no_profile"] { color: var(--text-muted); }
+.key-advice-text[data-status="out_of_range"] { color: var(--accent-yellow); }
+
+.key-advice-box .mixer-mini-btn {
+  flex: 0 0 auto;
+}
+
 /* Sound FX Grid */
 .sound-fx-bar {
   display: flex;

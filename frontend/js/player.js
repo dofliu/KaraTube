@@ -137,6 +137,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // 只在多人模式（人聲真的會從喇叭出來）才作用 —— 單人模式沒有回授迴路，
   // 那時候挖凹槽等於在沒有病的地方開刀（見 feedback-guard.js 的決定 1）。
   const feedbackGuard = new FeedbackGuard({ enabled: true });
+  // 音域採集：把唱出來的音高累積成直方圖，唱完送回後端併進這個人的音域檔案。
+  // 對唱有兩份 —— 兩個人的聲音混成一份的話，算出來的「舒適音域」會寬到
+  // 涵蓋兩個人，於是對每一首歌的建議都是「不必調」。
+  const vocalRangeA = new VocalRangeCollector();
+  const vocalRangeB = new VocalRangeCollector();
   // 麥克風頻譜的重複使用緩衝區。每幀 new 一個 Float32Array 在 60fps 下
   // 是每秒 60 次 4KB 配置，GC 會週期性地讓舞台掉一幀。
   let micSpectrum = null;
@@ -2555,6 +2560,10 @@ document.addEventListener("DOMContentLoaded", () => {
     ]);
 
     karaokeRenderer.setLyrics(lyrics);
+    // 換歌：音域採集歸零。不歸零的話上一首的直方圖會被算進這一首送出去，
+    // 於是同一段演唱被記進檔案兩次（而且「唱了幾首」也多算一首）。
+    vocalRangeA.reset();
+    vocalRangeB.reset();
     pitchEngine.setPitchData(pitch);
     // 導唱音符換了一份，這首歌的升降 Key 要重新套上去（setPitchData 不動
     // keyShift，但移調器裡還留著上一首最後半個視窗的聲音 —— 那半個視窗
@@ -2612,6 +2621,10 @@ document.addEventListener("DOMContentLoaded", () => {
     hideSettlement();
     // 重唱是新的一輪演唱，評分歸零重計，結算成績才不會兩輪疊在一起
     pitchEngine.resetScoring();
+    // 音域同理：重唱之前唱過的那半首已經沒有成績了，音高也不該留著 ——
+    // 留著的話「唱到一半重唱五次」會把同一段副歌記進檔案五次。
+    vocalRangeA.reset();
+    vocalRangeB.reset();
     // 錄音同樣歸零：評分已經重來，留著剛剛那一段會配上一份對不起來的成績
     cancelTake();
     resetDuet();
@@ -2769,6 +2782,11 @@ document.addEventListener("DOMContentLoaded", () => {
       frame = pitchEngine.tick(scoreTime, { sectionTime: lyricTime });
     }
 
+    // 音域採集吃同一幀的判定（音高、電平、算不算他的）——
+    // 它自己不偵測音高，所以不多花一次那條迴圈裡最貴的運算。
+    vocalRangeA.push(frame);
+    if (frameB) vocalRangeB.push(frameB);
+
     // 同一份判定直接餵給自動 ducking，不重新偵測一次音高。
     // 對唱模式看的是「有沒有人唱準」—— 兩個人只要有一個唱得穩，
     // 導唱就該退到背景（只看 A 的話，B 獨唱的段落導唱會一直全開）。
@@ -2801,9 +2819,37 @@ document.addEventListener("DOMContentLoaded", () => {
   audioInst.addEventListener("seeked", () => clock.seekedTo(audioInst.currentTime));
   audioInst.addEventListener("playing", () => clock.seekedTo(audioInst.currentTime));
 
+  /**
+   * 唱畢：把這一次收到的音高直方圖送回後端，併進這個人的音域檔案。
+   *
+   * 只在 `ended`（自然唱完）呼叫，跟今晚擂台同一條線：被切歌的那一次
+   * 根本走不到這裡，所以「唱 30 秒副歌就切歌」不會一直往檔案裡塞副歌那幾個音。
+   *
+   * 送不出去就算了（`catch` 吞掉）：音域是**跨很多首歌**累積的背景資料，
+   * 掉了一首下一首照樣接上；而這一刻畫面上正要出結算，
+   * 為了一份背景統計跳錯誤訊息是本末倒置。
+   */
+  function submitVocalRange(collector, singer) {
+    const payload = collector.payload();
+    // 沒取暱稱的不送：後端也會擋（音域檔認暱稱），但在這裡就不送可以省掉
+    // 一次注定失敗的請求，而且那正是包廂裡最常見的情況。
+    if (!payload || !String(singer || "").trim()) return;
+    window.api.submitVocalRange(String(singer).trim(), payload.bins).catch(() => {});
+  }
+
   audioInst.addEventListener("ended", () => {
     console.log("Song audio finished.");
     const result = pitchEngine.getFinalResult();
+
+    // 音域：對唱時兩位各自併進自己的檔案（名字用真的打進去的那個，
+    // 補上的「A 麥」「B 麥」不是人名 —— 跟擂台同一個判準）。
+    if (duetActive) {
+      submitVocalRange(vocalRangeA, rawSingerName("a"));
+      submitVocalRange(vocalRangeB, rawSingerName("b"));
+    } else {
+      submitVocalRange(vocalRangeA,
+        (currentSongMeta && currentSongMeta.requested_by) || "");
+    }
 
     if (duetActive && currentSongMeta) {
       const resultB = pitchEngineB.getFinalResult();

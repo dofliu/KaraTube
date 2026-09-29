@@ -40,6 +40,7 @@ from backend.services import (access_policy, contest, marquee, process_lane, roo
                               rooms, service_calls, song_quota)
 from backend.services.staff_lock import StaffLock
 from backend.services.score_history import ScoreHistory
+from backend.services.vocal_range import VocalRange
 from backend.services.night_export import (DEFAULT_GAP_HOURS, ExportGate, filter_by_singer,
                                            find_session, group_sessions, iter_session_zip,
                                            zip_filename)
@@ -203,6 +204,9 @@ play_stats = PlayStats(CACHE_DIR / "play_stats.json")
 favorites = Favorites(CACHE_DIR / "favorites.json")
 song_history = SongHistory(CACHE_DIR / "song_history.json")
 score_history = ScoreHistory(CACHE_DIR / "score_history.json")
+# 每個人的音域檔案。跟評分歷史同一邊（整台機器一份、跟著暱稱走），
+# 不分包廂 —— 音域是這個人的聲音，不是這一間包廂的性質。
+vocal_range = VocalRange(CACHE_DIR / "vocal_range.json")
 recordings = RecordingLibrary(RECORDINGS_DIR)
 # 分享連結的索引刻意放在 cache/ 而不是錄音資料夾裡：RecordingLibrary 會把
 # 錄音資料夾裡「不在索引上」的檔案當成孤兒檔刪掉，放進去會在下次開機時消失。
@@ -1910,6 +1914,80 @@ async def get_song_trend(song_id: str, singer: str = Query("")):
         "singer": singer,
         "trend": score_history.trend_for(song_id, singer),
     }
+
+
+# --- 音域檢測與建議 Key ---------------------------------------------------
+#
+# 五條路由全部不分包廂、全部不上鎖：音域是「這位客人的聲音」，
+# 而唱歌本身的動作在 access_policy 裡一律不需要櫃檯密碼（見 staff_lock.py 的判準一）。
+
+
+@app.post("/api/vocal-range")
+async def submit_vocal_range(payload: Dict[str, Any] = Body(...)):
+    """
+    收一次演唱的音高直方圖（舞台端在唱畢時送，形狀 `{singer, bins}`）。
+
+    刻意**不**併進 `/api/scores`：兩件事的失敗代價差很多。結算是使用者
+    正在看的畫面，音域是背景累積 —— 併在一起的話，直方圖太大或格式有問題
+    就會讓一張已經算好的成績單回 400，而使用者完全不知道為什麼沒有成績。
+    分開之後，這一條掉了只是這一首沒累積到，下一首照樣接上。
+
+    功能關掉時安靜地不記（回 `recorded: false`）—— 設定頁關掉的意思是
+    「不要收集我的聲音」，那就一幀都不能收。
+    """
+    if not settings.get("vocal_range_enabled", True):
+        return {"status": "success", "result": {"recorded": False, "reason": "disabled",
+                                                "message": "音域檢測已在系統設定頁關閉。"}}
+    return {"status": "success",
+            "result": vocal_range.submit(payload.get("singer"), payload.get("bins"))}
+
+
+@app.get("/api/vocal-range")
+async def list_vocal_ranges():
+    """櫃檯視角：這台機器上有幾份音域檔（設定頁的「已建檔的聲音」那一列）。"""
+    return {"singers": vocal_range.list_singers(),
+            "enabled": bool(settings.get("vocal_range_enabled", True))}
+
+
+@app.get("/api/vocal-range/profile")
+async def get_vocal_range(singer: str = Query("")):
+    """
+    某個人的音域檔案。
+
+    暱稱走 query string 而不是路徑參數：包廂裡的暱稱是自由文字（會有
+    斜線、`.`、emoji），塞進路徑要多一層編碼，而編漏一次的症狀是
+    「我的音域頁面是空的」—— 那種錯在現場查不出來。
+    """
+    return {"profile": vocal_range.profile(singer),
+            "enabled": bool(settings.get("vocal_range_enabled", True))}
+
+
+@app.get("/api/vocal-range/advice")
+async def get_vocal_range_advice(singer: str = Query(""), song_id: str = Query("")):
+    """
+    這個人 + 這首歌 → 建議移調幾個 Key。
+
+    歌還沒處理完（沒有 pitch.json）時回的是 `no_demand` 而不是 404：
+    這一行在畫面上是**可有可無**的一行，查不到就安靜地不出現，
+    不該讓點歌台的整塊面板亮紅字。
+    """
+    notes = storage.get_song_pitch(song_id).get("notes", []) if song_id else []
+    return {"song_id": song_id, "singer": singer,
+            "advice": vocal_range.advice(singer, notes),
+            "enabled": bool(settings.get("vocal_range_enabled", True))}
+
+
+@app.delete("/api/vocal-range")
+async def reset_vocal_range(singer: str = Query("")):
+    """
+    「重新認識我的聲音」：把某個人的檔案整份刪掉。
+
+    這是唯一能瞬間交棒的方法（公用機器上同一個暱稱換了一個人），
+    所以它不上櫃檯鎖 —— 要櫃檯拿鑰匙才能刪掉自己的聲音，
+    等於這個功能在包廂裡不存在。
+    """
+    removed = vocal_range.reset(singer)
+    return {"status": "success", "removed": removed}
 
 
 def _recording_quota() -> Dict[str, int]:

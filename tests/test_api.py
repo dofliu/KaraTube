@@ -3055,3 +3055,118 @@ def test_room_overview_carries_the_contest_leader(snapshot_history_and_scores,
     rows = client.get("/api/rooms/overview").json()["rooms"]
     leader = next(r["contest_leader"] for r in rows if r["id"] == "default")
     assert leader["name"] == "小明" and leader["points"] == 90
+
+
+# --- 音域檢測與建議 Key -----------------------------------------------------
+
+
+@pytest.fixture()
+def clean_vocal_range():
+    """測試前後還原音域檔案，不汙染本機 cache。"""
+    from backend.main import vocal_range
+    saved = {k: {"name": v["name"], "bins": dict(v["bins"]),
+                 "songs": v["songs"], "updated": v["updated"]}
+             for k, v in vocal_range._singers.items()}
+    vocal_range._singers = {}
+    yield vocal_range
+    vocal_range._singers = saved
+    vocal_range._save()
+
+
+def hum(low=52, high=68, frames=900):
+    """一份從 low 唱到 high 的直方圖（API 層測試不必模擬採集過程）。"""
+    return {str(m): frames for m in range(low, high + 1)}
+
+
+def test_vocal_range_submit_and_profile(clean_vocal_range):
+    for _ in range(3):
+        res = client.post("/api/vocal-range", json={"singer": "小明", "bins": hum()})
+        assert res.status_code == 200
+    profile = client.get("/api/vocal-range/profile?singer=小明").json()["profile"]
+    assert profile["ready"] is True
+    assert profile["songs"] == 3
+    assert profile["low_label"] and profile["high_label"]
+
+
+def test_vocal_range_anonymous_is_refused_with_a_reason(clean_vocal_range):
+    res = client.post("/api/vocal-range", json={"singer": "", "bins": hum()})
+    assert res.status_code == 200, "沒取暱稱不是錯誤，是還沒開始"
+    assert res.json()["result"]["recorded"] is False
+    assert res.json()["result"]["reason"] == "anonymous"
+
+
+def test_vocal_range_disabled_collects_nothing(clean_vocal_range):
+    """關掉的意思是「不要收集我的聲音」，那就一幀都不能收。"""
+    settings.update({"vocal_range_enabled": False})
+    try:
+        res = client.post("/api/vocal-range", json={"singer": "小明", "bins": hum()})
+        assert res.json()["result"]["recorded"] is False
+        assert res.json()["result"]["reason"] == "disabled"
+        assert client.get("/api/vocal-range/profile?singer=小明")\
+            .json()["profile"]["frames"] == 0
+    finally:
+        settings.update({"vocal_range_enabled": True})
+
+
+def test_key_advice_without_a_song_is_silent_not_an_error(clean_vocal_range):
+    res = client.get("/api/vocal-range/advice?singer=小明&song_id=")
+    assert res.status_code == 200
+    assert res.json()["advice"]["status"] == "no_profile"
+
+
+def test_key_advice_for_an_unprocessed_song_is_a_200(clean_vocal_range):
+    """歌還沒處理完（沒有 pitch.json）不該讓點歌台那一塊亮紅字。"""
+    for _ in range(3):
+        client.post("/api/vocal-range", json={"singer": "小明", "bins": hum()})
+    res = client.get("/api/vocal-range/advice?singer=小明&song_id=沒有這首歌")
+    assert res.status_code == 200
+    assert res.json()["advice"]["status"] == "no_demand"
+    assert res.json()["advice"]["shift"] == 0
+
+
+def test_key_advice_reads_the_song_pitch(clean_vocal_range):
+    """真的放一份 pitch.json，走完「檔案 → 建議」那條路。"""
+    song_id = "test_vocal_advice_song"
+    folder = SONGS_DIR / song_id
+    folder.mkdir(parents=True, exist_ok=True)
+    # 整首停在 E4：唱得住到 C4 的人差 4 個半音，而 −4 進得來（所以是建議，
+    # 不是「怎麼調都上不去」—— 後者在 test_vocal_range.py 裡單獨守）
+    notes = [{"midi": 64, "start": i * 2.0, "end": i * 2.0 + 2.0} for i in range(30)]
+    (folder / "pitch.json").write_text(json.dumps({"notes": notes, "points": []}),
+                                       encoding="utf-8")
+    try:
+        for _ in range(3):
+            client.post("/api/vocal-range", json={"singer": "小明", "bins": hum(48, 60)})
+        advice = client.get(
+            f"/api/vocal-range/advice?singer=小明&song_id={song_id}").json()["advice"]
+        assert advice["status"] == "advice"
+        assert advice["shift"] < 0, "唱得住到 C4 的人遇到整首停在 E4 的歌，要降 Key"
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_vocal_range_reset_only_clears_that_person(clean_vocal_range):
+    client.post("/api/vocal-range", json={"singer": "小明", "bins": hum()})
+    client.post("/api/vocal-range", json={"singer": "小美", "bins": hum()})
+    assert client.delete("/api/vocal-range?singer=小明").json()["removed"] is True
+    assert client.get("/api/vocal-range/profile?singer=小明").json()["profile"]["frames"] == 0
+    assert client.get("/api/vocal-range/profile?singer=小美").json()["profile"]["frames"] > 0
+
+
+def test_vocal_range_reset_does_not_need_the_staff_pin(staff_lock_clean,
+                                                       clean_vocal_range):
+    """要櫃檯拿鑰匙才刪得掉自己的聲音，等於這個功能在包廂裡不存在。"""
+    assert client.post("/api/staff-lock/pin", json={"pin": "1234"}).status_code == 200
+    assert client.post("/api/vocal-range",
+                       json={"singer": "小明", "bins": hum()}).status_code == 200
+    assert client.delete("/api/vocal-range?singer=小明").status_code == 200
+
+
+def test_vocal_range_listing_is_the_counter_view(clean_vocal_range):
+    for _ in range(3):
+        client.post("/api/vocal-range", json={"singer": "唱很久", "bins": hum()})
+    client.post("/api/vocal-range", json={"singer": "剛開始", "bins": {"60": 50}})
+    rows = client.get("/api/vocal-range").json()["singers"]
+    assert [r["singer"] for r in rows][0] == "唱很久"
+    assert rows[0]["ready"] is True

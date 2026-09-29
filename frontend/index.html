@@ -95,6 +95,7 @@
         <button class="btn btn-secondary lib-tab" data-lib="favorites">⭐ 我的最愛</button>
         <button class="btn btn-secondary lib-tab" data-lib="rankings">🏆 點唱排行</button>
         <button class="btn btn-secondary lib-tab" data-lib="history">🕘 已唱歷史</button>
+        <button class="btn btn-secondary lib-tab" data-lib="voice" title="我的音域：機器從你唱過的歌認識你的聲音，之後對每一首歌說「這首對你偏高，建議降 2 個 Key」">🎤 我的音域</button>
         <button class="btn btn-secondary lib-tab" data-lib="trends" title="跨場次段落趨勢：同一首唱滿三次就看得出你一向強在哪一段">📊 我的成績</button>
         <button class="btn btn-secondary lib-tab" data-lib="contest" title="今晚擂台：這一場誰是歌王。唱滿三首不同的歌就上榜，代表分＝最好的三首平均命中率">🥇 今晚擂台</button>
         <button class="btn btn-secondary lib-tab" data-lib="recordings" title="錄唱回放：把剛剛唱的那一次聽回來（要先到系統設定頁打開錄音）">🎙️ 錄唱回放</button>
@@ -257,6 +258,17 @@
             <span id="keyValueText" class="key-value">0</span>
             <button id="keyUpBtn" class="btn btn-secondary" style="padding: 2px 10px; font-size: 12px;">♯ 升</button>
             <button id="keyResetBtn" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;">原</button>
+          </div>
+        </div>
+        <!-- 建議 Key：機器從你唱過的歌認識你的音域之後，對這一首說一句話。
+             沒有建議可講（這首歌沒有導唱音符）時整列不出現 —— 一個永遠在的
+             空白列會讓人以為它壞了。 -->
+        <div class="mixer-row key-advice-row" id="keyAdviceRow" style="display: none;">
+          <label>建議 Key<small>依你唱過的歌</small></label>
+          <div class="key-advice-box">
+            <div class="key-advice-text" id="keyAdviceText"></div>
+            <button class="btn btn-secondary mixer-mini-btn" id="keyAdviceApplyBtn"
+                    style="display: none;">套用</button>
           </div>
         </div>
         <div class="mixer-row">
@@ -695,6 +707,8 @@
   <script src="/js/autofill-view.js"></script>
   <script src="/js/room-view.js"></script>
   <script src="/js/rooms-view.js"></script>
+  <!-- 音域：採集器（舞台用）與「這一行要不要出現」的判斷（點歌台用） -->
+  <script src="/js/vocal-range.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

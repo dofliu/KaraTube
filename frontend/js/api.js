@@ -195,6 +195,44 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  /**
+   * 音域：唱畢時把這一次的音高直方圖送回去（舞台端）。
+   *
+   * 刻意跟 `submitScore` 分開送：結算是使用者正在看的畫面，音域是背景累積。
+   * 併在一起的話，直方圖有問題就會讓一張已經算好的成績單回 400。
+   */
+  async submitVocalRange(singer, bins) {
+    const res = await this.fetch(`${this.baseUrl}/api/vocal-range`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ singer, bins })
+    });
+    return await res.json();
+  }
+
+  /** 某個人的音域檔案（暱稱走 query string —— 包廂暱稱是自由文字）。 */
+  async getVocalRange(singer) {
+    const res = await this.fetch(
+      `${this.baseUrl}/api/vocal-range/profile?singer=${encodeURIComponent(singer || "")}`);
+    return await res.json();
+  }
+
+  /** 這個人 + 這首歌 → 建議移調幾個 Key。 */
+  async getKeyAdvice(singer, songId) {
+    const res = await this.fetch(`${this.baseUrl}/api/vocal-range/advice`
+      + `?singer=${encodeURIComponent(singer || "")}`
+      + `&song_id=${encodeURIComponent(songId || "")}`);
+    return await res.json();
+  }
+
+  /** 「重新認識我的聲音」：把這個人的音域檔案整份刪掉。 */
+  async resetVocalRange(singer) {
+    const res = await this.fetch(
+      `${this.baseUrl}/api/vocal-range?singer=${encodeURIComponent(singer || "")}`,
+      { method: 'DELETE' });
+    return await res.json();
+  }
+
   async getScores(limit = 50) {
     const res = await this.fetch(`${this.baseUrl}/api/scores?limit=${limit}`);
     return await res.json();

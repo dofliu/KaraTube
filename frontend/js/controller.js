@@ -39,6 +39,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const vocalSlider = document.getElementById("vocalSlider");
   const vocalModeText = document.getElementById("vocalModeText");
   const keyDownBtn = document.getElementById("keyDownBtn");
+  const keyAdviceRow = document.getElementById("keyAdviceRow");
+  const keyAdviceText = document.getElementById("keyAdviceText");
+  const keyAdviceApplyBtn = document.getElementById("keyAdviceApplyBtn");
   const keyUpBtn = document.getElementById("keyUpBtn");
   const keyResetBtn = document.getElementById("keyResetBtn");
   const keyValueText = document.getElementById("keyValueText");
@@ -125,6 +128,10 @@ document.addEventListener("DOMContentLoaded", () => {
     try { localStorage.setItem(NICK_STORAGE_KEY, nickname); } catch (e) { }
     updateNickUI();
     showNotification(nickname ? `👤 暱稱已設定為「${nickname}」` : "已清除暱稱");
+    // 暱稱就是音域檔案的身分：改了名字等於換了一個人，建議 Key 與我的音域
+    // 兩邊都要立刻跟上（留著舊的會變成「別人的音域掛在我的名字下面」）。
+    loadKeyAdvice();
+    if (voiceTabOpen) loadVoice();
   }
 
   if (nickBtn) nickBtn.addEventListener("click", promptNickname);
@@ -275,6 +282,105 @@ document.addEventListener("DOMContentLoaded", () => {
       searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">成績讀取失敗</div>`;
     }
   }
+
+  // --- 我的音域 ---
+
+  // 現在畫面上是不是音域分頁（改暱稱之後要不要立刻重畫）。
+  let voiceTabOpen = false;
+
+  /**
+   * 「我的音域」分頁。
+   *
+   * 沒取暱稱時不是空白頁，而是一句「取個暱稱就會開始累積」—— 跟今晚擂台
+   * 那句提示同一個形狀：音域檔案認的是暱稱，而使用者沒有辦法從一張空白頁
+   * 猜到這件事。
+   */
+  async function loadVoice() {
+    voiceTabOpen = true;
+    if (!nickname) {
+      libSummary.textContent = "還沒有設定暱稱";
+      searchResults.innerHTML = voiceCard(
+        "🎤 先取一個暱稱",
+        "音域檔案是跟著暱稱走的（同一個暱稱在哪一間包廂都是同一份）。"
+        + "按右上角的「👤 暱稱」取個名字，之後唱什麼都算 —— 不必特地測。");
+      return;
+    }
+    try {
+      const res = await window.api.getVocalRange(nickname);
+      renderVoice(res.profile || {}, res.enabled !== false);
+    } catch (e) {
+      searchResults.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ff007f;">音域讀取失敗</div>`;
+    }
+  }
+
+  function voiceCard(title, body, extra = "") {
+    return `<div class="glass-panel" style="grid-column: 1/-1; padding: 18px 20px; line-height: 1.8;">
+      <div style="font-size: 17px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 6px;">${title}</div>
+      <div style="color: var(--text-muted);">${body}</div>${extra}</div>`;
+  }
+
+  function renderVoice(profile, enabled) {
+    if (!enabled) {
+      libSummary.textContent = "音域檢測已關閉";
+      searchResults.innerHTML = voiceCard(
+        "🎤 音域檢測已在系統設定頁關閉",
+        "關著的時候一幀都不會收集，已經建好的檔案也不會用來給建議。");
+      return;
+    }
+    if (!profile.ready) {
+      const need = Number(profile.songs_needed) || 0;
+      libSummary.textContent = `還在認識你的聲音（已收 ${Number(profile.songs) || 0} 首）`;
+      searchResults.innerHTML = voiceCard(
+        "🎤 還在認識你的聲音",
+        need > 0
+          ? `再唱 ${need} 首就看得出你的音域。唱什麼都算，不必特地測 ——`
+            + `機器聽的是麥克風本來就在偵測的那個音高。`
+          : "再唱一首就看得出你的音域。",
+        voiceResetButton());
+      return;
+    }
+
+    libSummary.textContent =
+      `${profile.low_label}~${profile.high_label}（${profile.semitones} 個半音）・ 已收 ${profile.songs} 首`;
+    searchResults.innerHTML = voiceCard(
+      `🎤 ${escapeHtml(profile.singer || nickname)} 的音域`,
+      `<div style="font-size: 26px; font-weight: 800; color: var(--text-main); margin: 4px 0 10px;">`
+      + `${profile.low_label} ~ ${profile.high_label}</div>`
+      + `<div>唱起來最舒服的是 <b style="color: var(--accent-cyan);">`
+      + `${profile.comfort_low_label} ~ ${profile.comfort_high_label}</b>`
+      + `（你大部分的時間都唱在這一段裡）。</div>`
+      + `<div style="margin-top: 8px;">兩端是「你真的唱住過的音」，不是偵測到的極值 ——`
+      + `偶爾一兩幀的誤判進不來，所以這個範圍只會隨著你真的唱上去而變寬。</div>`
+      + `<div style="margin-top: 8px;">點一首歌之後，調音台的「建議 Key」那一列`
+      + `就會對那一首說一句話。</div>`,
+      voiceResetButton());
+  }
+
+  function voiceResetButton() {
+    return `<div style="margin-top: 14px;">
+      <button class="btn btn-secondary" onclick="window.resetVoiceProfile()"
+        title="公用機器上同一個暱稱換了一個人時用它交棒">🔄 重新認識我的聲音</button></div>`;
+  }
+
+  /**
+   * 重設。刻意要一次確認：這是整份資料**不可回復**的刪除，
+   * 而且旁邊就是一堆一按就有反應的按鈕（收藏、點歌），手滑的機率不低。
+   */
+  window.resetVoiceProfile = async function () {
+    if (!nickname) return;
+    if (!confirm(`要把「${nickname}」的音域檔案整份刪掉嗎？\n\n`
+      + "刪掉之後要重新唱幾首才會再給建議（已唱的成績與排行不受影響）。")) return;
+    try {
+      await window.api.resetVocalRange(nickname);
+      showNotification("🔄 已重設音域檔案，接下來唱的歌會重新累積");
+      loadVoice();
+      // 建議那一列也要立刻改口：檔案沒了卻還掛著「建議 −2」的話，
+      // 使用者會以為重設鍵沒作用。
+      loadKeyAdvice();
+    } catch (e) {
+      showNotification("重設失敗");
+    }
+  };
 
   // --- 今晚擂台 ---
 
@@ -1741,6 +1847,7 @@ document.addEventListener("DOMContentLoaded", () => {
     libTabs.forEach(t => t.classList.toggle("active", t.dataset.lib === which));
     // 離開擂台分頁就不再接 CONTEST_UPDATE 的重畫（見那支監聽器的說明）
     contestTabOpen = which === "contest";
+    voiceTabOpen = which === "voice";
     if (which === "rankings") loadRankings();
     else if (which === "browse") loadBrowse();
     else if (which === "find") loadFind();
@@ -1749,6 +1856,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (which === "new") loadNewAndRecommend();
     else if (which === "favorites") loadFavorites();
     else if (which === "history") loadHistory();
+    else if (which === "voice") loadVoice();
     else if (which === "trends") loadTrends();
     else if (which === "contest") loadContest();
     else if (which === "recordings") loadRecordings();
@@ -2528,6 +2636,68 @@ document.addEventListener("DOMContentLoaded", () => {
     window.api.updateControl({ pitch_shift: currentKeyShift });
   }
 
+  // --- 建議 Key（依這台裝置的暱稱查音域檔案）---
+  //
+  // 查的是**這台裝置的暱稱**，不是「誰點的這首歌」：調音台是拿在手上的東西，
+  // 按它的人就是要唱的人。掛點歌人的話，幫朋友點歌的那一位會看到別人的建議，
+  // 而他自己按下去調的是自己要唱的那一首 —— 那是最糟的一種錯。
+  let keyAdviceSongId = null;
+
+  /** 建議 Key 那一列。沒有暱稱、沒有歌、或這首歌沒得算，整列就不出現。 */
+  async function loadKeyAdvice() {
+    if (!keyAdviceRow) return;
+    keyAdviceSongId = currentSongId;
+    if (!currentSongId || !nickname) {
+      keyAdviceRow.style.display = "none";
+      return;
+    }
+    try {
+      const res = await window.api.getKeyAdvice(nickname, currentSongId);
+      // 等待期間換歌了：這份答案是上一首的，丟掉。
+      // 不擋的話包廂裡連按兩次切歌就會看到「這一首」配上前一首的建議，
+      // 而兩個都是合理的句子，沒有人看得出哪裡不對。
+      if (keyAdviceSongId !== currentSongId) return;
+      if (!res || res.enabled === false) {
+        keyAdviceRow.style.display = "none";
+        return;
+      }
+      renderKeyAdvice(res.advice);
+    } catch (e) {
+      keyAdviceRow.style.display = "none";
+    }
+  }
+
+  function renderKeyAdvice(advice) {
+    if (!window.VocalRangeView.shouldShowAdvice(advice)) {
+      keyAdviceRow.style.display = "none";
+      return;
+    }
+    keyAdviceRow.style.display = "";
+    keyAdviceText.textContent = advice.headline;
+    keyAdviceText.title = advice.detail || "";
+    keyAdviceText.dataset.status = advice.status;
+    const canApply = window.VocalRangeView.adviceHasApply(advice);
+    keyAdviceApplyBtn.style.display = canApply ? "" : "none";
+    // 建議值存在按鈕上而不是外層變數：按下去的那一刻要套用的是**畫面上寫的
+    // 那個數字**，而不是「最後一次抓回來的建議」—— 兩者在換歌的空窗期會不同。
+    keyAdviceApplyBtn.dataset.shift = canApply ? String(advice.shift) : "";
+  }
+
+  if (keyAdviceApplyBtn) {
+    keyAdviceApplyBtn.addEventListener("click", () => {
+      const shift = parseInt(keyAdviceApplyBtn.dataset.shift || "0", 10);
+      if (!shift) return;
+      // 夾在 ±6：後端的建議本來就夾過了，這裡再夾一次是因為
+      // 「畫面上的數字」與「真的送出去的數字」不一致是查不出來的錯。
+      currentKeyShift = Math.max(-6, Math.min(6, shift));
+      updateKeyShift();
+      showNotification(`🎤 已套用建議：${currentKeyShift > 0 ? "+" : ""}${currentKeyShift} 個 Key`);
+      // 套用之後那顆按鈕就沒有意義了（再按一次是同一個值），收起來；
+      // 那一行的說明留著 —— 使用者需要看得到「為什麼現在是 −2」。
+      keyAdviceApplyBtn.style.display = "none";
+    });
+  }
+
   // --- 音量與麥克風效果 ---
   // 殘響、回音音量、回音重複、回音間隔各自獨立。
   // 舊版把「回音音量」和「重複次數」綁在同一個增益節點上，
@@ -2961,6 +3131,8 @@ document.addEventListener("DOMContentLoaded", () => {
       sectionCache = { songId: null, data: null };
       return;
     }
+    // 建議 Key 是綁在「這首歌 × 這個人」上的，所以跟段落一樣換歌就要重抓
+    loadKeyAdvice();
     renderSections(await ensureSections());
   }
 
@@ -3024,6 +3196,7 @@ document.addEventListener("DOMContentLoaded", () => {
     feedback_guard_enabled: { label: "防嘯叫", hint: "多人模式才作用" },
     feedback_guard_max_filters: { label: "最多壓幾個頻點", unit: " 個", step: 1,
                                   hint: "每一個都從人聲裡拿掉一小段；要超過 4 個多半是擺位問題" },
+    vocal_range_enabled: { label: "音域檢測與建議 Key", hint: "唱什麼都算，不必特地測" },
     cache_limit_gb: { label: "快取上限", unit: " GB", hint: "0 = 不限制", step: 1 },
     cache_auto_cleanup: { label: "自動清理最舊的歌", hint: "超過上限時" },
     batch_enabled: { label: "啟用排程預處理" },
@@ -3161,6 +3334,19 @@ document.addEventListener("DOMContentLoaded", () => {
             "舞台角落會顯示現在壓著幾個頻點；壓不住的時候會轉紅字，" +
             "那一刻唯一有效的是把麥克風拿離喇叭。",
       keys: ["feedback_guard_enabled", "feedback_guard_max_filters"],
+    },
+    {
+      title: "🎤 音域檢測與建議 Key",
+      hint: "每一首唱完，機器把麥克風收到的音高累積成「這個人的音域」，" +
+            "之後對每一首歌說「這首對你偏高，建議降 2 個」—— 取代「男調一律 −4」" +
+            "那種對所有人都一樣的猜測。不必特地測：麥克風本來就在偵測音高（評分要用），" +
+            "音域是唱歌的副產品。只收「唱住了」的音（滑過去的轉音不算）、" +
+            "電平太小的不收（喇叭裡的原唱漏進麥克風也是一個人在唱歌）、" +
+            "而且要唱滿 3 首不同的歌才開口 —— 資料不夠時說「還在認識你的聲音」，" +
+            "不猜一個數字。音域檔案跟著**暱稱**走（沒取暱稱的不建檔），" +
+            "在「🎤 我的音域」分頁看得到，也刪得掉。" +
+            "關掉的意思是不再收集：已經建好的檔案留著，但一幀都不再收、也不給建議。",
+      keys: ["vocal_range_enabled"],
     },
     {
       title: "🗂️ 快取",

@@ -16,10 +16,10 @@
 """
 import os
 
-__version__ = "1.29.0"
+__version__ = "1.30.0"
 
 # 版本代號：發布公告與 release 標題用，純粹是給人記的名字
-VERSION_CODENAME = "Know Your Voice"
+VERSION_CODENAME = "Carry It With You"
 
 
 def build_id() -> str:

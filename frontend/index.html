@@ -483,6 +483,27 @@
         </button>
       </div>
       <p id="settingsRuntimeHint" class="mixer-hint"></p>
+
+      <!-- 備份與還原：那一晚之後的事（硬碟會壞、機器會換） -->
+      <div class="backup-panel">
+        <h3 style="font-size: 15px; margin: 0 0 6px;">💾 備份與還原</h3>
+        <p class="mixer-hint" style="margin-top: 0;">
+          備份裝的是<strong>這台機器認得的人事物</strong>（歌號簿、最愛、成績、
+          音域、字幕校正、設定），<strong>不含曲庫本體與錄音</strong> ——
+          歌重新處理就會回來，號碼與成績不會。
+          還原<strong>在下次啟動時套用</strong>，套用前會自動把現況備份一份。
+        </p>
+        <div id="backupPlan" class="backup-plan">讀取中…</div>
+        <div class="backup-actions">
+          <button id="backupDownloadBtn" class="btn btn-primary"
+                  title="打一份備份帶走。檔案不會留在這台機器上">⬇️ 下載備份</button>
+          <label for="restoreFile" class="btn btn-secondary" style="margin: 0;">
+            📂 選擇備份檔還原…
+          </label>
+          <input type="file" id="restoreFile" accept=".zip,application/zip" hidden>
+        </div>
+        <div id="restoreReport" class="backup-report"></div>
+      </div>
     </div>
   </div>
 
@@ -709,6 +730,9 @@
   <script src="/js/rooms-view.js"></script>
   <!-- 音域：採集器（舞台用）與「這一行要不要出現」的判斷（點歌台用） -->
   <script src="/js/vocal-range.js"></script>
+  <!-- 備份與還原：這一頁顯示錯了會讓人按下一個他以為是別的意思的按鈕，
+       所以判斷全在這支純資料模組裡，並且有測試（frontend/tests/backup-view.test.js）。 -->
+  <script src="/js/backup-view.js"></script>
   <script src="/js/controller.js"></script>
 </body>
 </html>

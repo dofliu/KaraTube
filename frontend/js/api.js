@@ -660,6 +660,67 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // --- 備份與還原 ---
+  //
+  // 下載是 POST 而不是 GET，理由在 backend/services/access_policy.py：
+  // 那份 zip 裡是全店所有人的資料，它不屬於「唯讀所以不鎖」那一類。
+  // 檢查與套用是兩支，因為還原沒有 undo —— 先看「會發生什麼事」，再決定。
+
+  async getBackupPlan() {
+    const res = await this.fetch(`${this.baseUrl}/api/backup`);
+    return await res.json();
+  }
+
+  /** 下載備份。回 Blob，交給呼叫端存檔（備份的用途是離開這台機器）。 */
+  async downloadBackup() {
+    const res = await this.staffFetch(`${this.baseUrl}/api/backup`, { method: 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `HTTP ${res.status}`);
+    }
+    // 檔名解析跟錄音下載共用 take-rules.js 那一份（它處理得了 `filename*`），
+    // 而不是在這裡再寫一個 —— 兩份實作會在某一版之後開始講不一樣的事，
+    // 而 frontend/tests/script-scope.test.js 正是為了這件事存在的。
+    const parse = (window.TakeRules && window.TakeRules.filenameFromDisposition)
+      || (() => '');
+    const name = parse(res.headers.get('content-disposition')) || 'karatube-backup.zip';
+    return { blob: await res.blob(), filename: name };
+  }
+
+  async inspectBackup(file) {
+    const res = await this.staffFetch(`${this.baseUrl}/api/restore/inspect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file,
+    });
+    const body = await res.json().catch(() => ({}));
+    // 400 是「這個檔案不能用」，而那句話本身就是要給人看的 —— 包成報告的
+    // 形狀回去，呼叫端才不必為「壞檔」與「可以還原但有警告」寫兩條路。
+    if (!res.ok) return { ok: false, problems: [body.detail || `HTTP ${res.status}`] };
+    return body;
+  }
+
+  async stageRestore(file) {
+    const res = await this.staffFetch(`${this.baseUrl}/api/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    return body;
+  }
+
+  async cancelRestore() {
+    const res = await this.staffFetch(`${this.baseUrl}/api/restore`, { method: 'DELETE' });
+    return await res.json();
+  }
+
+  async getRestoreStatus() {
+    const res = await this.fetch(`${this.baseUrl}/api/restore/status`);
+    return await res.json();
+  }
+
   // 自動音量平衡：這首歌該套多少增益（伺服器已依目前設定算好）
   async getLoudness(songId) {
     const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/loudness`);

@@ -3170,3 +3170,86 @@ def test_vocal_range_listing_is_the_counter_view(clean_vocal_range):
     rows = client.get("/api/vocal-range").json()["singers"]
     assert [r["singer"] for r in rows][0] == "唱很久"
     assert rows[0]["ready"] is True
+
+
+# --- 備份與還原 ---------------------------------------------------------
+#
+# 模組本身的測試在 tests/test_backup.py（清單、拒絕、套用）。這裡只測路由層
+# 那三件事：下載是 POST 而且要櫃檯解鎖、檢查不寫任何東西、排定的還原取消得掉。
+
+
+@pytest.fixture()
+def backup_cache(tmp_path, monkeypatch):
+    """備份的每一條都用自己的 cache，不碰開發機上真正的資料。"""
+    from backend.services import backup as backup_mod
+    folder = tmp_path / "cache"
+    folder.mkdir()
+    (folder / "favorites.json").write_text(
+        json.dumps({"songs": {"aaa": {"song_id": "aaa"}}}), encoding="utf-8")
+    monkeypatch.setattr(main, "CACHE_DIR", folder)
+    yield folder
+    backup_mod.cancel_restore(folder)
+
+
+def test_backup_plan_lists_what_travels_and_what_does_not(backup_cache):
+    plan = client.get("/api/backup").json()
+    assert {g["group"] for g in plan["groups"]} == {"promise", "people", "machine"}
+    assert plan["excluded"], "排除表本身就是這個功能的說明，不能是空的"
+    assert plan["version"] == __version__
+
+
+def test_backup_download_returns_a_zip(backup_cache):
+    res = client.post("/api/backup")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/zip"
+    assert "karatube-backup" in res.headers["content-disposition"]
+    assert res.content[:2] == b"PK"
+
+
+def test_backup_download_needs_the_staff_pin(backup_cache, staff_lock_clean):
+    """那份 zip 裡是全店所有人的資料 —— 它不屬於「看看曲庫有多大」那一類。"""
+    assert client.post("/api/staff-lock/pin", json={"pin": "1234"}).status_code == 200
+    assert client.post("/api/backup").status_code == 403
+    # 清單本身（唯讀、不含任何一筆資料）照樣看得到
+    assert client.get("/api/backup").status_code == 200
+
+
+def test_restore_inspect_reports_without_writing(backup_cache):
+    archive = client.post("/api/backup").content
+    (backup_cache / "favorites.json").write_text(
+        json.dumps({"songs": {"b": {}, "c": {}}}), encoding="utf-8")
+
+    report = client.post("/api/restore/inspect", content=archive).json()
+    assert report["ok"] is True
+    fav = next(r for r in report["files"] if r["name"] == "favorites.json")
+    assert (fav["entries"], fav["current_entries"]) == (1, 2)
+    # 檢查完現況一個位元組都不該變
+    assert json.loads((backup_cache / "favorites.json").read_text(encoding="utf-8")) == \
+        {"songs": {"b": {}, "c": {}}}
+
+
+def test_restore_rejects_a_file_that_is_not_a_backup(backup_cache):
+    res = client.post("/api/restore/inspect", content=b"this is not a zip")
+    assert res.status_code == 400
+    assert "zip" in res.json()["detail"]
+
+
+def test_restore_is_staged_then_cancellable(backup_cache):
+    archive = client.post("/api/backup").content
+    res = client.post("/api/restore", content=archive)
+    assert res.status_code == 200
+    assert res.json()["status"] == "pending"
+    assert "重新啟動" in res.json()["message"]
+
+    assert client.get("/api/restore/status").json()["pending"] is not None
+    assert client.delete("/api/restore").json()["status"] == "success"
+    assert client.get("/api/restore/status").json()["pending"] is None
+    assert client.delete("/api/restore").json()["status"] == "empty"
+
+
+def test_safety_copy_download_refuses_a_made_up_name(backup_cache):
+    # 帶斜線的名字在路由層就對不上（405/404），名字的形狀檢查本身釘在
+    # tests/test_backup.py 的 test_safety_path_refuses_anything_that_is_not_a_safety_copy。
+    assert client.post("/api/backup/safety/..%2Fsettings.json").status_code in (400, 404, 405)
+    assert client.post("/api/backup/safety/settings.json").status_code == 404
+    assert client.post("/api/backup/safety/nope.zip").status_code == 404

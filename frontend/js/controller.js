@@ -3599,6 +3599,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const version = rt.version ? `　｜　KaraTube v${rt.version}` : "";
       settingsRuntimeHint.textContent =
         `目前運行中：Whisper ${rt.active_whisper_model} ・ Demucs ${rt.active_demucs_model} ・ 運算裝置 ${rt.device}${version}`;
+      // 備份那一區每次開設定頁都重讀：待套用的還原與上次的報告會在機器重開
+      // 之後改變，而那正好發生在沒有人開著這一頁的時候。
+      refreshBackupPanel();
     } catch (e) {
       settingsBody.innerHTML = `<div style="text-align: center; padding: 30px; color: #ff007f;">設定讀取失敗</div>`;
     }
@@ -3626,6 +3629,173 @@ document.addEventListener("DOMContentLoaded", () => {
       settingsValues = res.settings || settingsValues;
       renderSettings();
       showNotification("♻️ 已恢復原廠設定");
+    });
+  }
+
+  // --- 備份與還原 ---
+  //
+  // 顯示與判斷全在 backup-view.js（有測試）。這裡只有三件事：接上按鈕、
+  // 把 Blob 存成檔案、以及**多按一次確認**。
+  //
+  // 那一次確認不是禮貌：還原是這台機器上唯一一個會一次抹掉所有東西的動作，
+  // 而按下它的人通常正在慌（硬碟剛換、資料剛不見）。確認的文字裡一定要有
+  // 「會被清掉什麼」，因為那正是慌的時候最容易忽略的一件事。
+
+  const backupPlanBox = document.getElementById("backupPlan");
+  const backupDownloadBtn = document.getElementById("backupDownloadBtn");
+  const restoreFileInput = document.getElementById("restoreFile");
+  const restoreReportBox = document.getElementById("restoreReport");
+
+  function esc(text) {
+    return String(text == null ? "" : text)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function renderBackupPlan(plan) {
+    if (!backupPlanBox || !window.BackupView) return;
+    const view = window.BackupView.summarizePlan(plan);
+    const byGroup = new Map();
+    view.rows.forEach((row) => {
+      if (!byGroup.has(row.group)) byGroup.set(row.group, { label: row.groupLabel, rows: [] });
+      byGroup.get(row.group).rows.push(row);
+    });
+    const groups = [...byGroup.values()].map((group) => `
+      <div class="backup-group-label">${esc(group.label)}</div>
+      ${group.rows.map((row) => `
+        <div class="backup-row ${row.present ? "" : "is-absent"} ${row.group === "promise" ? "is-promise" : ""}"
+             title="${esc(row.risk)}">
+          <span class="backup-label">${esc(row.label)}</span>
+          <span class="backup-count">${esc(row.entriesText)}</span>
+        </div>`).join("")}
+    `).join("");
+
+    const excluded = (plan && plan.excluded) || [];
+    backupPlanBox.innerHTML = `
+      ${groups}
+      ${view.empty ? `<div class="backup-card is-caution">這台機器還沒有任何資料，現在做的備份會是空的。</div>` : ""}
+      <details class="backup-excluded">
+        <summary>備份裡<strong>沒有</strong>什麼（${excluded.length} 項，點開看理由）</summary>
+        <ul>${excluded.map((row) => `<li><b>${esc(row.what)}</b>：${esc(row.why)}</li>`).join("")}</ul>
+      </details>`;
+  }
+
+  function renderRestoreState(status) {
+    if (!restoreReportBox || !window.BackupView) return;
+    const parts = [];
+    const pending = window.BackupView.pendingSummary(status && status.pending);
+    if (pending) {
+      parts.push(`
+        <div class="backup-card is-caution">
+          <h4>⏳ 有一份還原在等重新啟動</h4>
+          <div>${esc(pending.message)}</div>
+          ${pending.createdAt ? `<div class="backup-change">來源備份建立於 ${esc(pending.createdAt)}</div>` : ""}
+          <div class="backup-confirm">
+            <button class="btn btn-secondary" id="restoreCancelBtn">取消這次還原</button>
+          </div>
+        </div>`);
+    }
+    const last = window.BackupView.reportSummary(status && status.last_restore);
+    if (last) {
+      parts.push(`
+        <div class="backup-card is-${esc(last.tone)}">
+          <h4>${esc(last.title)}</h4>
+          ${last.detail ? `<div class="backup-change">${esc(last.detail)}</div>` : ""}
+          ${last.lines.length ? `<ul>${last.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+          ${last.at ? `<div class="backup-change">${esc(last.at)}</div>` : ""}
+        </div>`);
+    }
+    restoreReportBox.innerHTML = parts.join("");
+    const cancelBtn = document.getElementById("restoreCancelBtn");
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", async () => {
+        await window.api.cancelRestore();
+        showNotification("已取消待套用的還原");
+        await refreshBackupPanel();
+      });
+    }
+  }
+
+  async function refreshBackupPanel() {
+    if (!backupPlanBox) return;
+    try {
+      const plan = await window.api.getBackupPlan();
+      renderBackupPlan(plan);
+      renderRestoreState({ pending: plan.pending, last_restore: plan.last_restore });
+    } catch (e) {
+      backupPlanBox.innerHTML = `<div class="backup-card is-blocked">備份資訊讀取失敗</div>`;
+    }
+  }
+
+  if (backupDownloadBtn) {
+    backupDownloadBtn.addEventListener("click", async () => {
+      backupDownloadBtn.disabled = true;
+      try {
+        const { blob, filename } = await window.api.downloadBackup();
+        // 用 <a download> 而不是開新分頁：備份要下載，不是拿去瀏覽，
+        // 而開新分頁在手機上會變成「看到一個打不開的檔案」。
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        showNotification("💾 備份已下載 —— 請把它放到這台機器以外的地方");
+      } catch (e) {
+        alert("備份失敗: " + e.message);
+      } finally {
+        backupDownloadBtn.disabled = false;
+      }
+    });
+  }
+
+  if (restoreFileInput) {
+    restoreFileInput.addEventListener("change", async () => {
+      const file = restoreFileInput.files && restoreFileInput.files[0];
+      // 同一個檔案選第二次也要觸發（改完檔案再試一次是很常見的動作）
+      restoreFileInput.value = "";
+      if (!file || !restoreReportBox) return;
+
+      restoreReportBox.innerHTML = `<div class="backup-card">檢查 ${esc(file.name)}…</div>`;
+      const report = await window.api.inspectBackup(file);
+      const verdict = window.BackupView.restoreVerdict(report);
+
+      restoreReportBox.innerHTML = `
+        <div class="backup-card is-${esc(verdict.level)}">
+          <h4>${esc(file.name)}</h4>
+          <div>${esc(verdict.headline)}</div>
+          ${verdict.files.length ? `<ul>${verdict.files.map((row) =>
+            `<li>${esc(row.label)} <span class="backup-change">${esc(row.changeText)}</span></li>`
+          ).join("")}</ul>` : ""}
+          ${verdict.notes.length ? `<ul>${verdict.notes.map((n) =>
+            `<li>⚠️ ${esc(n)}</li>`).join("")}</ul>` : ""}
+          ${verdict.canApply ? `
+            <div class="backup-confirm">
+              <button class="btn btn-primary" id="restoreApplyBtn">確認還原（重新啟動後生效）</button>
+              <button class="btn btn-secondary" id="restoreDismissBtn">取消</button>
+            </div>` : ""}
+        </div>`;
+
+      const applyBtn = document.getElementById("restoreApplyBtn");
+      const dismissBtn = document.getElementById("restoreDismissBtn");
+      if (dismissBtn) dismissBtn.addEventListener("click", () => refreshBackupPanel());
+      if (applyBtn) {
+        applyBtn.addEventListener("click", async () => {
+          // 確認的文字裡帶著「會被清掉什麼」—— 那正是慌的時候最容易忽略的一件事。
+          const clears = verdict.clears.map((row) => row.label).join("、");
+          const warn = clears ? `\n\n這台機器上的「${clears}」會被清掉（備份裡沒有）。` : "";
+          if (!confirm(`確定用這份備份取代這台機器的資料嗎？${warn}`
+            + "\n\n還原會在下次啟動時套用，套用前會自動把現況備份一份。")) return;
+          try {
+            const res = await window.api.stageRestore(file);
+            showNotification(res.message || "已排定還原，重新啟動後生效");
+          } catch (e) {
+            alert("排定還原失敗: " + e.message);
+          }
+          await refreshBackupPanel();
+        });
+      }
     });
   }
 

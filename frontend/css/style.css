@@ -2664,3 +2664,109 @@ input[type="range"] {
   padding: 10px 14px;
   text-align: center;
 }
+
+/* --- 備份與還原（系統設定頁最下面那一塊） ---
+   刻意跟設定的表單分開一塊底色：這一區的兩顆按鈕跟上面那些不同 ——
+   上面是「調一個數字」，這裡是「把整台機器的資料換掉」。 */
+.backup-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.backup-plan {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+
+.backup-group-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.backup-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.backup-row .backup-label { flex: 1; color: #fff; }
+.backup-row .backup-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.backup-row.is-absent { opacity: 0.55; }
+
+/* 不可重建的那一份（歌號簿）要看得出來跟其他不同：
+   它是整份備份裡唯一沒有第二個來源的東西。 */
+.backup-row.is-promise { border-left: 3px solid var(--accent-yellow); }
+
+.backup-excluded {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.backup-excluded summary { cursor: pointer; color: #fff; }
+.backup-excluded li { margin: 4px 0; }
+
+.backup-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.backup-actions .btn {
+  flex: 1;
+  min-width: 160px;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.backup-report {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.backup-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border-left: 3px solid var(--text-muted);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.backup-card + .backup-card { margin-top: 8px; }
+.backup-card.is-ready { border-left-color: #2dd4bf; }
+.backup-card.is-caution { border-left-color: var(--accent-yellow); }
+.backup-card.is-blocked { border-left-color: #ff007f; }
+.backup-card.is-ok { border-left-color: #2dd4bf; }
+.backup-card.is-warn { border-left-color: var(--accent-yellow); }
+.backup-card.is-error { border-left-color: #ff007f; }
+
+.backup-card h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: #fff;
+}
+
+.backup-card ul { margin: 6px 0 0; padding-left: 18px; }
+.backup-card li { margin: 3px 0; }
+.backup-card .backup-change { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.backup-confirm {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.backup-confirm .btn { flex: 1; min-width: 140px; justify-content: center; }

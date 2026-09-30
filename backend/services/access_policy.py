@@ -65,6 +65,19 @@ PROTECTED_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     ("DELETE", "/api/recordings/mp3", "清空 MP3 轉檔快取"),
     ("POST", "/api/recordings/mp3/recheck", "重新偵測 MP3 轉檔能力"),
 
+    # --- 備份與還原 ---
+    # 下載備份是 POST 而不是 GET，而它在這張表上，因為那份 zip 裡是**全店所有人
+    # 的資料**（歌號簿、每個人的成績與音域、字幕校正、設定）。這不是
+    # 「看看曲庫有多大」那一類的唯讀 —— 它的輸出會離開這台機器。
+    ("POST", "/api/backup", "下載備份"),
+    ("POST", "/api/backup/safety/{name}", "下載還原前的現況備份"),
+    # 檢查（inspect）也鎖：它要收一個上傳的檔案，而且會回報這台機器現在
+    # 每一項有幾筆 —— 那是同一份資料的另一個出口。
+    ("POST", "/api/restore/inspect", "檢查備份檔"),
+    # 還原是這台機器上唯一一個會一次抹掉所有東西的動作。
+    ("POST", "/api/restore", "排定資料還原"),
+    ("DELETE", "/api/restore", "取消待套用的還原"),
+
     # --- 機台設定 ---
     ("POST", "/api/settings", "修改系統設定"),
     ("DELETE", "/api/settings", "恢復原廠設定"),

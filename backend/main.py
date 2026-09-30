@@ -22,6 +22,7 @@ from backend.config import (FRONTEND_DIR, SONGS_DIR, CACHE_DIR, IMPORT_DIR, RECO
 from backend.pipeline.chorus_detector import analyze_song_structure
 from backend.pipeline.loudness import analyze_audio_file, gain_db_for_target
 from backend.pipeline.song_processor import SongProcessor
+from backend.services import backup
 from backend.services.batch_scheduler import BatchScheduler, split_source_lines
 from backend.services.storage import SongStorage
 from backend.services.search_service import YouTubeSearchService
@@ -179,6 +180,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- 還原：在任何服務被建立之前 ---
+#
+# 這一行的位置是這個功能最重要的一件事，而不是一個實作細節。
+# 下面每一個服務都在 `__init__` 就把自己那份 JSON **讀進記憶體**，之後只在
+# 寫入時整份蓋回去 —— 所以「把檔案換掉」在服務建立**之後**做是錯的，而且是
+# 無聲地錯：還原看起來成功（檔案真的換了），接著客人按一下收藏，Favorites
+# 把記憶體裡那份舊的寫回去，整份還原就一個檔一個檔地消失。
+# 所以還原不是即時動作，是「下次開機時做的事」（見 backend/services/backup.py）。
+_restore_report = backup.apply_pending_restore(CACHE_DIR, app_version=__version__)
+if _restore_report:
+    logger.info("開機時套用了一份還原：%s（報告見 cache/%s）",
+                _restore_report.get("status"), backup.REPORT_NAME)
 
 # Initialize Services
 # 櫃檯管理鎖。放在最前面是因為上面那道中介層每一個請求都會問它 ——
@@ -2729,6 +2743,140 @@ async def apply_default_controls():
         applied = bundle.queue.apply_control_defaults()
     await broadcast_all_rooms()
     return {"status": "success", "applied": applied}
+
+
+# --- 備份與還原 ---
+#
+# 這一區補的是「那一晚之後」：硬碟會壞、機器會換。在這之前，這台機器上累積
+# 出來的東西（歌號簿、最愛、成績、音域、字幕校正、設定）只存在 cache/ 底下
+# 那十幾個 JSON 檔裡，沒有任何一條路可以帶走它們。
+#
+# 清單、排除表與每一條的理由都在 backend/services/backup.py。這裡只有三件事
+# 值得在路由層講：
+#
+# 1. **下載是 POST 不是 GET**，即使它讀多於寫。因為櫃檯管理鎖刻意不鎖唯讀
+#    （access_policy.py：「看得到不會弄壞任何東西」），而這一份的內容是
+#    **全店所有人的資料**，它不屬於「看看曲庫有多大」那一類。
+# 2. **檢查與套用是兩支端點**。還原沒有 undo，所以「會發生什麼事」要能在
+#    不寫入任何東西的前提下先看一次。
+# 3. **/api/restore/status 是 GET、不鎖**：開機套用完之後，最需要看到那份報告
+#    的人不一定手上有密碼，而報告本身只講「換了幾份」。
+MAX_RESTORE_UPLOAD = backup.MAX_ARCHIVE_BYTES
+
+
+@app.get("/api/backup")
+async def backup_plan():
+    """這份備份會裝什麼、不會裝什麼 —— 不用真的做一份就答得出來。"""
+    plan = backup.describe_plan(CACHE_DIR)
+    plan["pending"] = backup.pending_restore(CACHE_DIR)
+    plan["last_restore"] = backup.last_report(CACHE_DIR)
+    plan["safety_copies"] = backup.safety_copies(CACHE_DIR)
+    plan["version"] = __version__
+    return plan
+
+
+@app.post("/api/backup")
+async def download_backup():
+    """
+    打一份備份給人帶走。
+
+    不落地：備份的用途是離開這台機器，而寫進 cache/ 的備份會跟著同一顆硬碟
+    一起壞掉 —— 那正是它要防的事。曲庫清單從 library 拿（跟分類瀏覽、查歌、
+    歌號同一份清單，不另外掃一次資料夾）。
+    """
+    try:
+        rows = library.entries()
+    except Exception as e:  # 曲庫掃描出事不該讓備份做不出來
+        logger.warning(f"備份時取曲庫清單失敗: {e}")
+        rows = []
+    payload = backup.create_archive(CACHE_DIR, app_version=__version__, library=rows)
+    name = backup.backup_filename(__version__)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}"',
+                 "Content-Length": str(len(payload))},
+    )
+
+
+def _cached_song_ids() -> List[str]:
+    try:
+        return [str(e.get("song_id")) for e in library.entries() if e.get("song_id")]
+    except Exception:
+        return []
+
+
+async def _read_archive(request: Request) -> bytes:
+    """上傳的備份檔（raw body，理由同錄音上傳）。先看 Content-Length 再讀。"""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_RESTORE_UPLOAD:
+        raise HTTPException(status_code=413, detail="備份檔太大，這不像是 KaraTube 的備份")
+    return await request.body()
+
+
+@app.post("/api/restore/inspect")
+async def inspect_restore(request: Request):
+    """
+    「按下去會發生什麼事」。**不寫任何東西**，所以可以放心按。
+
+    壞檔回 400 而不是 500：拒絕都是「送進來的東西不合規」，不是伺服器壞了，
+    而訊息本身就是要給人看的那一句（含下一步）。
+    """
+    try:
+        return backup.inspect_archive(await _read_archive(request), CACHE_DIR,
+                                      _cached_song_ids())
+    except backup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/restore")
+async def stage_restore(request: Request):
+    """
+    確認還原：驗過之後攤進 cache/restore_pending/，**下次啟動時套用**。
+
+    為什麼不是現在做，見 backend/services/backup.py 第二節（每個服務都在
+    __init__ 把 JSON 讀進記憶體了，現在覆寫會被下一次寫入無聲地蓋回去）。
+    """
+    try:
+        plan = backup.stage_restore(await _read_archive(request), CACHE_DIR,
+                                    _cached_song_ids())
+    except backup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"status": "pending", "plan": plan,
+            "message": "已排定還原。重新啟動 KaraTube 之後生效，"
+                       "套用前會自動把現在的資料備份一份。"}
+
+
+@app.delete("/api/restore")
+async def cancel_restore():
+    """取消還沒套用的還原。取消得掉正是「延後到開機」換來的東西。"""
+    removed = backup.cancel_restore(CACHE_DIR)
+    return {"status": "success" if removed else "empty",
+            "message": "已取消待套用的還原。" if removed else "目前沒有待套用的還原。"}
+
+
+@app.get("/api/restore/status")
+async def restore_status():
+    """待套用的還原，以及上一次還原的結果（還原發生在沒有人看著的開機那一刻）。"""
+    return {
+        "pending": backup.pending_restore(CACHE_DIR),
+        "last_restore": backup.last_report(CACHE_DIR),
+        "safety_copies": backup.safety_copies(CACHE_DIR),
+    }
+
+
+@app.post("/api/backup/safety/{name}")
+async def download_safety_copy(name: str):
+    """
+    還原前自動留下的那一份現況備份。
+
+    存在的理由是「還原錯一份備份」—— 按下還原的人通常正在慌，而慌的時候
+    最容易做的錯事就是選錯檔案。這條路是把現況那一份拿回來，重新還原它。
+    """
+    path = backup.safety_path(CACHE_DIR, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="找不到這一份現況備份")
+    return FileResponse(path, media_type="application/zip", filename=path.name)
 
 
 @app.get("/api/songs/{song_id}/loudness")

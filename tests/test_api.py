@@ -432,6 +432,39 @@ def test_apply_defaults_pushes_settings_into_live_controls(restore_settings):
         queue_manager._apply_controls(saved)
 
 
+def test_eq_controls_round_trip_through_the_shared_state():
+    """等化器是共享狀態：點歌台推一根滑桿，佇列狀態裡那一格就要跟著變。
+
+    一次只送一格 —— 真實的滑桿就是這樣送的，而「送一格會不會把另外兩格歸零」
+    正是這個功能最容易出錯、也最難從畫面上看出來的地方。
+    """
+    saved = queue_manager.get_full_state()
+    try:
+        client.post("/api/control", json={"mic_eq_bass": 4, "mic_eq_treble": -2})
+        client.post("/api/control", json={"music_eq_bass": 99})
+        state = client.get("/api/queue").json()
+        assert state["mic_eq_bass"] == 4
+        assert state["mic_eq_mid"] == 0
+        assert state["mic_eq_treble"] == -2
+        assert state["music_eq_bass"] == 8      # 音樂那一套夾在 ±8
+    finally:
+        queue_manager._apply_controls(saved)
+
+
+def test_apply_defaults_pushes_eq_into_live_controls(restore_settings):
+    saved = queue_manager.get_full_state()
+    try:
+        client.post("/api/settings", json={"default_mic_eq_treble": 3,
+                                           "default_music_eq_bass": 99})
+        res = client.post("/api/settings/apply-defaults")
+        assert res.status_code == 200
+        state = client.get("/api/queue").json()
+        assert state["mic_eq_treble"] == 3
+        assert state["music_eq_bass"] == 8
+    finally:
+        queue_manager._apply_controls(saved)
+
+
 def test_loudness_endpoint_404_for_unknown_song():
     res = client.get("/api/songs/nonexistent_song/loudness")
     assert res.status_code == 404

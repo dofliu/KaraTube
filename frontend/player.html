@@ -284,6 +284,9 @@
   </div>
 
   <script src="/js/api.js"></script>
+  <!-- 三段音色等化器的純邏輯（濾波器參數、補償增益、嘯叫風險提示）。
+       必須在 audio-effects.js 之前：音訊引擎建節點時就會讀 ToneEq.bandSpecs()。 -->
+  <script src="/js/tone-eq.js"></script>
   <script src="/js/audio-effects.js"></script>
   <script src="/js/karaoke-renderer.js"></script>
   <!-- section-scorer.js 必須在 pitch-engine.js 之前：後者用它做段落評分與等級換算 -->

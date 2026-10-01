@@ -14,6 +14,8 @@ from backend.services import rotation as rotation_rules
 from backend.services import room_timer as room_rules
 from backend.services import song_quota
 from backend.services.local_import import is_local_id, local_url
+# 三段音色等化器的合法範圍。純邏輯、不反向 import，所以這個方向不會有循環。
+from backend.services.tone_eq import (MIC_EQ_LIMIT_DB, MUSIC_EQ_LIMIT_DB, coerce_eq_db)
 # 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
 from backend.services.settings import HARMONY_STYLE_CHOICES
 
@@ -95,6 +97,20 @@ class QueueManager:
         self.mic_echo_time_ms: int = 280
         # 高頻柔化量。齒音與回授自激都集中在 5.5kHz 以上。
         self.mic_tone: float = 0.4
+        # 三段音色等化器（商用擴大機面板上的高音／中音／低音），dB。
+        # 麥克風一套、音樂一套：目的不同（修這個人的聲音 vs 這個包廂喜歡的曲風），
+        # 混成一套的話「我的聲音太悶」會被調成「整首歌的低音一起轟」。
+        # 範圍也不同（麥克風 ±12、音樂 ±8）—— 伴奏是已經被自動音量平衡
+        # 對到 −14 LUFS 的成品，動它等於在破壞那個保證。
+        # 存成六個獨立的純量而不是兩個巢狀 dict：滑桿一次只推一段，
+        # 巢狀的話每一次推動都要先合併舊值，而「合併」是這種部分更新
+        # 最容易出現「另外兩段被歸零」的地方。
+        self.mic_eq_bass: float = 0.0
+        self.mic_eq_mid: float = 0.0
+        self.mic_eq_treble: float = 0.0
+        self.music_eq_bass: float = 0.0
+        self.music_eq_mid: float = 0.0
+        self.music_eq_treble: float = 0.0
         # 和聲（雙聲部）。風格是「音階上的度數」而不是固定半音數，
         # 實際移調量由舞台端依這首歌的調性決定（frontend/js/harmony-planner.js）。
         self.harmony_enabled: bool = False
@@ -193,6 +209,12 @@ class QueueManager:
             "mic_echo_repeat": self.mic_echo_repeat,
             "mic_echo_time_ms": self.mic_echo_time_ms,
             "mic_tone": self.mic_tone,
+            "mic_eq_bass": self.mic_eq_bass,
+            "mic_eq_mid": self.mic_eq_mid,
+            "mic_eq_treble": self.mic_eq_treble,
+            "music_eq_bass": self.music_eq_bass,
+            "music_eq_mid": self.music_eq_mid,
+            "music_eq_treble": self.music_eq_treble,
             "harmony_enabled": self.harmony_enabled,
             "harmony_style": self.harmony_style,
             "harmony_level": self.harmony_level,
@@ -1084,6 +1106,17 @@ class QueueManager:
             self.mic_echo_time_ms = int(max(50, min(800, int(params["mic_echo_time_ms"]))))
         if "mic_tone" in params:
             self.mic_tone = max(0.0, min(1.0, float(params["mic_tone"])))
+        # 等化器的六格。夾限的上限跟 frontend/js/tone-eq.js 的 EQ_TARGETS 一致
+        # （tests/test_tone_eq.py 有一條測試把兩邊釘在一起）：舊版前端送一個
+        # +40 進來的話，那個值會一路走到限幅器前面，而症狀是整首歌都在破音。
+        for key, limit in (("mic_eq_bass", MIC_EQ_LIMIT_DB),
+                           ("mic_eq_mid", MIC_EQ_LIMIT_DB),
+                           ("mic_eq_treble", MIC_EQ_LIMIT_DB),
+                           ("music_eq_bass", MUSIC_EQ_LIMIT_DB),
+                           ("music_eq_mid", MUSIC_EQ_LIMIT_DB),
+                           ("music_eq_treble", MUSIC_EQ_LIMIT_DB)):
+            if key in params:
+                setattr(self, key, coerce_eq_db(params[key], limit))
         if "harmony_enabled" in params:
             self.harmony_enabled = bool(params["harmony_enabled"])
         if "harmony_style" in params:

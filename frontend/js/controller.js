@@ -2522,6 +2522,25 @@ document.addEventListener("DOMContentLoaded", () => {
     syncSlider(micEchoRepeatSlider, micEchoRepeatText, state.mic_echo_repeat, true);
     syncSlider(micToneSlider, micToneText, state.mic_tone, true);
 
+    // 三段音色等化器：六個欄位分開到達（滑桿一次只推一段），所以收到哪一格
+    // 就只更新哪一格 —— 沒送的那幾格留著原值，不然另一台裝置推一根滑桿，
+    // 這台的另外兩根就會被歸零。
+    for (const target of ["mic", "music"]) {
+      const ui = EQ_UI[target];
+      if (!ui || !ui.hint) continue;
+      let changed = false;
+      for (const key of window.ToneEq.BAND_KEYS) {
+        const incoming = state[ui.prefix + key];
+        if (incoming === undefined) continue;
+        const value = window.ToneEq.clampBand(incoming, window.ToneEq.targetSpec(target).limitDb);
+        if (value !== eqValues[target][key]) {
+          eqValues[target][key] = value;
+          changed = true;
+        }
+      }
+      if (changed) renderEq(target);
+    }
+
     // 和聲：任何一台裝置（含手機）改過都要同步回來
     syncSlider(harmonyLevelSlider, harmonyLevelText, state.harmony_level, true);
     if (state.harmony_enabled !== undefined || state.harmony_style !== undefined) {
@@ -2722,6 +2741,138 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPercentSlider(micEchoRepeatSlider, micEchoRepeatText, "mic_echo_repeat");
   bindPercentSlider(micToneSlider, micToneText, "mic_tone");
 
+  // --- 三段音色等化器（麥克風一套、音樂一套）---
+  //
+  // 商用 KTV 擴大機面板上的高音／中音／低音。這裡只負責「推滑桿、送數字、
+  // 把現在是什麼音色講成一句話」—— 濾波器與補償增益全部在舞台端
+  // （frontend/js/audio-effects.js），而「要調成什麼樣子」的算術在
+  // frontend/js/tone-eq.js（有測試）。
+  //
+  // 六個欄位分開送（而不是送一個 {bass, mid, treble}）是刻意的：滑桿一次
+  // 只推一段，送整包的話每一次推動都要先合併舊值，而「合併」正是這種
+  // 部分更新最容易出現「另外兩段被歸零」的地方。
+  const EQ_UI = {
+    mic: {
+      sliders: {
+        bass: document.getElementById("micEqBassSlider"),
+        mid: document.getElementById("micEqMidSlider"),
+        treble: document.getElementById("micEqTrebleSlider"),
+      },
+      texts: {
+        bass: document.getElementById("micEqBassText"),
+        mid: document.getElementById("micEqMidText"),
+        treble: document.getElementById("micEqTrebleText"),
+      },
+      hint: document.getElementById("micEqHint"),
+      presetBox: document.querySelector(".mic-eq-presets"),
+      resetBtn: document.getElementById("micEqResetBtn"),
+      prefix: "mic_eq_",
+    },
+    music: {
+      sliders: {
+        bass: document.getElementById("musicEqBassSlider"),
+        mid: document.getElementById("musicEqMidSlider"),
+        treble: document.getElementById("musicEqTrebleSlider"),
+      },
+      texts: {
+        bass: document.getElementById("musicEqBassText"),
+        mid: document.getElementById("musicEqMidText"),
+        treble: document.getElementById("musicEqTrebleText"),
+      },
+      hint: document.getElementById("musicEqHint"),
+      presetBox: document.querySelector(".music-eq-presets"),
+      resetBtn: document.getElementById("musicEqResetBtn"),
+      prefix: "music_eq_",
+    },
+  };
+
+  const eqValues = { mic: { bass: 0, mid: 0, treble: 0 }, music: { bass: 0, mid: 0, treble: 0 } };
+
+  /** 一鍵音色的按鈕照 tone-eq.js 的表長出來，加一組預設不用同時改 HTML。 */
+  function buildEqPresets(target) {
+    const ui = EQ_UI[target];
+    if (!ui || !ui.presetBox) return;
+    ui.presetBox.innerHTML = "";
+    for (const preset of window.ToneEq.EQ_PRESETS[target]) {
+      const btn = document.createElement("button");
+      btn.className = "mode-btn eq-preset-btn";
+      btn.dataset.preset = preset.id;
+      btn.textContent = preset.label;
+      btn.title = preset.note;
+      btn.addEventListener("click", () => applyEqPreset(target, preset.id));
+      ui.presetBox.appendChild(btn);
+    }
+  }
+
+  /** 把一組值畫到畫面上（滑桿、數字、說明、亮起對應的一鍵音色）。不送網路。 */
+  function renderEq(target) {
+    const ui = EQ_UI[target];
+    if (!ui || !ui.hint || !ui.presetBox) return;
+    const tone = window.ToneEq.normalizeTone(eqValues[target], target);
+    eqValues[target] = tone;
+    for (const key of window.ToneEq.BAND_KEYS) {
+      const slider = ui.sliders[key];
+      // 不覆蓋正在拖的那一根：別人在手機上改同一段時，把你手上的滑桿抽走最惱人
+      if (slider && document.activeElement !== slider && parseFloat(slider.value) !== tone[key]) {
+        slider.value = tone[key];
+      }
+      if (ui.texts[key]) ui.texts[key].textContent = `${window.ToneEq.formatDb(tone[key])} dB`;
+    }
+    const active = window.ToneEq.matchPreset(tone, target);
+    ui.presetBox.querySelectorAll(".eq-preset-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.preset === active);
+    });
+    // 嘯叫提示跟說明寫在同一行：多一行紅字會讓人以為是錯誤訊息，
+    // 而這只是「你推到這裡之後要注意什麼」。
+    const risk = window.ToneEq.feedbackRisk(tone, target);
+    ui.hint.textContent = risk.message
+      ? `${window.ToneEq.toneSummary(tone, target)} ⚠️ ${risk.message}`
+      : window.ToneEq.toneSummary(tone, target);
+    ui.hint.classList.toggle("eq-hint-warn", risk.level === "risky");
+  }
+
+  /** 送出整組三格。歸零與一鍵音色走這裡（三格一起變，分三次送會在舞台上聽到兩段中間值）。 */
+  function pushEq(target, tone) {
+    const ui = EQ_UI[target];
+    eqValues[target] = window.ToneEq.normalizeTone(tone, target);
+    renderEq(target);
+    const payload = {};
+    for (const key of window.ToneEq.BAND_KEYS) payload[ui.prefix + key] = eqValues[target][key];
+    window.api.updateControl(payload);
+  }
+
+  function applyEqPreset(target, id) {
+    pushEq(target, window.ToneEq.presetTone(id, target));
+    const preset = window.ToneEq.EQ_PRESETS[target].find((p) => p.id === id);
+    const what = target === "mic" ? "麥克風" : "音樂";
+    showNotification(`🎚️ ${what}音色：${preset ? preset.label : "原音"}`);
+  }
+
+  for (const target of ["mic", "music"]) {
+    const ui = EQ_UI[target];
+    if (!ui || !ui.hint) continue;
+    buildEqPresets(target);
+    for (const key of window.ToneEq.BAND_KEYS) {
+      const slider = ui.sliders[key];
+      if (!slider) continue;
+      slider.addEventListener("input", (e) => {
+        // 推動時只送**這一格**：另外兩格不在這次的意圖裡，一起送的話
+        // 會把別台裝置剛剛改的那一格蓋掉（兩支手機同時調音是包廂的常態）。
+        eqValues[target][key] = window.ToneEq.clampBand(
+          parseFloat(e.target.value), window.ToneEq.targetSpec(target).limitDb);
+        renderEq(target);
+        window.api.updateControl({ [ui.prefix + key]: eqValues[target][key] });
+      });
+    }
+    if (ui.resetBtn) {
+      ui.resetBtn.addEventListener("click", () => {
+        pushEq(target, { bass: 0, mid: 0, treble: 0 });
+        showNotification(`🎚️ ${target === "mic" ? "麥克風" : "音樂"}音色已歸零`);
+      });
+    }
+    renderEq(target);
+  }
+
   // --- 和聲（雙聲部）---
   // 開關、聲部與音量都是共享控制參數：點歌台按下去，舞台端立刻套用，
   // 其他手機看到的也是同一組狀態（同一個包廂只有一套和聲設定才合理）。
@@ -2876,8 +3027,18 @@ document.addEventListener("DOMContentLoaded", () => {
     // 「乾聲」是「只剩我自己的聲音」，和聲也算效果，一起關掉才符合這個字面意思
     harmonyEnabled = false;
     renderHarmonyUI();
-    window.api.updateControl({ mic_reverb: 0, mic_echo: 0, harmony_enabled: false });
-    showNotification("🎙️ 已切換為乾聲（殘響、回音與和聲關閉）");
+    // 麥克風的等化器也一起歸零。按下乾聲的那一刻通常正在嘯叫，而**中高音的
+    // 提升是直接加進回授迴路裡的** —— 留著它等於這顆止血按鈕只止了一半的血。
+    // 音樂那一套不動：它不在麥克風的迴路裡，而且把包廂調好的曲風一起抹掉，
+    // 使用者會以為乾聲壞了什麼。
+    // 歸零是看得見、推回去就好的（滑桿會跳回 0），不像「音量被偷偷轉小」。
+    eqValues.mic = { bass: 0, mid: 0, treble: 0 };
+    renderEq("mic");
+    window.api.updateControl({
+      mic_reverb: 0, mic_echo: 0, harmony_enabled: false,
+      mic_eq_bass: 0, mic_eq_mid: 0, mic_eq_treble: 0,
+    });
+    showNotification("🎙️ 已切換為乾聲（殘響、回音、和聲與麥克風音色歸零）");
   });
 
   // --- 調音台開關 ---
@@ -3171,6 +3332,13 @@ document.addEventListener("DOMContentLoaded", () => {
     default_mic_echo_repeat: { label: "回音重複", percent: true },
     default_mic_echo_time_ms: { label: "回音間隔", unit: " ms" },
     default_mic_tone: { label: "高頻柔化", hint: "防尖銳", percent: true },
+    default_mic_eq_bass: { label: "麥克風低音", unit: " dB", step: 0.5, hint: "厚度・200Hz" },
+    default_mic_eq_mid: { label: "麥克風中音", unit: " dB", step: 0.5, hint: "人聲浮出來・1.8kHz" },
+    default_mic_eq_treble: { label: "麥克風高音", unit: " dB", step: 0.5,
+                             hint: "空氣感・4.5kHz。推高比較容易嘯叫" },
+    default_music_eq_bass: { label: "音樂低音", unit: " dB", step: 0.5, hint: "鼓與貝斯・120Hz" },
+    default_music_eq_mid: { label: "音樂中音", unit: " dB", step: 0.5, hint: "旋律・1kHz" },
+    default_music_eq_treble: { label: "音樂高音", unit: " dB", step: 0.5, hint: "亮度・6kHz" },
     default_harmony_enabled: { label: "開機就開和聲", hint: "預設關" },
     default_harmony_style: {
       label: "和聲聲部",
@@ -3272,6 +3440,8 @@ document.addEventListener("DOMContentLoaded", () => {
       keys: ["default_music_volume", "default_mic_volume", "default_vocal_volume",
              "default_pitch_shift", "default_mic_reverb", "default_mic_echo",
              "default_mic_echo_repeat", "default_mic_echo_time_ms", "default_mic_tone",
+             "default_mic_eq_bass", "default_mic_eq_mid", "default_mic_eq_treble",
+             "default_music_eq_bass", "default_music_eq_mid", "default_music_eq_treble",
              "default_harmony_enabled", "default_harmony_style", "default_harmony_level",
              "default_sing_mode", "default_show_pitch"],
     },

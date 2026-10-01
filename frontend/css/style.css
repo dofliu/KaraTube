@@ -1027,6 +1027,20 @@ input[type="range"] {
   color: var(--accent-yellow);
 }
 
+/* 等化器推到可能嘯叫的位置時，說明那一行轉成警示色。
+   刻意只換顏色、不多一行紅字 —— 多一行會被當成錯誤訊息，
+   而這只是「你推到這裡之後要注意什麼」。 */
+.mixer-hint.eq-hint-warn {
+  color: var(--accent-pink);
+}
+
+/* 一鍵音色的按鈕是照 tone-eq.js 的表動態長出來的，一套四顆，
+   在手機的直式版面上要能換行（四顆擠一行會把字壓到看不懂）。 */
+.mic-eq-presets,
+.music-eq-presets {
+  flex-wrap: wrap;
+}
+
 /* 演唱模式切換（點歌台與舞台端共用樣式） */
 .mode-switch {
   display: flex;

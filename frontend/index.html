@@ -341,6 +341,75 @@
         </div>
       </div>
 
+      <!-- 三段音色等化器：商用 KTV 擴大機面板上的高音／中音／低音。
+           麥克風一套、音樂一套 —— 「我的聲音太悶」與「這首歌的低音太轟」
+           是兩件事，一顆旋鈕同時動兩邊的話，下一個人唱的時候沒有人知道要調回去哪裡。 -->
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🎚️ 麥克風音色
+          <button id="micEqResetBtn" class="btn btn-secondary mixer-mini-btn"
+                  title="三段歸零，回到原音">歸零</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🎚️ 一鍵音色<small>講得出意圖就好</small></label>
+          <div class="mode-switch mic-eq-presets" style="flex: 1;"></div>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔈 低音<small>厚度・200Hz</small></label>
+          <input type="range" id="micEqBassSlider" min="-12" max="12" step="0.5" value="0">
+          <span id="micEqBassText" class="slider-value">0 dB</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔉 中音<small>人聲浮出來・1.8kHz</small></label>
+          <input type="range" id="micEqMidSlider" min="-12" max="12" step="0.5" value="0">
+          <span id="micEqMidText" class="slider-value">0 dB</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔊 高音<small>空氣感・4.5kHz</small></label>
+          <input type="range" id="micEqTrebleSlider" min="-12" max="12" step="0.5" value="0">
+          <span id="micEqTrebleText" class="slider-value">0 dB</span>
+        </div>
+
+        <p id="micEqHint" class="mixer-hint">原音（等化器沒有作用）</p>
+      </div>
+
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🎚️ 音樂音色
+          <button id="musicEqResetBtn" class="btn btn-secondary mixer-mini-btn"
+                  title="三段歸零，回到這首歌本來的混音">歸零</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🎚️ 一鍵音色<small>包廂喜歡的曲風</small></label>
+          <div class="mode-switch music-eq-presets" style="flex: 1;"></div>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔈 低音<small>鼓與貝斯・120Hz</small></label>
+          <input type="range" id="musicEqBassSlider" min="-8" max="8" step="0.5" value="0">
+          <span id="musicEqBassText" class="slider-value">0 dB</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔉 中音<small>旋律・1kHz</small></label>
+          <input type="range" id="musicEqMidSlider" min="-8" max="8" step="0.5" value="0">
+          <span id="musicEqMidText" class="slider-value">0 dB</span>
+        </div>
+
+        <div class="mixer-row">
+          <label>🔊 高音<small>亮度・6kHz</small></label>
+          <input type="range" id="musicEqTrebleSlider" min="-8" max="8" step="0.5" value="0">
+          <span id="musicEqTrebleText" class="slider-value">0 dB</span>
+        </div>
+
+        <p id="musicEqHint" class="mixer-hint">原音（等化器沒有作用）</p>
+      </div>
+
       <!-- 和聲（雙聲部）：跟著旋律在音階上疊第二個聲部，一個人唱起來像兩個人 -->
       <div class="mixer-section">
         <div class="mixer-section-title">
@@ -729,6 +798,9 @@
   <script src="/js/room-view.js"></script>
   <script src="/js/rooms-view.js"></script>
   <!-- 音域：採集器（舞台用）與「這一行要不要出現」的判斷（點歌台用） -->
+  <!-- 三段音色等化器的純邏輯（濾波器參數、補償增益、嘯叫風險提示、一鍵音色）。
+       點歌台只用它畫滑桿與說明；真正的濾波器在舞台端。 -->
+  <script src="/js/tone-eq.js"></script>
   <script src="/js/vocal-range.js"></script>
   <!-- 備份與還原：這一頁顯示錯了會讓人按下一個他以為是別的意思的按鈕，
        所以判斷全在這支純資料模組裡，並且有測試（frontend/tests/backup-view.test.js）。 -->

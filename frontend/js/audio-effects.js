@@ -22,6 +22,14 @@ class AudioEngine {
     this.gainVoc = null;
     this.masterGain = null;
 
+    // 三段音色等化器的目前值（高音／中音／低音，dB）。
+    // 先記著再說：點歌台不等舞台把音訊環境建起來就會把狀態推過來，
+    // 而「還沒輪到」不是失敗 —— 節點建好之後會照這兩份值補套一次，
+    // 不補的話開場第一首會唱在沒有等化器的音色上，而畫面上的滑桿還停在使用者調的位置。
+    this.micEq = null;
+    this.musicEq = null;
+    this.musicEqNodes = null;
+
     // Mic & Reverb / Echo DSP
     this.micStream = null;
     this.micSource = null;
@@ -78,19 +86,21 @@ class AudioEngine {
   /**
    * 情境背景要看的音樂頻譜。
    *
-   * 接在 normGain（伴奏＋導唱這條匯流排）上，刻意**不含麥克風與罐頭音效**：
+   * 接在伴奏＋導唱這條匯流排上，刻意**不含麥克風與罐頭音效**：
    * 背景跟著人講話與掌聲抖動，看起來不是「有反應」而是「壞了」。
    * analyser 只旁聽、不往下接，所以掛上去不影響輸出。
    */
   getMusicAnalyser() {
-    if (!this.ctx || !this.normGain) return null;
+    if (!this.ctx || !this.musicEqNodes) return null;
     if (!this.musicAnalyser) {
       this.musicAnalyser = this.ctx.createAnalyser();
       // 1024 點在 48kHz 下每個 bin 約 47Hz，分得出低頻鼓與人聲的差別就夠了；
       // 背景不需要更細的解析度，卻要為此每幀多算好幾倍的 FFT。
       this.musicAnalyser.fftSize = 1024;
       this.musicAnalyser.smoothingTimeConstant = 0.7;
-      this.normGain.connect(this.musicAnalyser);
+      // 情境背景跟著**聽得到的**聲音動：接在等化器之後，
+      // 把低音推上去的包廂看到的視覺才會跟著一起重。
+      this.musicEqNodes.output.connect(this.musicAnalyser);
     }
     return this.musicAnalyser;
   }
@@ -145,8 +155,8 @@ class AudioEngine {
 
       // 升降 Key 的兩條路：直通與移調，用兩顆增益交叉淡接。
       //
-      //   normGain ─┬─→ keyDryGain ──────────────→ mixBus     （原調）
-      //             └─→ music-shifter → keyWetGain → mixBus   （升降 Key）
+      //   normGain → 音色等化器 ─┬─→ keyDryGain ──────────────→ mixBus   （原調）
+      //                           └─→ music-shifter → keyWetGain → mixBus （升降 Key）
       //
       // 分成兩條而不是「永遠走移調器、移調量 0 時直通」，是因為移調器
       // 再怎麼乾淨都會多 45ms 的延遲，而原調是九成以上的時候都在的狀態 ——
@@ -161,7 +171,17 @@ class AudioEngine {
       this.keyWetGain = this.ctx.createGain();
       this.keyWetGain.gain.value = 0.0;
       this.keyWetGain.connect(this.mixBus);
-      this.normGain.connect(this.keyDryGain);
+
+      // 音樂的三段音色等化器。位置在自動音量平衡**之後**、升降 Key 的分岔
+      // **之前** —— 分岔之後才接的話要接兩次（原調一條、移調一條），
+      // 而那兩條遲早會分家，症狀是「升 Key 之後低音不見了」。
+      //
+      // 在 normGain 之後則是因為那顆增益是「把這首歌對到 −14 LUFS」的結果：
+      // 等化器放在它之前，等於拿調完音色的訊號去套用為原始訊號算出來的增益。
+      this.musicEqNodes = this._createEqNodes("music");
+      this.normGain.connect(this.musicEqNodes.input);
+      this.musicEqNodes.output.connect(this.keyDryGain);
+      if (this.musicEq) this._applyEq(this.musicEqNodes, this.musicEq);
 
       // Instrumental & Vocal tracks gain
       this.gainInst = this.ctx.createGain();
@@ -265,7 +285,9 @@ class AudioEngine {
           this.keyShiftLatencySeconds = Number(e.data.seconds) || 0;
         }
       };
-      this.normGain.connect(this.keyShiftNode);
+      // 移調器吃的是等化器**之後**的訊號：原調那條（keyDryGain）也在等化器之後，
+      // 兩條不一致的話，升降 Key 的那一瞬間音色會跳一下。
+      this.musicEqNodes.output.connect(this.keyShiftNode);
       this.keyShiftNode.connect(this.keyWetGain);
       this.keyShiftSupported = true;
       this.keyShiftReady = true;
@@ -622,6 +644,21 @@ class AudioEngine {
     limiter.attack.value = 0.003;
     limiter.release.value = 0.15;
 
+    // 三段音色等化器（高音／中音／低音）＋ 補償增益。
+    //
+    // 位置：自動增益**之後**、限幅器**之前**。
+    //
+    // 在限幅器之前是這條鏈上唯一正確的位置：放在它之後的話，+12 dB 的提升
+    // 會直接越過這條鏈上唯一一道削峰保護，而那一聲破音是在喇叭上發生的
+    // （而且限幅器看起來還是好好的，沒有人查得到）。
+    // 代價是提升之後比較容易觸發限幅，所以補償增益跟著一起走 ——
+    // 推完滑桿整體響度大致不變，限幅器被打到的次數也就跟推之前一樣。
+    //
+    // 常駐而不是要用才接，跟防嘯叫的凹槽同一個理由：有訊號流過時增刪節點
+    // 會有「咖」的一聲。三段都是 0 dB 時 shelf 與 peaking 的係數是恆等式，
+    // 「沒在用」是真的一點都不動到聲音。
+    const eqNodes = this._createEqNodes("mic");
+
     let tail = highpass;
     for (const notch of notches) {
       tail.connect(notch);
@@ -629,12 +666,13 @@ class AudioEngine {
     }
     tail.connect(deEss);
     deEss.connect(agcGain);
-    agcGain.connect(limiter);
+    agcGain.connect(eqNodes.input);
+    eqNodes.output.connect(limiter);
 
     // assign：凹槽 id -> 濾波器索引。防嘯叫那邊的凹槽會增減，
     // 這張表讓同一個凹槽從頭到尾都待在同一顆濾波器上（見 feedback-guard 的 notches()）。
     return {
-      highpass, notches, deEss, agcGain, limiter, agcLevel: 1.0,
+      highpass, notches, deEss, agcGain, eq: eqNodes, limiter, agcLevel: 1.0,
       assign: new Map(),   // 凹槽 id -> 濾波器索引
       cooling: new Map(),  // 剛放掉的濾波器索引 -> 放掉的時刻（見 _applyNotches）
     };
@@ -650,6 +688,7 @@ class AudioEngine {
     this.micAgcGain = chain.agcGain;
     this.micAgcLevel = 1.0;
     this.micLimiter = chain.limiter;
+    if (this.micEq) this._applyEq(chain.eq, this.micEq);
 
     this.monitorGain = this.ctx.createGain();
     this.monitorGain.gain.value = 0;   // 預設不外放，由 setSingMode 決定
@@ -778,6 +817,76 @@ class AudioEngine {
     }
   }
 
+  /**
+   * 建一組三段等化器的節點（低 → 中 → 高 → 補償）。
+   *
+   * 參數照 `tone-eq.js` 的 `bandSpecs()` 來 —— 頻率、Q、型別一個都不寫在這裡，
+   * 不然「畫面上說高音是 4.5kHz、實際濾波器在 6kHz」這種分岔會完全沒有症狀，
+   * 只會讓人覺得這顆旋鈕沒什麼用。
+   *
+   * @param {"mic"|"music"} target
+   */
+  _createEqNodes(target) {
+    const specs = window.ToneEq.bandSpecs({}, target);
+    const filters = specs.map((spec) => {
+      const node = this.ctx.createBiquadFilter();
+      node.type = spec.type;
+      node.frequency.value = spec.freq;
+      node.Q.value = spec.q;
+      node.gain.value = 0;
+      return node;
+    });
+    const makeup = this.ctx.createGain();
+    makeup.gain.value = 1.0;
+    for (let i = 0; i < filters.length - 1; i++) filters[i].connect(filters[i + 1]);
+    filters[filters.length - 1].connect(makeup);
+    return { target, filters, makeup, input: filters[0], output: makeup };
+  }
+
+  /**
+   * 套用一組等化器設定。
+   *
+   * 時間常數 60ms：推滑桿是連續事件（一秒好幾十次），直接設值會有 zipper noise；
+   * 但也不能太慢 —— 推到底卻要等半秒才聽得到的旋鈕，使用者會以為它壞了
+   * 而繼續往上推，放手的時候就超過他真正想要的量。
+   */
+  _applyEq(nodes, tone) {
+    if (!nodes || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const specs = window.ToneEq.bandSpecs(tone, nodes.target);
+    specs.forEach((spec, i) => {
+      const node = nodes.filters[i];
+      if (node) node.gain.setTargetAtTime(spec.gainDb, now, 0.06);
+    });
+    nodes.makeup.gain.setTargetAtTime(window.ToneEq.makeupGain(tone, nodes.target), now, 0.06);
+  }
+
+  /**
+   * 麥克風音色（高音／中音／低音，dB）。
+   *
+   * 兩支麥克風套同一組是刻意的，跟防嘯叫的凹槽同一個理由：
+   * 各調各的話，兩支麥克風會長出不同的音色，而那種差異在包廂裡
+   * 只會被講成「B 麥比較差」，沒有人會想到是等化器。
+   */
+  setMicEq(tone) {
+    this.micEq = window.ToneEq.normalizeTone(tone, "mic");
+    for (const chain of [this.micChain, this.chainB]) {
+      if (chain && chain.eq) this._applyEq(chain.eq, this.micEq);
+    }
+    return this.micEq;
+  }
+
+  /**
+   * 音樂音色（伴奏與導唱人聲，dB）。麥克風完全不受影響 ——
+   * 「這首歌的低音太轟」跟「我的聲音太悶」是兩件事，一顆旋鈕同時動兩邊的話，
+   * 下一個人唱的時候沒有人知道要調回去哪裡。
+   */
+  setMusicEq(tone) {
+    this.musicEq = window.ToneEq.normalizeTone(tone, "music");
+    if (this.musicEqNodes) this._applyEq(this.musicEqNodes, this.musicEq);
+    return this.musicEq;
+  }
+
   // 高頻柔化。0 = 不處理，1 = -12dB @5.5kHz。尖銳與回授都吃這一刀。
   setMicTone(amount) {
     if (this.micDeEss && this.ctx) {
@@ -844,6 +953,10 @@ class AudioEngine {
 
     if (!this.chainB) {
       this.chainB = this._createMicChain();
+      // B 麥一建好就補上現在的音色。少了這一行，對唱打開的那一刻
+      // B 麥會是原音而 A 麥帶著等化器 —— 兩支麥克風音色不一樣，
+      // 而現場的結論永遠是「B 麥比較差」。
+      if (this.micEq) this._applyEq(this.chainB.eq, this.micEq);
       this.micAnalyserB = this.ctx.createAnalyser();
       this.micAnalyserB.fftSize = 2048;
       this.micAnalyserB.smoothingTimeConstant = 0.3;

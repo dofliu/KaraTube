@@ -36,6 +36,8 @@ from backend.services.marquee import (DEFAULT_SHOW_SECONDS, DEFAULT_TTL_MINUTES,
 # 服務鈴的「開多久算過期」上下限同理：規則寫在 service_calls，設定頁只是列出來。
 from backend.services.service_calls import (DEFAULT_STALE_MINUTES, MAX_STALE_MINUTES,
                                             MIN_STALE_MINUTES)
+# 三段音色等化器的合法範圍同理：規則寫在 tone_eq，設定頁只是把它們列出來。
+from backend.services.tone_eq import MIC_EQ_LIMIT_DB, MUSIC_EQ_LIMIT_DB
 # 自動接歌的挑歌來源與時間上下限同理：規則寫在 autofill，設定頁只是列出來。
 from backend.services.autofill import (DEFAULT_IDLE_SECONDS, DEFAULT_SOURCE,
                                        DEFAULT_STOP_AFTER, MAX_IDLE_SECONDS, MAX_STOP_AFTER,
@@ -73,6 +75,21 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "default_mic_echo_repeat": {"type": "float", "default": 0.40, "min": 0.0, "max": 1.0},
     "default_mic_echo_time_ms": {"type": "int", "default": 280, "min": 50, "max": 800},
     "default_mic_tone": {"type": "float", "default": 0.40, "min": 0.0, "max": 1.0},
+    # 三段音色等化器（商用擴大機面板上的高音／中音／低音）。預設全部 0 ——
+    # 「原音」是唯一一個對所有麥克風、所有喇叭、所有包廂都不會錯的起點，
+    # 而一個出廠就帶著曲線的等化器，會讓第一個覺得聲音怪的人完全查不到原因。
+    "default_mic_eq_bass": {"type": "float", "default": 0.0,
+                            "min": -MIC_EQ_LIMIT_DB, "max": MIC_EQ_LIMIT_DB},
+    "default_mic_eq_mid": {"type": "float", "default": 0.0,
+                           "min": -MIC_EQ_LIMIT_DB, "max": MIC_EQ_LIMIT_DB},
+    "default_mic_eq_treble": {"type": "float", "default": 0.0,
+                              "min": -MIC_EQ_LIMIT_DB, "max": MIC_EQ_LIMIT_DB},
+    "default_music_eq_bass": {"type": "float", "default": 0.0,
+                              "min": -MUSIC_EQ_LIMIT_DB, "max": MUSIC_EQ_LIMIT_DB},
+    "default_music_eq_mid": {"type": "float", "default": 0.0,
+                             "min": -MUSIC_EQ_LIMIT_DB, "max": MUSIC_EQ_LIMIT_DB},
+    "default_music_eq_treble": {"type": "float", "default": 0.0,
+                                "min": -MUSIC_EQ_LIMIT_DB, "max": MUSIC_EQ_LIMIT_DB},
     "default_sing_mode": {"type": "choice", "default": "solo", "choices": SING_MODE_CHOICES},
     "default_show_pitch": {"type": "bool", "default": True},
     # 公平輪唱（排麥輪序）。預設關著：這是一條會改變「我點的歌排在哪」的規則，
@@ -288,6 +305,12 @@ CONTROL_DEFAULT_KEYS = {
     "default_mic_echo_repeat": "mic_echo_repeat",
     "default_mic_echo_time_ms": "mic_echo_time_ms",
     "default_mic_tone": "mic_tone",
+    "default_mic_eq_bass": "mic_eq_bass",
+    "default_mic_eq_mid": "mic_eq_mid",
+    "default_mic_eq_treble": "mic_eq_treble",
+    "default_music_eq_bass": "music_eq_bass",
+    "default_music_eq_mid": "music_eq_mid",
+    "default_music_eq_treble": "music_eq_treble",
     "default_harmony_enabled": "harmony_enabled",
     "default_harmony_style": "harmony_style",
     "default_harmony_level": "harmony_level",

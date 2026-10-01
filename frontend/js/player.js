@@ -2378,6 +2378,16 @@ document.addEventListener("DOMContentLoaded", () => {
     window.audioEngine.setMicEchoRepeat(state.mic_echo_repeat !== undefined ? state.mic_echo_repeat : 0.4);
     window.audioEngine.setMicEchoTime(state.mic_echo_time_ms !== undefined ? state.mic_echo_time_ms : 280);
     window.audioEngine.setMicTone(state.mic_tone !== undefined ? state.mic_tone : 0.4);
+    // 三段音色等化器。六個欄位分開送（滑桿一次只推一段），所以這裡每一次
+    // 都從完整的狀態重建兩組值 —— 只套用「這次有變的那一格」的話，
+    // 另外兩格會停在舞台上一次收到的值，而點歌台上顯示的是對的，
+    // 於是「畫面跟聲音對不起來」而且只有換過歌的人才會發現。
+    window.audioEngine.setMicEq({
+      bass: state.mic_eq_bass, mid: state.mic_eq_mid, treble: state.mic_eq_treble,
+    });
+    window.audioEngine.setMusicEq({
+      bass: state.music_eq_bass, mid: state.music_eq_mid, treble: state.music_eq_treble,
+    });
     if (state.harmony_enabled !== undefined || state.harmony_style !== undefined ||
         state.harmony_level !== undefined) {
       const wasEnabled = harmony.enabled;

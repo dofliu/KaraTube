@@ -242,6 +242,10 @@ document.addEventListener("DOMContentLoaded", () => {
   let introCardEnabled = true;
   let settlementMs = 9000;
   let settlementEnabled = true;
+  // 間奏倒數。預設值跟 interlude-timer.js 的常數一致，連上之後由設定覆寫。
+  let interludeEnabled = true;
+  let interludeSkipEnabled = true;
+  let interludeMinGapSeconds = window.InterludeTimer.INTERLUDE_MIN_GAP_SECONDS;
 
   // --- 錄唱回放的狀態 ---
   // 預設關著，而且只有設定頁打開才會錄：錄音錄到的是包廂裡所有人的聲音。
@@ -391,6 +395,9 @@ document.addEventListener("DOMContentLoaded", () => {
       restartCurrentSong();
     } else if (msg.command === "SEEK") {
       seekMedia(msg.position || 0);
+    } else if (msg.command === "SKIP_INTERLUDE") {
+      // 點歌台那顆「跳過前奏」。目標落點只有舞台端算得出來（見 skipInterlude）
+      skipInterlude();
     }
   });
 
@@ -410,6 +417,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (s.intro_card_seconds !== undefined) introCardMs = Math.round(s.intro_card_seconds * 1000);
     if (s.settlement_enabled !== undefined) settlementEnabled = !!s.settlement_enabled;
     if (s.settlement_seconds !== undefined) settlementMs = Math.round(s.settlement_seconds * 1000);
+    if (s.interlude_countdown_enabled !== undefined) {
+      interludeEnabled = !!s.interlude_countdown_enabled;
+      // 關掉的當下就要收掉，不能等下一幀 —— 正在倒數的那一條會留在畫面上，
+      // 而關掉它的人會以為設定沒生效（下一幀可能是暫停中，永遠不會來）。
+      if (!interludeEnabled) hideInterludeBand();
+    }
+    if (s.interlude_skip_enabled !== undefined) interludeSkipEnabled = !!s.interlude_skip_enabled;
+    if (s.interlude_min_seconds !== undefined) {
+      interludeMinGapSeconds = Number(s.interlude_min_seconds);
+      // 門檻變了就要重算空檔表（它是換歌時算一次的東西）
+      rebuildInterludePlan();
+    }
     if (s.guide_duck_enabled !== undefined || s.guide_duck_depth !== undefined) {
       guideDucker.configure({ enabled: s.guide_duck_enabled, depth: s.guide_duck_depth });
       applyGuideDuck();
@@ -1712,6 +1731,146 @@ document.addEventListener("DOMContentLoaded", () => {
     introCardTimer = setTimeout(hideIntroCard, introCardMs);
   }
 
+  // --- 間奏倒數 ---
+  //
+  // 沒有歌詞的那一段，商用點歌機都會說話：「間奏 ♪ 18」。
+  // 這台機器在這之前是一片沉默，而沉默在包廂裡有三種讀法（還在前奏 /
+  // 字幕壞了 / 機器卡住了），三種在螢幕上長得一模一樣 —— 猜錯的那一次，
+  // 被切掉的是一首沒有壞的歌。
+  //
+  // 判斷全部在 interlude-timer.js（純邏輯、有測試），這裡只負責畫與跳。
+  const interludeBand = document.getElementById("interludeBand");
+  const interludeLabel = document.getElementById("interludeLabel");
+  const interludeCount = document.getElementById("interludeCount");
+  const interludeFill = document.getElementById("interludeFill");
+  const interludeHint = document.getElementById("interludeHint");
+
+  let interludePlan = new window.InterludeTimer.InterludePlan([]);
+  let interludeLyrics = [];
+  // 算空檔表用的歌曲長度。換歌的當下 `audioInst.duration` 還是 NaN
+  // （metadata 還沒解到），所以這裡記下算的時候用的是哪個長度，
+  // 等真的拿到長度再重算一次 —— 不重算的話每一首都沒有尾奏，
+  // 而「尾奏不見了」是那種沒有人會回報、但一直都在的壞法。
+  let interludePlanDuration = 0;
+  let interludeView = null;
+  // 畫面上現在長什麼樣子。每一幀重寫 textContent 會讓這條帶子在某些電視的
+  // 瀏覽器上整個重排一次，所以只有真的變了才碰 DOM。
+  let interludePaintKey = "";
+
+  function rebuildInterludePlan() {
+    const duration = audioInst.duration;
+    interludePlanDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+    interludePlan = window.InterludeTimer.InterludePlan.fromLyrics(
+      interludeLyrics, interludePlanDuration, { minGap: interludeMinGapSeconds });
+  }
+
+  function setInterludeLyrics(lyrics) {
+    interludeLyrics = lyrics || [];
+    hideInterludeBand();
+    rebuildInterludePlan();
+  }
+
+  function hideInterludeBand() {
+    interludeView = null;
+    if (!interludeBand) return;
+    if (interludePaintKey !== "") {
+      interludePaintKey = "";
+      interludeBand.style.display = "none";
+    }
+  }
+
+  /**
+   * 這一幀該不該顯示倒數。`lyricTime` 是**歌詞時間軸**上的位置 ——
+   * 空檔表是從 lyrics.json 算出來的，兩者必須是同一把尺。
+   */
+  function updateInterlude(lyricTime) {
+    if (!interludeEnabled || !interludeBand) { hideInterludeBand(); return; }
+
+    // 歌曲長度是播放之後才知道的，所以尾奏要等 metadata 回來才算得出來。
+    // 這一段必須排在「這首歌有沒有空檔」的提前退出**之前**：
+    // 一首只有尾奏、沒有長前奏也沒有間奏的歌，剛換過去時空檔表是空的，
+    // 先退出的話就永遠等不到重算 —— 而那正好是尾奏唯一會出現的那種歌。
+    const duration = audioInst.duration;
+    if (Number.isFinite(duration) && duration > 0 &&
+        Math.abs(duration - interludePlanDuration) > 0.5) {
+      rebuildInterludePlan();
+    }
+
+    if (interludePlan.gaps.length === 0) { hideInterludeBand(); return; }
+
+    // 前奏倒數讓開導唱片頭卡。片頭卡的秒數是**音訊時間**（從開唱算起的
+    // 牆上時間），空檔表活在歌詞時間軸上，所以要換算過去 —— 不換算的話，
+    // 一首 LRC 偏移 −2 秒的歌，倒數會在片頭卡還亮著的時候從它底下冒出來。
+    const blockUntil = (introCardEnabled && introCardMs > 0)
+      ? window.LyricSync.syncTimes({
+          audioTime: introCardMs / 1000, outputLatency,
+          deviceMs: deviceOffsetMs, songMs: songOffsetMs, rate: songRate,
+        }).lyricTime
+      : 0;
+
+    interludeView = interludePlan.at(lyricTime, {
+      blockUntil,
+      skipEnabled: interludeSkipEnabled,
+      loopEnabled, loopEnd,
+    });
+    paintInterludeBand(interludeView);
+  }
+
+  function paintInterludeBand(view) {
+    if (!interludeBand) return;
+    if (!view) { hideInterludeBand(); return; }
+
+    // 秒數用**無條件進位**：剩 17.2 秒時寫 18 而不是 17。
+    // 捨去的話倒數會從 17 直接跳到結束（最後那一秒永遠看不到 1），
+    // 而且數字比真實情況樂觀 —— 一個會早到的倒數，等於沒有倒數。
+    const seconds = view.remaining === null ? null : Math.max(0, Math.ceil(view.remaining));
+    // 提示要講得出**怎麼按**。台上那台電視多半沒有鍵盤，所以點歌台那條路
+    // 放在前面：包廂裡的人手上拿的就是它。
+    const hint = view.skippable ? "點歌台可跳過（舞台按空白鍵）" : "";
+    const key = `${view.kind}|${seconds}|${hint}`;
+    if (key !== interludePaintKey) {
+      interludePaintKey = key;
+      interludeBand.style.display = "flex";
+      interludeBand.classList.toggle("is-outro", view.kind === "outro");
+      interludeLabel.textContent = view.label;
+      // 尾奏沒有數字（數到 0 之後沒有東西要唱），改成一句把話講完的字。
+      interludeCount.textContent = seconds === null ? "" : String(seconds);
+      interludeHint.textContent = view.kind === "outro" ? "最後一句唱完了" : hint;
+    }
+    // 條子每一幀都動（style.width 不會觸發重排，而且它是唯一連續的那一格）
+    if (interludeFill) {
+      interludeFill.style.width = `${Math.max(0, (1 - view.progress) * 100).toFixed(1)}%`;
+    }
+  }
+
+  /**
+   * 跳過正在倒數的前奏／間奏。
+   *
+   * 兩個不能錯的地方：
+   *   1. **只在倒數跑著的時候有作用**。做成「往前跳 N 秒」的話，按在歌中間
+   *      會跳掉一整句歌詞 —— 而這顆鍵最常被按的時機正是「我覺得等太久了」，
+   *      那個人並不會先確認現在是不是間奏。
+   *   2. **跳的是歌詞時間，seek 的是音訊時間**。中間差著這首歌的 LRC 偏移與
+   *      兩點校正的速度，直接拿去 seek 的話，被調整過的歌（也就是最需要
+   *      幫忙的那幾首）跳完會落在第一句裡面。
+   */
+  function skipInterlude() {
+    const view = interludeView;
+    if (!view || !view.skippable) {
+      showToast("⏩ 現在沒有可以跳過的前奏或間奏");
+      return;
+    }
+    const target = window.LyricSync.audioTimeFor({
+      lyricTime: view.resumeAt, outputLatency,
+      deviceMs: deviceOffsetMs, songMs: songOffsetMs, rate: songRate,
+    });
+    const saved = Math.max(0, Math.round(view.remaining -
+      window.InterludeTimer.INTERLUDE_LEAD_IN_SECONDS));
+    seekMedia(target);
+    hideInterludeBand();
+    showToast(`⏩ 跳過${view.label}（少等 ${saved} 秒，預備拍照常）`);
+  }
+
   // --- 字幕同步微調 ---
   function showToast(html, ms = 2600) {
     if (!syncToast) return;
@@ -2238,6 +2397,12 @@ document.addEventListener("DOMContentLoaded", () => {
       // 對唱一鍵開關：舞台前面的人不會回去點歌台按（第二支麥克風常常是臨時遞過來的）
       e.preventDefault();
       window.api.send("CONTROL", { data: { duet_enabled: !duetEnabled } });
+    } else if (e.key === "i" || e.key === "I" || e.key === " ") {
+      // 跳過前奏／間奏。空白鍵是最直覺的那一顆，但舞台上那顆齒輪按鈕
+      // 拿到焦點時空白鍵是「按下那顆按鈕」—— 那時候讓它去做它自己的事。
+      if (e.key === " " && tag === "BUTTON") return;
+      e.preventDefault();
+      skipInterlude();
     } else if (e.key === "m" || e.key === "M") {
       // 現場嘯叫時的緊急切換：一鍵回到單人模式，人聲立刻離開喇叭
       e.preventDefault();
@@ -2499,6 +2664,7 @@ document.addEventListener("DOMContentLoaded", () => {
       artistEl.textContent = "請使用點歌台或掃描 QR Code 點播歌曲";
       pauseMedia();
       karaokeRenderer.setLyrics([]);
+      setInterludeLyrics([]);
       pitchEngine.setPitchData(null);
       pitchEngine.setSections([]);
       pitchEngineB.setPitchData(null);
@@ -2570,6 +2736,8 @@ document.addEventListener("DOMContentLoaded", () => {
     ]);
 
     karaokeRenderer.setLyrics(lyrics);
+    // 空檔表跟歌詞是同一份資料（而且是同一把尺：歌詞時間軸）
+    setInterludeLyrics(lyrics);
     // 換歌：音域採集歸零。不歸零的話上一首的直方圖會被算進這一首送出去，
     // 於是同一段演唱被記進檔案兩次（而且「唱了幾首」也多算一首）。
     vocalRangeA.reset();
@@ -2713,7 +2881,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 伴奏軌是唯一的主時鐘。人聲軌與影片都只是跟隨者，
     // 不能拿它們的 currentTime 回頭修正字幕，否則會互相拉扯。
-    if (audioInst.paused || !(audioInst.currentTime > 0)) return;
+    if (audioInst.paused || !(audioInst.currentTime > 0)) {
+      // 暫停中不留一條凍住的倒數在畫面上：那個數字停在 12 不動，
+      // 比沒有倒數更像「機器當掉了」。
+      hideInterludeBand();
+      return;
+    }
 
     const audioTime = clock.now();
     const duration = audioInst.duration || 0;
@@ -2772,6 +2945,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     karaokeRenderer.update(lyricTime);
+    // 倒數吃的是跟字幕完全一樣的時間（連這首歌的偏移與速度都一樣）：
+    // 差一把尺的話，倒數歸零的那一刻字幕還沒動，而兩者就在上下相鄰的位置。
+    updateInterlude(lyricTime);
 
     // 評分心跳與畫面分離：音準線隱藏時照樣計分，唱畢結算才公平
     let frame;
@@ -2819,7 +2995,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (nowMs - lastTimeBroadcast > 400) {
       lastTimeBroadcast = nowMs;
-      window.api.send("TIME_UPDATE", { currentTime: audioTime, duration: duration });
+      // 間奏狀態搭這班車回點歌台：手機上那顆「跳過前奏」要跟電視上的倒數
+      // 同進同出。另開一條訊息的話，兩邊的節奏遲早會分家（而使用者看到的是
+      // 「電視還在倒數，手機上的按鈕卻不見了」）。
+      window.api.send("TIME_UPDATE", {
+        currentTime: audioTime, duration: duration,
+        interlude: interludeView ? {
+          kind: interludeView.kind,
+          label: interludeView.label,
+          remaining: interludeView.remaining,
+          skippable: interludeView.skippable,
+        } : null,
+      });
     }
   }
 

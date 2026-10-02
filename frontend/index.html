@@ -169,6 +169,11 @@
 
   <!-- Bottom Control Deck -->
   <footer class="control-deck">
+    <!-- 跳過前奏／間奏：只在舞台真的在倒數時才出現。
+         絕對定位浮在控制列上緣，**刻意不排進那一排按鈕裡** ——
+         它旁邊那顆是「切歌」，而一顆會突然冒出來、把切歌往旁邊推開的按鈕，
+         遲早會讓某個人在想少等二十秒的時候整首歌沒了。 -->
+    <button id="interludeSkipBtn" class="interlude-skip" style="display: none;"></button>
     <!-- Current Track Mini Info -->
     <div class="now-playing-mini">
       <img id="nowPlayingThumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='54' height='38' fill='%23222'></svg>" style="width: 54px; height: 38px; border-radius: 8px; object-fit: cover;">

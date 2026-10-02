@@ -246,15 +246,131 @@ body.stage-mode {
 }
 
 /* KTV Subtitles Engine (Classic 2-line Alternating Subtitles) */
+/* 字幕區的定位外殼。margin-top: auto 從字幕容器搬到這裡 ——
+   中間空出來的高度一樣全部留給 MV，但現在多了一個「歌詞正上方」的錨點，
+   讓間奏倒數掛得上去而不用去猜畫面高度。 */
+.subtitle-zone {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  margin-top: auto;
+}
+
 .karaoke-subtitles-container {
   position: relative;
   z-index: 10;
   width: 100%;
   padding: 0 60px 48px 60px;
-  margin-top: auto;          /* 中間空出來的高度全部留給 MV 畫面 */
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* ============ 間奏倒數（商用點歌機的「間奏 ♪ 18」） ============
+
+   絕對定位、掛在字幕區的上緣（bottom: 100%）。這是刻意的：
+   排進版面的話，它出現與消失會把兩行歌詞上下推一次，而消失的那一刻
+   **正好是開唱前的最後三秒** —— 版面在那一刻跳動，等於把人的視線從
+   第一個字上彈開。這個功能的全部目的就是讓那一刻更穩，不是更慌。
+
+   往上長（bottom: 100%）不會蓋到任何東西：那一塊是 MV／情境背景，
+   而音準線在更上面、有自己的高度。 */
+.interlude-band {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 14px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 26px;
+  border-radius: 999px;
+  background: rgba(8, 12, 24, 0.72);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 240, 255, 0.28);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  animation: interludeBandIn 0.35s ease-out;
+}
+
+@keyframes interludeBandIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.interlude-icon {
+  font-size: 20px;
+  color: var(--accent-cyan);
+  /* 慢慢呼吸、不閃爍：閃爍的東西會一直把餘光拉過去，
+     而這條帶子出現的時候，台上的人正該用那一點餘光看下一句歌詞。 */
+  animation: interludeBreathe 2.4s ease-in-out infinite;
+}
+
+@keyframes interludeBreathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.interlude-label {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #fff;
+}
+
+/* 數字用等寬字：9 → 8 → 7 的時候整條帶子不該跟著抖一下 */
+.interlude-count {
+  font-size: 30px;
+  font-weight: 900;
+  min-width: 2.2ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-cyan);
+  text-shadow: 0 0 16px rgba(0, 240, 255, 0.55);
+}
+
+.interlude-count:empty { display: none; }
+
+.interlude-track {
+  width: 160px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+/* 條子是**減少**的（從滿到空）：不必讀數字也知道還剩多少，
+   而包廂裡一半的人是用餘光在看這塊畫面。 */
+.interlude-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent-cyan), #9d4edd);
+}
+
+.interlude-hint {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 1px;
+}
+
+.interlude-hint:empty { display: none; }
+
+/* 尾奏：沒有數字、也沒有「跳過」。顏色換成暖色，因為它講的是相反的事 ——
+   前奏與間奏是「等一下換你」，尾奏是「唱完了」。 */
+.interlude-band.is-outro {
+  border-color: rgba(255, 183, 77, 0.35);
+}
+
+.interlude-band.is-outro .interlude-icon,
+.interlude-band.is-outro .interlude-label {
+  color: #ffb74d;
+}
+
+.interlude-band.is-outro .interlude-fill {
+  background: linear-gradient(90deg, #ffb74d, rgba(255, 183, 77, 0.35));
 }
 
 .ktv-line {

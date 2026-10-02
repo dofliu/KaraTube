@@ -346,3 +346,47 @@ def test_autofill_values_are_clamped(settings):
     assert result["autofill_stop_after"] == autofill.MIN_STOP_AFTER
     # 0 秒是合法值（「空了就接」），不該被夾掉
     assert settings.update({"autofill_idle_seconds": 0})["autofill_idle_seconds"] == 0
+
+
+def test_interlude_settings_round_trip_to_stage_options(settings):
+    """間奏倒數的三個欄位要完整傳到舞台端，而且秒數不換算成毫秒。"""
+    options = settings.stage_options()
+    assert options["interlude_countdown_enabled"] is True
+    assert options["interlude_min_seconds"] == 10.0
+    assert options["interlude_skip_enabled"] is True
+
+    settings.update({"interlude_countdown_enabled": False,
+                     "interlude_min_seconds": 18.5,
+                     "interlude_skip_enabled": False})
+    options = settings.stage_options()
+    assert options["interlude_countdown_enabled"] is False
+    assert options["interlude_min_seconds"] == 18.5
+    assert options["interlude_skip_enabled"] is False
+
+
+def test_interlude_min_seconds_range_matches_the_frontend():
+    """
+    「多長才算間奏」的上下限與預設值，設定頁與 frontend/js/interlude-timer.js
+    必須一致。
+
+    對不上的方向決定災情：設定頁的下限比 JS 的樓地板低的話，調下去會**完全沒有
+    反應**（JS 自己夾回來），而畫面上那個數字看起來已經生效了 —— 使用者的結論是
+    「這台機器的間奏倒數調不動」，而且沒有任何錯誤訊息可查。
+    """
+    import re
+    from pathlib import Path
+
+    from backend.services.settings import SETTINGS_SPEC
+
+    source = (Path(__file__).resolve().parents[1] /
+              "frontend" / "js" / "interlude-timer.js").read_text(encoding="utf-8")
+
+    def const(name: str) -> float:
+        match = re.search(rf"^const {name} = ([\d.]+);", source, re.M)
+        assert match, f"找不到 interlude-timer.js 的 {name}"
+        return float(match.group(1))
+
+    spec = SETTINGS_SPEC["interlude_min_seconds"]
+    assert spec["default"] == const("INTERLUDE_MIN_GAP_SECONDS")
+    assert spec["min"] == const("INTERLUDE_MIN_GAP_FLOOR")
+    assert spec["max"] == const("INTERLUDE_MIN_GAP_CEIL")

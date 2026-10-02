@@ -292,6 +292,19 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "intro_card_seconds": {"type": "float", "default": 8.0, "min": 2.0, "max": 20.0},
     "settlement_enabled": {"type": "bool", "default": True},
     "settlement_seconds": {"type": "float", "default": 9.0, "min": 3.0, "max": 30.0},
+    # 間奏倒數：沒有歌詞的那一段，畫面上要說得出「現在是前奏／間奏，還有幾秒」。
+    # 預設開著 —— 這是商用點歌機一直都有、而這台機器在 1.32 之前沒有的那句話，
+    # 而它的反面（一片沉默）會被包廂當成「字幕壞了」或「機器卡住了」，
+    # 然後有人去切掉一首沒有壞的歌。
+    #
+    # 三個數字的規則都寫在 frontend/js/interlude-timer.js，這裡只是把門檻列出來
+    # 讓人調（tests/test_settings.py 有一條測試把上下限與預設值釘在兩邊之間）。
+    "interlude_countdown_enabled": {"type": "bool", "default": True},
+    "interlude_min_seconds": {"type": "float", "default": 10.0, "min": 5.0, "max": 30.0},
+    # 跳過長前奏／間奏。也預設開著，但它跟倒數是兩件事：倒數只是講話，
+    # 跳過會動到播放位置 —— 有些店不希望客人跳過前奏（MV 的版權畫面在那幾秒），
+    # 所以關得掉，而且關掉之後倒數照常顯示。
+    "interlude_skip_enabled": {"type": "bool", "default": True},
 }
 
 # 設定裡的「開機預設值」對應到 QueueManager 的哪個控制欄位
@@ -507,11 +520,17 @@ class SystemSettings:
         }
 
     def stage_options(self) -> Dict[str, Any]:
-        """舞台端要的演出設定（片頭卡、結算畫面）。"""
+        """舞台端要的演出設定（片頭卡、結算畫面、間奏倒數）。"""
         data = self.all()
         return {
             "intro_card_enabled": data["intro_card_enabled"],
             "intro_card_ms": int(data["intro_card_seconds"] * 1000),
+            "interlude_countdown_enabled": data["interlude_countdown_enabled"],
+            # 這一個刻意維持「秒」：它是歌詞時間軸上的長度，跟片頭卡那種
+            # 用 performance.now() 量的毫秒不是同一種東西，換算過去只會讓
+            # 舞台端再除一次 1000（而那種錯會變成「門檻 10000 秒」＝功能消失）。
+            "interlude_min_seconds": float(data["interlude_min_seconds"]),
+            "interlude_skip_enabled": data["interlude_skip_enabled"],
             "settlement_enabled": data["settlement_enabled"],
             "settlement_ms": int(data["settlement_seconds"] * 1000),
             "ambient_bg_mode": data["ambient_bg_mode"],

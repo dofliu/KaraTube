@@ -1702,6 +1702,26 @@ async def seek_playback(payload: Dict[str, Any] = Body(...),
     position = await bundle_for(room).queue.seek_to(payload.get("position", 0))
     return {"status": "success", "position": position}
 
+@app.post("/api/skip-interlude")
+async def skip_interlude(room: str = Query(default=rooms.DEFAULT_ROOM_ID)):
+    """跳過正在倒數的前奏／間奏。
+
+    這支刻意**不帶目標秒數**（不是另一條 `/api/seek`）：該跳到哪裡只有舞台端
+    算得出來 —— 空檔表活在歌詞時間軸上，而 `audio.currentTime` 活在音訊時間軸上，
+    中間差著這首歌的 LRC 偏移與兩點校正解出來的速度，兩者都只存在舞台那一端。
+
+    點歌台自己算一份的話，手機上按下去的位置會跟電視上那個倒數差幾秒，
+    而「調過字幕的歌跳得特別不準」這種關聯，在包廂裡沒有任何人查得出來。
+    所以這裡只把「有人按了」廣播出去，判斷與落點都留在唯一有資料的那一端；
+    現在沒有可跳的空檔時，舞台端什麼都不做。
+    """
+    bundle = bundle_for(room)
+    await ws_manager.broadcast({
+        "type": "CONTROL_COMMAND",
+        "command": "SKIP_INTERLUDE",
+    }, room=bundle.id)
+    return {"status": "success"}
+
 @app.post("/api/control")
 async def control_playback(payload: Dict[str, Any] = Body(...),
                            room: str = Query(default=rooms.DEFAULT_ROOM_ID)):

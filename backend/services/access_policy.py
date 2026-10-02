@@ -129,6 +129,7 @@ OPEN_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     ("POST", "/api/queue/{queue_id}/retry", "失敗的歌重試"),
     ("POST", "/api/control", "調音量與效果"),
     ("POST", "/api/seek", "跳轉播放位置"),
+    ("POST", "/api/skip-interlude", "跳過前奏／間奏"),
     ("POST", "/api/sound-effect", "罐頭音效"),
     ("POST", "/api/autofill/random", "隨機點歌"),
     # --- 成績與收藏：都是這一場的人自己的東西 ---

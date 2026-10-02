@@ -2230,6 +2230,7 @@ def test_machine_level_endpoints_are_blocked_while_locked(staff_lock_clean, meth
     ("post", "/api/queue/skip", None),
     ("post", "/api/queue/restart", None),
     ("post", "/api/sound-effect", {"effect": "applause"}),
+    ("post", "/api/skip-interlude", None),
     ("post", "/api/favorites/toggle", {"song_id": "test_lock", "title": "鎖不住的歌"}),
 ])
 def test_singing_and_reading_never_need_the_pin(staff_lock_clean, method, path, payload):
@@ -3286,3 +3287,21 @@ def test_safety_copy_download_refuses_a_made_up_name(backup_cache):
     assert client.post("/api/backup/safety/..%2Fsettings.json").status_code in (400, 404, 405)
     assert client.post("/api/backup/safety/settings.json").status_code == 404
     assert client.post("/api/backup/safety/nope.zip").status_code == 404
+
+
+def test_skip_interlude_broadcasts_to_the_room_only():
+    """
+    跳過前奏／間奏：伺服器只負責把「有人按了」送到**那一間**的舞台。
+
+    目標秒數刻意不在這裡算（見 main.skip_interlude 的說明），所以這支要驗的
+    只有兩件事：按下去會變成一則 CONTROL_COMMAND，而且不會跑到別間包廂去 ——
+    跑錯間的後果是另一間正在唱歌的人被往前拖了二十秒。
+    """
+    with client.websocket_connect("/ws?room=default") as ws:
+        for _ in range(4):      # STATE / SETTINGS / STAFF_LOCK / ROOMS
+            ws.receive_json()
+        res = client.post("/api/skip-interlude")
+        assert res.status_code == 200
+        msg = ws.receive_json()
+        assert msg["type"] == "CONTROL_COMMAND"
+        assert msg["command"] == "SKIP_INTERLUDE"

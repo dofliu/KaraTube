@@ -100,6 +100,28 @@ function syncTimes({ audioTime = 0, outputLatency = 0, deviceMs = 0, songMs = 0,
 }
 
 /**
+ * `syncTimes` 的反函數：一個**歌詞時間**上的位置，對應到伴奏要 seek 到哪裡。
+ *
+ * 為什麼需要它：畫面上看得到的東西（歌詞、段落、間奏倒數）全都活在歌詞時間軸上，
+ * 但 `audio.currentTime` 只認音訊時間軸。兩者之間差著這首歌的 LRC 偏移與速度，
+ * 而**那個差正是使用者調過的那個數字** —— 也就是說，越是被調整過的歌
+ * （字幕本來就對不準的那幾首），直接拿歌詞時間去 seek 錯得越多。
+ *
+ * 最糟的是這個錯**不會被看見**：跳過間奏跳到「還剩三秒」，結果 rate = 1.03
+ * 的歌在第三分鐘差了 5 秒 —— 畫面上是預備光點已經數完、第一句唱到一半，
+ * 而按下去的人只會覺得「這台機器的跳過間奏怪怪的」。
+ *
+ * 所以只要是「把畫面上的時間變成 seek 目標」的動作，一律走這裡。
+ */
+function audioTimeFor({ lyricTime = 0, outputLatency = 0, deviceMs = 0, songMs = 0,
+                        rate = 1 } = {}) {
+  const t = Number(lyricTime) || 0;
+  const latency = Number(outputLatency) || 0;
+  const scoreTime = t * clampRate(rate) + clampSyncMs(songMs) / 1000;
+  return scoreTime + latency + clampSyncMs(deviceMs) / 1000;
+}
+
+/**
  * 伺服器上那份裝置延遲，這台舞台機要不要採用？回傳要採用的值，或 `null`＝不動。
  *
  * 規則：**只有還沒有自己意見的裝置才採用**（全新的機器、清過瀏覽器資料的
@@ -501,7 +523,7 @@ if (typeof window !== "undefined") {
     SYNC_MAX_OFFSET_MS, SYNC_BASELINE_SAMPLES, SYNC_BASELINE_SPREAD_MS, SYNC_BASELINE_MIN_MS,
     SYNC_MIN_RATE, SYNC_MAX_RATE, SYNC_RATE_EPSILON,
     ANCHOR_MIN_SPAN_S, ANCHOR_SNAP_WINDOW_S,
-    clampSyncMs, clampRate, syncTimes, adoptDeviceOffset,
+    clampSyncMs, clampRate, syncTimes, audioTimeFor, adoptDeviceOffset,
     offsetLabel, offsetDirection, rateLabel, rateDirection, secondsLabel,
     syncToastLines, deckOffsetSummary,
     baselineSuggestion, baselineHint, rebaseConfirmText,
@@ -514,7 +536,7 @@ if (typeof module !== "undefined" && module.exports) {
     SYNC_MAX_OFFSET_MS, SYNC_BASELINE_SAMPLES, SYNC_BASELINE_SPREAD_MS, SYNC_BASELINE_MIN_MS,
     SYNC_MIN_RATE, SYNC_MAX_RATE, SYNC_RATE_EPSILON,
     ANCHOR_MIN_SPAN_S, ANCHOR_SNAP_WINDOW_S,
-    clampSyncMs, clampRate, syncTimes, adoptDeviceOffset,
+    clampSyncMs, clampRate, syncTimes, audioTimeFor, adoptDeviceOffset,
     offsetLabel, offsetDirection, rateLabel, rateDirection, secondsLabel,
     syncToastLines, deckOffsetSummary,
     baselineSuggestion, baselineHint, rebaseConfirmText,

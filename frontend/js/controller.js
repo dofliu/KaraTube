@@ -77,6 +77,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const pitchToggleBtn = document.getElementById("pitchToggleBtn");
   // 練唱模式（A-B 循環）
   const progressTrack = document.getElementById("progressTrack");
+  const interludeSkipBtn = document.getElementById("interludeSkipBtn");
   const loopRangeMark = document.getElementById("loopRangeMark");
   const loopSetABtn = document.getElementById("loopSetABtn");
   const loopSetBBtn = document.getElementById("loopSetBBtn");
@@ -2023,6 +2024,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const pct = Math.min(100, (cur / dur) * 100);
     progressBar.style.width = `${pct}%`;
     renderLoopRangeMark();
+    // 間奏狀態搭同一班車回來（見 player.js 的 TIME_UPDATE）：
+    // 這一頁不自己算空檔表，因為落點要用到只有舞台端才有的偏移與速度。
+    renderInterludeSkip(msg.interlude || null);
   });
 
   // --- 佇列拖曳排序 ---
@@ -2364,6 +2368,9 @@ document.addEventListener("DOMContentLoaded", () => {
       timeCurrent.textContent = "00:00";
       timeDuration.textContent = "00:00";
       progressBar.style.width = "0%";
+      // 沒有歌在播就不可能有間奏。這一條是必要的：TIME_UPDATE 只在播放中
+      // 才會送，切歌之後最後一則會永遠留在那裡，而那顆按鈕按下去什麼都不會發生。
+      renderInterludeSkip(null);
     }
 
     // Render upcoming queue
@@ -3219,6 +3226,35 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  /**
+   * 「跳過前奏／間奏」那顆浮動按鈕。
+   *
+   * 只在舞台說「現在正在倒數，而且跳過去真的省得到時間」時才出現。
+   * 這一頁刻意**不自己判斷**：空檔表活在歌詞時間軸上，而落點要再換回
+   * 音訊時間軸（差著這首歌的 LRC 偏移與兩點校正的速度，兩個都只在舞台端）。
+   * 兩邊各算一份的話，手機上的按鈕會比電視上的倒數早一步或晚一步消失 ——
+   * 而那種「按鈕剛剛還在」的落差，沒有任何人查得出原因。
+   */
+  function renderInterludeSkip(interlude) {
+    if (!interludeSkipBtn) return;
+    if (!interlude || !interlude.skippable) {
+      interludeSkipBtn.style.display = "none";
+      return;
+    }
+    const seconds = Math.max(0, Math.ceil(Number(interlude.remaining) || 0));
+    interludeSkipBtn.style.display = "block";
+    interludeSkipBtn.textContent = `⏩ 跳過${interlude.label || "間奏"}（還有 ${seconds} 秒）`;
+  }
+
+  if (interludeSkipBtn) {
+    interludeSkipBtn.addEventListener("click", async () => {
+      // 按下去就先收起來：倒數每 400ms 才更新一次，不收的話那 0.4 秒裡
+      // 這顆鍵還在原地，而連按兩下的第二下會落在「已經跳過去之後」。
+      interludeSkipBtn.style.display = "none";
+      await window.api.skipInterlude();
+    });
+  }
+
   // 進度條點一下就跳過去（歌太長時想直接練後半段）
   if (progressTrack) {
     progressTrack.addEventListener("click", (e) => {
@@ -3429,6 +3465,9 @@ document.addEventListener("DOMContentLoaded", () => {
                            hint: "有人點一首就重新計數" },
     intro_card_enabled: { label: "顯示導唱片頭卡" },
     intro_card_seconds: { label: "片頭卡秒數", unit: " 秒", step: 0.5 },
+    interlude_countdown_enabled: { label: "顯示間奏倒數" },
+    interlude_min_seconds: { label: "多長的空檔算間奏", unit: " 秒", step: 1 },
+    interlude_skip_enabled: { label: "允許跳過前奏／間奏" },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
     settlement_seconds: { label: "結算畫面秒數", unit: " 秒", step: 0.5 },
   };
@@ -3646,9 +3685,15 @@ document.addEventListener("DOMContentLoaded", () => {
     },
     {
       title: "🖥️ 舞台演出",
-      hint: "片頭卡與結算畫面的開關與停留時間，改完舞台端立刻套用。",
+      hint: "片頭卡、結算畫面與間奏倒數，改完舞台端立刻套用。" +
+            "間奏倒數是商用點歌機上那句「間奏 ♪ 18」——" +
+            "沒有它的話，前奏、字幕壞掉與機器當掉在螢幕上長得一模一樣，" +
+            "而猜錯的那一次被切掉的是一首沒有壞的歌。" +
+            "門檻以下的空檔不算間奏（那是樂句之間的換氣，" +
+            "閃一下的倒數只會把看歌詞的餘光拉走）。",
       keys: ["intro_card_enabled", "intro_card_seconds", "settlement_enabled",
-             "settlement_seconds"],
+             "settlement_seconds", "interlude_countdown_enabled",
+             "interlude_min_seconds", "interlude_skip_enabled"],
     },
   ];
 

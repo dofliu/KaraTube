@@ -1053,6 +1053,13 @@ class KaraTubeAPI {
     return await res.json();
   }
 
+  // 跳過正在倒數的前奏／間奏。刻意不帶秒數：該跳到哪裡只有舞台端算得出來
+  // （空檔表在歌詞時間軸上，seek 要用音訊時間軸，中間差著這首歌的偏移與速度）。
+  async skipInterlude() {
+    const res = await this.fetch(`${this.baseUrl}/api/skip-interlude`, { method: 'POST' });
+    return await res.json();
+  }
+
   // 公平輪唱：輪序歸零（換一批客人時用）。開關本身走 updateControl，
   // 因為它是共享狀態 —— 一支手機打開，包廂裡每一台都要看到規則變了。
   async resetRotation() {

@@ -404,3 +404,32 @@ test("點歌台那一行在速度校正過時要說得出來（手機上唯一�
   assert.ok(!plain.includes("×"));
   assert.ok(tuned.includes("1.024×"));
 });
+
+// --- 反函數：畫面上的時間 → seek 的目標 ---
+
+test("audioTimeFor 是 syncTimes 的反函數（兩個偏移與速度都要還得回去）", () => {
+  const ctx = { outputLatency: 0.05, deviceMs: 80, songMs: -300, rate: 1.03 };
+  for (const audioTime of [0, 7.5, 42, 193.25]) {
+    const { lyricTime } = LS.syncTimes({ audioTime, ...ctx });
+    const back = LS.audioTimeFor({ lyricTime, ...ctx });
+    assert.ok(Math.abs(back - audioTime) < 1e-9,
+              `${audioTime} → ${lyricTime} → ${back}`);
+  }
+});
+
+test("沒有任何偏移時反函數就是原值（最常見的那一首歌不該被繞一圈弄歪）", () => {
+  assert.equal(LS.audioTimeFor({ lyricTime: 61.5 }), 61.5);
+});
+
+test("調過的歌差得最多：直接拿歌詞時間去 seek 會落在第一句裡面", () => {
+  // +800ms 的 LRC 偏移 + 1.05× 速度，跳到「第 120 秒」差了好幾秒 ——
+  // 而那正是「跳過間奏之後第一句已經唱到一半」的成因。
+  const ctx = { songMs: 800, rate: 1.05 };
+  const target = LS.audioTimeFor({ lyricTime: 120, ...ctx });
+  assert.ok(Math.abs(target - 120) > 5);
+});
+
+test("壞掉的 rate 在反函數裡也當 1（不能讓 seek 目標變成 NaN）", () => {
+  assert.equal(LS.audioTimeFor({ lyricTime: 30, rate: 0 }), 30);
+  assert.ok(Number.isFinite(LS.audioTimeFor({ lyricTime: "x", deviceMs: null, rate: "y" })));
+});

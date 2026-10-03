@@ -151,6 +151,14 @@
       <span id="harmonyBadgeText">和聲</span>
     </div>
 
+    <!-- 智能修音徽章：修音開著時常駐，並說出「現在有沒有在修、為什麼沒在修」。
+         修音是整台機器唯一會改變使用者自己聲音的功能，所以它正在作用這件事
+         必須在**當下**看得見，而不是唱完才在紀錄裡看到。 -->
+    <div id="pitchFixBadge" class="pitch-fix-badge" style="display: none;" data-engaged="0">
+      <span class="pitch-fix-icon">🪄</span>
+      <span id="pitchFixBadgeText">修音</span>
+    </div>
+
     <!-- 升降 Key 徽章：不是原調的時候常駐。共享狀態會跟著下一首走，
          所以「這首為什麼特別高」要在畫面上答得出來。 -->
     <div id="keyBadge" class="key-badge" style="display: none;">
@@ -322,6 +330,9 @@
        實際移調的 harmony-worklet.js 不從這裡載入 —— 它是 AudioWorklet 模組，
        由 audio-effects.js 用 audioWorklet.addModule() 載進音訊執行緒。 -->
   <script src="/js/harmony-planner.js"></script>
+  <!-- 智能修音的純邏輯（修多少、什麼時候不修），player.js 會 new PitchFixer()。
+       跟和聲共用 harmony-worklet.js 那顆移調器，所以這裡一樣不載入 worklet。 -->
+  <script src="/js/pitch-fix.js"></script>
   <!-- 對唱模式的串音判定與對戰結果（純邏輯），player.js 會 new DuetScorer() -->
   <script src="/js/duet-scorer.js"></script>
   <!-- 情境背景：ambient-visuals.js 是決策（純邏輯，有測試），

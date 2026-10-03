@@ -97,6 +97,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const recordingBadge = document.getElementById("recordingBadge");
   const harmonyBadge = document.getElementById("harmonyBadge");
   const harmonyBadgeText = document.getElementById("harmonyBadgeText");
+  const pitchFixBadge = document.getElementById("pitchFixBadge");
+  const pitchFixBadgeText = document.getElementById("pitchFixBadgeText");
   const keyBadge = document.getElementById("keyBadge");
   const keyBadgeText = document.getElementById("keyBadgeText");
   const duetBoard = document.getElementById("duetBoard");
@@ -148,6 +150,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // 和聲（雙聲部）：跟著旋律在音階上疊三度／五度／低八度。
   // 開關與風格是共享控制參數（點歌台可改），這裡先照預設值建。
   const harmony = new HarmonyPlanner({ enabled: false, style: "third", level: 0.5 });
+  // 智能修音：把唱出來的音高推回這一幀的導唱音符上。
+  // 開關與強度是共享控制參數（點歌台可改），這裡先照預設值建。
+  const pitchFix = new PitchFixer({ enabled: false, strength: "medium" });
   // 對唱模式：兩支麥克風分別評分，並負責回答「這一幀該算誰的」（串音判定）。
   const duet = new DuetScorer({ enabled: false });
   // 第二支麥克風的自動增益。跟 A 各自獨立 —— 兩個人的音量與距離不會一樣，
@@ -275,6 +280,9 @@ document.addEventListener("DOMContentLoaded", () => {
   //（60fps 直接寫 textContent 會讓瀏覽器每幀重排一次版面）。
   let lastHarmonyFrameMs = 0;
   let lastHarmonyBadgeText = "";
+  let lastPitchFixFrameMs = 0;
+  let lastPitchFixBadgeText = "";
+  let lastPitchFixEngaged = false;
 
   // --- 對唱模式的狀態 ---
   // duetEnabled 是共享狀態（點歌台按下去所有裝置同步），
@@ -764,6 +772,118 @@ document.addEventListener("DOMContentLoaded", () => {
     lastHarmonyFrameMs = 0;
     window.audioEngine.resetHarmony();
     updateHarmonyBadge();
+  }
+
+  // --- 智能修音（把唱出來的音高推回導唱音符上）---
+
+  /**
+   * 修音在對唱模式下一律停用。
+   *
+   * 不是因為做不到，是因為**只有一顆移調器、一條導唱線**：
+   * 兩支麥克風要各自偵測音高、各自修，而這一版只有一條修音路徑接在 A 麥上。
+   * 硬把 A 的那一條留著的話，B 在唱的時候 A 麥收到的是**從喇叭繞回來的
+   * B 的聲音**，修音會照那個音高去追 —— 現場聽到的是「另一個人唱高音的時候，
+   * 我的聲音被往上拉」，而沒有人會聯想到修音。
+   *
+   * 停用這件事一定要**講出來**（徽章上那一行），不然「對唱一開修音就不見了」
+   * 只會被當成故障。
+   */
+  function pitchFixAvailable() {
+    return pitchFix.enabled && !duetActive;
+  }
+
+  /**
+   * 餵一幀給修音，把這一幀的修正量送進移調器。
+   *
+   * 吃的是**跟評分完全同一幀**的判定（frame.userMidi / frame.noteMidi）：
+   * 兩邊各自再偵測一次音高的話，分數說你準、修音卻在用力拉，
+   * 那種不一致在現場完全查不出來。而且音高偵測是整條迴圈裡最貴的一步。
+   *
+   * 評分看不到修過的訊號 —— micAnalyser 直接接在 micSource 上，
+   * 修音在整條前級鏈的最後面（見 audio-effects.js）。這是接線上的保證。
+   */
+  function updatePitchFix(frame, nowMs) {
+    const available = pitchFixAvailable();
+    if (!available) {
+      // 關掉（或切進對唱）的當下要立刻收掉，不能等下一幀 ——
+      // 下一幀可能是暫停中，而暫停中的迴圈永遠不會再來。
+      if (lastPitchFixFrameMs !== 0) {
+        lastPitchFixFrameMs = 0;
+        // release 而不是 reset：演唱還在繼續，統計不該被清掉
+        pitchFix.release();
+        window.audioEngine.setPitchFixShift(0);
+        window.audioEngine.setPitchFixEnabled(false);
+      }
+      updatePitchFixBadge();
+      return;
+    }
+    // 還沒接上就每一幀再試一次（而不是只在收到狀態那一刻試）。
+    // 麥克風比共享狀態晚開起來、對唱剛剛才關掉，都走這一條 ——
+    // 少了它的症狀是「修音開著、徽章也亮著，但聲音一點都沒變」，
+    // 而那是一次重整之後才會自己好的那種壞法。
+    // 三道前提讓這一行在常見情況下什麼都不做：已經接上了、確定不支援
+    // （只試一次就認了）、麥克風根本還沒開（接點不存在）。
+    const engine = window.audioEngine;
+    if (!engine.pitchFixActive && engine.pitchFixSupported !== false && engine.isMicActive) {
+      engine.setPitchFixEnabled(true);
+    }
+    const dtMs = lastPitchFixFrameMs ? (nowMs - lastPitchFixFrameMs) : 0;
+    lastPitchFixFrameMs = nowMs;
+    const plan = pitchFix.update(dtMs, frame);
+    window.audioEngine.setPitchFixShift(plan.shift);
+    updatePitchFixBadge();
+  }
+
+  /**
+   * 舞台徽章：修音開著時常駐。
+   *
+   * 「現在有沒有在修」與「為什麼沒在修」都要寫出來。修音有四種不作用的時機
+   * （沒人唱、這一段沒有導唱音符、差太多先不修、對唱模式），
+   * 其中三種是完全正常的 —— 不講的話「開了修音但聽起來一樣」會被當成故障，
+   * 而使用者的下一步是去按重新處理，或是切掉一首沒有壞的歌。
+   */
+  function updatePitchFixBadge() {
+    if (!pitchFixBadge) return;
+    const label = pitchFix.describe();
+    if (!label) {
+      if (pitchFixBadge.style.display !== "none") pitchFixBadge.style.display = "none";
+      lastPitchFixBadgeText = "";
+      return;
+    }
+    pitchFixBadge.style.display = "flex";
+    const status = duetActive ? "對唱模式下停用" : pitchFix.statusText();
+    const text = status ? `${label} · ${status}` : label;
+    if (text !== lastPitchFixBadgeText) {
+      lastPitchFixBadgeText = text;
+      pitchFixBadgeText.textContent = text;
+    }
+    // 真的在修的時候徽章亮起來：這是唯一一個「機器正在動你的聲音」的提示，
+    // 而使用者有權在當下看得見它（不是唱完才在紀錄裡看到）。
+    // 跟文字分開記：兩者**不保證同時變**（例如對唱模式下文字固定、
+    // 而 engaged 恆為 false），綁在一起的話會留下一個亮著卻沒在修的徽章。
+    const engaged = pitchFix.engaged && !duetActive;
+    if (engaged !== lastPitchFixEngaged) {
+      lastPitchFixEngaged = engaged;
+      pitchFixBadge.dataset.engaged = engaged ? "1" : "0";
+    }
+  }
+
+  /**
+   * 換歌／重唱：修正量與統計都屬於「這一次演唱」。
+   *
+   * 統計寫進 console 而不是結算畫面，是刻意的：結算畫面上那個分數是
+   * **原始歌聲**的分數（修音不進評分），把修音的數字放在旁邊會讓人以為
+   * 分數被修音加過 —— 而那正好是這個功能唯一不能被誤會的地方。
+   */
+  function resetPitchFix() {
+    if (pitchFix.enabled) {
+      const line = pitchFix.summary();
+      if (line) console.log(`[KaraTube] ${line}`);
+    }
+    pitchFix.reset();
+    lastPitchFixFrameMs = 0;
+    window.audioEngine.resetPitchFix();
+    updatePitchFixBadge();
   }
 
   // --- 升降 Key（伴奏即時移調）---
@@ -2576,6 +2696,34 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       updateHarmonyBadge();
     }
+    if (state.pitch_fix_enabled !== undefined || state.pitch_fix_strength !== undefined) {
+      const wasEnabled = pitchFix.enabled;
+      pitchFix.configure({
+        enabled: state.pitch_fix_enabled,
+        strength: state.pitch_fix_strength,
+      });
+      if (pitchFix.enabled && !wasEnabled) {
+        // 乾濕交叉的那一條（以及 worklet 的載入）由音訊引擎負責。
+        // 對唱模式下不接 —— updatePitchFix 每一幀都會照 duetActive 再判一次，
+        // 這裡只是不要在切進對唱時白載一支模組。
+        if (!duetActive) {
+          window.audioEngine.setPitchFixEnabled(true);
+          // 支不支援要等 worklet 真的載過才知道，所以警告排在載入之後。
+          // 麥克風還沒開起來時拿到的 false 只是「還沒輪到」（開麥克風時
+          // 每一幀都會再試一次），不是壞了 —— 只有真的確定不支援才警告。
+          window.audioEngine.initPitchFix().then((ok) => {
+            if (!ok && window.audioEngine.pitchFixSupported === false) {
+              showToast("⚠️ 此瀏覽器不支援智能修音（需 AudioWorklet）");
+            }
+          });
+        }
+        resetPitchFix();
+      } else if (!pitchFix.enabled && wasEnabled) {
+        window.audioEngine.setPitchFixEnabled(false);
+        resetPitchFix();
+      }
+      updatePitchFixBadge();
+    }
     if (state.sing_mode !== undefined) applySingMode(state.sing_mode);
     // 對唱模式：開關會去動硬體（第二支麥克風），所以是非同步的。
     // 不 await —— 這個函式後面還要處理播放狀態，等麥克風開起來會讓畫面卡住。
@@ -2670,6 +2818,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pitchEngineB.setPitchData(null);
       pitchEngineB.setSections([]);
       resetHarmony([]);
+      resetPitchFix();
       resetGuideDuck();
       resetDuet();
       // 這首歌的字幕偏移跟著歌走，沒有歌就歸零（本機基準保留）——
@@ -2755,6 +2904,8 @@ document.addEventListener("DOMContentLoaded", () => {
     resetDuet();
     // 和聲的調性是從這首歌的導唱音符估出來的，換歌一定要重估（不能沿用上一首的調）
     resetHarmony((pitch && pitch.notes) || []);
+    // 修音的統計屬於上一次演唱（唱畢那一行 console 就是在這裡寫出來的）
+    resetPitchFix();
     resetGuideDuck();
     // 只清這一首的自動增益統計，學到的增益保留（見 mic-agc.js resetStats 的說明）
     micAgc.resetStats();
@@ -2809,6 +2960,9 @@ document.addEventListener("DOMContentLoaded", () => {
     resetGuideDuck();
     // 調性不用重估（還是同一首歌），但移調器裡的殘留樣本要清掉
     resetHarmony();
+    // 重唱是新的一輪：修音的統計跟著評分一起歸零，不然「唱到一半重唱五次」
+    // 會把同一段副歌的修正量記進去五次（跟音域同一個理由）
+    resetPitchFix();
     micAgc.resetStats();
     showIntroCard(currentSongMeta);
     videoBg.currentTime = 0;
@@ -2988,6 +3142,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // 對唱模式下和聲只疊在 A 麥上 —— 第二支麥克風本身就是第二個聲部，
     // 再疊機器和聲會變成四個聲部混在一起，誰都聽不清楚。
     updateHarmony(frame, nowMs);
+    // 修音吃的是同一幀的 userMidi 與 noteMidi（評分已經算過了，不再偵測一次）。
+    // 順序排在和聲**之前**只是為了讀起來跟訊號流一致 —— 真正的順序由音訊圖
+    // 決定（修音在 micGain 之前、和聲接在 micGain 之後，所以和聲疊的是修過的音）。
+    updatePitchFix(frame, nowMs);
     if (showPitch) {
       pitchEngine.updateAndRender(scoreTime,
         duetActive ? [{ engine: pitchEngineB, color: DUET_B_COLOR }] : []);

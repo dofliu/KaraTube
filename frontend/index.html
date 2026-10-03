@@ -452,6 +452,39 @@
         </p>
       </div>
 
+      <!-- 智能修音：把唱出來的音高推回這一幀的導唱音符上
+           （金嗓的「美聲」、全民K歌與唱吧的「智能修音」） -->
+      <div class="mixer-section">
+        <div class="mixer-section-title">
+          🪄 智能修音
+          <button id="pitchFixToggleBtn" class="btn btn-secondary mixer-mini-btn"
+                  title="一鍵開關智能修音">關閉中</button>
+        </div>
+
+        <div class="mixer-row">
+          <label>🎯 強度<small>修多少、修多快</small></label>
+          <div class="mode-switch pitch-fix-strengths" style="flex: 1;">
+            <button class="mode-btn pitch-fix-strength-btn" data-strength="light"
+                    title="只修定住之後的偏差，抖音與轉音完全保留">輕</button>
+            <button class="mode-btn pitch-fix-strength-btn" data-strength="medium"
+                    title="聽得出來比較準，但還聽得出是你在唱">中</button>
+            <button class="mode-btn pitch-fix-strength-btn" data-strength="strong"
+                    title="貼著導唱音符走，抖音會被削掉一部分">強</button>
+          </div>
+        </div>
+
+        <p id="pitchFixHint" class="mixer-hint">關閉中</p>
+
+        <p class="mixer-hint">
+          修音的目標是<b>這首歌的導唱音符</b>，不是最近的半音 ——
+          吸附到最近的半音會把走音的地方修得更有自信。所以<b>沒有導唱音符的段落
+          （前奏、間奏、念白）與差超過一個半音半的時候一律不修</b>。
+          <b>分數不受修音影響</b>：評分讀的是麥克風的原始訊號，修音在那之後。
+          修音屬於人聲，<b>單人模式（人聲不進喇叭）聽不到</b>；
+          <b>對唱模式下自動停用</b>（兩支麥克風會互相串音）。
+        </p>
+      </div>
+
       <!-- 對唱模式：兩支麥克風分別評分，唱完比出勝負 -->
       <div class="mixer-section">
         <div class="mixer-section-title">

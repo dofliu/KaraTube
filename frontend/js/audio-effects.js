@@ -77,6 +77,21 @@ class AudioEngine {
     // 這個初值只是「還沒報到之前的合理估計」（90ms 視窗的一半）。
     this.keyShiftLatencySeconds = 0.045;
 
+    // 智能修音（把唱出來的音高推回導唱音符上）。移調跟和聲共用同一顆
+    // worklet（harmony-shifter）—— 修音的移調量永遠在 ±1.5 半音以內，
+    // 那是這顆移調器最輕鬆的工況（見 frontend/js/pitch-fix.js 檔頭）。
+    // 跟升降 Key 一樣做成乾濕兩條：關著的時候乾路上只有一顆增益 1.0 的
+    // GainNode，逐樣本等於沒有這個功能之前的訊號，也不多背那 22ms 的延遲。
+    this.pitchFixNode = null;
+    this.pitchFixDryGain = null;
+    this.pitchFixWetGain = null;
+    this.pitchFixEnabled = false;
+    this.pitchFixActive = false;
+    this.pitchFixShift = 0;
+    this.pitchFixReady = false;
+    this.pitchFixSupported = null;   // null = 還沒試過
+    this._pitchFixLoading = null;
+
     // 情境背景用的音樂頻譜分析節點（延遲建立：沒開情境背景就不必多掛一個節點）
     this.musicAnalyser = null;
 
@@ -560,7 +575,26 @@ class AudioEngine {
       // 放在效果送出之前，單人模式才能連殘響與回音一起靜音。
       this._buildMicChain();
       this._routeInputs();
-      this.micLimiter.connect(this.micGain);
+
+      // 智能修音的乾濕分岔，接在整條前級鏈的**最後面**（限幅器之後）。
+      //
+      // 為什麼在最後面：前面每一段量的都是「原始電平與原始頻譜」——
+      // 自動增益看電平、防嘯叫在頻譜上找那根自激的峰、限幅器看峰值。
+      // 把修音插到它們之前的話，防嘯叫會對著一個**音高一直在被搬動**的訊號
+      // 找峰，而它記住的那根峰下一幀已經被修音搬到別的頻率去了 ——
+      // 症狀是凹槽追著自己挖的洞跑，而現場看到的是「防嘯叫開著卻壓不住」。
+      //
+      // 關著的時候 wet = 0、dry = 1：乾路上只有一顆增益 1.0 的 GainNode，
+      // 逐樣本等於沒有修音之前的訊號。這一條跟升降 Key 的原調旁路同一個理由 ——
+      // 九成以上的時間修音是關著的，不該為了一個沒開的功能一直背著
+      // 移調器那 22ms 的延遲（監聽延遲在包廂裡會被講成「我的聲音慢半拍」）。
+      this.pitchFixDryGain = this.ctx.createGain();
+      this.pitchFixDryGain.gain.value = 1.0;
+      this.pitchFixWetGain = this.ctx.createGain();
+      this.pitchFixWetGain.gain.value = 0.0;
+      this.micLimiter.connect(this.pitchFixDryGain);
+      this.pitchFixDryGain.connect(this.micGain);
+      this.pitchFixWetGain.connect(this.micGain);
 
       this.micGain.connect(this.monitorGain);
       this.monitorGain.connect(this.mixBus); // Direct vocal
@@ -1162,6 +1196,140 @@ class AudioEngine {
       if (this.ctx) voice.gain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
       try { voice.node.port.postMessage({ type: "reset" }); } catch (e) { /* 節點已收掉 */ }
     });
+  }
+
+  // --- 智能修音（把唱出來的音高推回導唱音符上）---
+  //
+  // 修多少由 pitch-fix.js 每一幀算出來（吃的是評分心跳那一幀的 userMidi 與
+  // noteMidi），這裡只負責把那個數字送進移調器、以及乾濕兩條路的交叉淡接。
+  //
+  // **評分看不到修過的訊號**，而且是結構上的保證不是一條 if：
+  // 音準偵測用的 micAnalyser 直接接在 micSource 上（見 _routeInputs()），
+  // 而修音在整條鏈的最後面。接反了的症狀是所有人都一百分，
+  // 而那一天之後這台機器的分數就再也沒有意義了。
+  //
+  // 和聲接在 micGain 之後，也就是**修過的訊號**上 —— 這是刻意的：
+  // 和聲是照主唱的音往上疊三度，照走音的那一版疊的話兩個聲部會一起歪。
+
+  /**
+   * 載入移調用的 AudioWorklet 並建立修音節點。
+   *
+   * 跟升降 Key 一樣是第一次真的要用才載入。重複呼叫安全。
+   * 用的是和聲那一支模組（harmony-shifter）—— addModule 對同一個 URL
+   * 重複呼叫是安全的，所以和聲已經載過也不必特別處理。
+   *
+   * @returns {Promise<boolean>} 這台機器支不支援修音
+   */
+  async initPitchFix() {
+    if (this.pitchFixReady) return true;
+    if (this.pitchFixSupported === false) return false;
+    if (this._pitchFixLoading) return this._pitchFixLoading;
+
+    this._pitchFixLoading = (async () => {
+      // 麥克風還沒開（沒有 micLimiter）是「還沒輪到」，不是不支援 ——
+      // 判成不支援的話，之後麥克風開起來也不會再試一次。
+      if (!this.ctx || !this.micLimiter || !this.pitchFixWetGain) return false;
+      if (!this.ctx.audioWorklet) {
+        this.pitchFixSupported = false;
+        return false;
+      }
+      try {
+        await this.ctx.audioWorklet.addModule("/js/harmony-worklet.js");
+        this.pitchFixNode = new AudioWorkletNode(this.ctx, "harmony-shifter", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+      } catch (e) {
+        console.warn("移調模組載入失敗，此瀏覽器不支援智能修音:", e);
+        this.pitchFixSupported = false;
+        return false;
+      }
+      this.micLimiter.connect(this.pitchFixNode);
+      this.pitchFixNode.connect(this.pitchFixWetGain);
+      this.pitchFixSupported = true;
+      this.pitchFixReady = true;
+      return true;
+    })();
+
+    const ok = await this._pitchFixLoading;
+    this._pitchFixLoading = null;
+    return ok;
+  }
+
+  /**
+   * 修音的總開關。
+   *
+   * 切換的是**乾濕兩條路**，不是修正量：修正量為 0 的時候移調器是一條
+   * 固定延遲的直通（延遲量停在視窗中央、窗形恆為 1），所以開著而沒在修的
+   * 時候聲音是乾淨的，只是晚了 22ms。把「有沒有在修」拿來切換乾濕的話，
+   * 每一個字的頭尾都會切換一次，而那是一秒好幾次的交叉淡接。
+   *
+   * @returns {boolean} 實際有沒有開起來（不支援的瀏覽器回 false）
+   */
+  setPitchFixEnabled(enabled) {
+    const want = !!enabled;
+    this.pitchFixEnabled = want;
+    if (!this.ctx || !this.pitchFixWetGain) return false;
+
+    if (want && !this.pitchFixReady) {
+      // 非同步載入，載好之後照**最新的**開關再走一次（使用者可能已經關掉了）
+      this.initPitchFix().then((ok) => { if (ok) this.setPitchFixEnabled(this.pitchFixEnabled); });
+      return false;
+    }
+
+    const active = want && this.pitchFixReady;
+    if (active === this.pitchFixActive) return active;
+
+    // 從乾切到濕的那一刻，移調器裡還留著上次開著時的樣本 —— 清掉，
+    // 免得它先播出十分之一秒前那段聲音（跟升降 Key 同一個理由）。
+    if (active && this.pitchFixNode) {
+      this.pitchFixShift = 0;
+      const param = this.pitchFixNode.parameters.get("shift");
+      if (param) param.value = 0;
+      try { this.pitchFixNode.port.postMessage({ type: "reset" }); } catch (e) { /* 節點已收掉 */ }
+    }
+
+    this.pitchFixActive = active;
+    const now = this.ctx.currentTime;
+    // 60ms 交叉淡接。兩條路差著 22ms 的延遲，交叉期間會有一瞬間的相位干涉——
+    // 但那一瞬間正是使用者自己按下修音的時候，而硬切換來的是一聲爆音。
+    this.pitchFixWetGain.gain.setTargetAtTime(active ? 1 : 0, now, 0.06);
+    this.pitchFixDryGain.gain.setTargetAtTime(active ? 0 : 1, now, 0.06);
+    return active;
+  }
+
+  /**
+   * 這一幀要修多少半音（pitch-fix.js 算出來的）。
+   *
+   * 每秒會被呼叫六十次，所以值沒變就什麼都不做：k-rate 參數每寫一次
+   * 就是一次跨執行緒寫入，而修音大部分時間停在同一個值上
+   * （一個字唱穩之後修正量就定住了）。
+   */
+  setPitchFixShift(semitones) {
+    const n = Math.max(-2, Math.min(2, Number(semitones) || 0));
+    if (!this.pitchFixNode || !this.pitchFixActive) {
+      this.pitchFixShift = n;
+      return n;
+    }
+    // 1 cent 以下不寫。人耳在包廂裡分得出來的最小差異約 5~10 cent，
+    // 寫下去只是讓音訊執行緒一直被叫醒。
+    if (Math.abs(n - this.pitchFixShift) < 0.01) return this.pitchFixShift;
+    this.pitchFixShift = n;
+    const param = this.pitchFixNode.parameters.get("shift");
+    // 跟和聲同一個理由：worklet 裡的延遲量是連續的，改變的只是它前進的
+    // 速度，所以直接設值不會有爆音，不需要排斜坡。
+    if (param) param.value = n;
+    return n;
+  }
+
+  /** 換歌／重唱：修正量歸零、清掉移調器裡上一首的殘留樣本。 */
+  resetPitchFix() {
+    this.pitchFixShift = 0;
+    if (!this.pitchFixNode) return;
+    const param = this.pitchFixNode.parameters.get("shift");
+    if (param) param.value = 0;
+    try { this.pitchFixNode.port.postMessage({ type: "reset" }); } catch (e) { /* 節點已收掉 */ }
   }
 
   // --- 音訊裝置選擇 ---

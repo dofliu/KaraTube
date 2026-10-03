@@ -16,6 +16,7 @@ from backend.services import song_quota
 from backend.services.local_import import is_local_id, local_url
 # 三段音色等化器的合法範圍。純邏輯、不反向 import，所以這個方向不會有循環。
 from backend.services.tone_eq import (MIC_EQ_LIMIT_DB, MUSIC_EQ_LIMIT_DB, coerce_eq_db)
+from backend.services.pitch_fix import coerce_strength as coerce_pitch_fix_strength
 # 和聲風格的選項只有一份（設定頁與控制參數共用），避免兩邊各列一次而漂走
 from backend.services.settings import HARMONY_STYLE_CHOICES
 
@@ -116,6 +117,13 @@ class QueueManager:
         self.harmony_enabled: bool = False
         self.harmony_style: str = "third"
         self.harmony_level: float = 0.5
+        # 智能修音（把唱出來的音高推回導唱音符上）。
+        # 開關與強度分成兩個欄位而不是四選一（off/輕/中/強）：做成四選一的話，
+        # 設定檔裡存著 off 的機器下次有人打開修音時，打開的是一個沒有作用的功能。
+        # 實際修多少由舞台端依這一幀的導唱音符與偵測到的音高算
+        # （frontend/js/pitch-fix.js）—— 伺服器不處理音訊。
+        self.pitch_fix_enabled: bool = False
+        self.pitch_fix_strength: str = "medium"
         # 對唱模式：兩支麥克風分別評分。
         # 開關與兩位演唱者的暱稱是共享狀態（點歌台按下去所有裝置同步），
         # 但「第二支麥克風接在哪」是那台機器的硬體接法，記在舞台端的 localStorage。
@@ -218,6 +226,8 @@ class QueueManager:
             "harmony_enabled": self.harmony_enabled,
             "harmony_style": self.harmony_style,
             "harmony_level": self.harmony_level,
+            "pitch_fix_enabled": self.pitch_fix_enabled,
+            "pitch_fix_strength": self.pitch_fix_strength,
             "duet_enabled": self.duet_enabled,
             "duet_name_a": self.duet_name_a,
             "duet_name_b": self.duet_name_b,
@@ -1126,6 +1136,12 @@ class QueueManager:
                 self.harmony_style = style
         if "harmony_level" in params:
             self.harmony_level = max(0.0, min(1.0, float(params["harmony_level"])))
+        if "pitch_fix_enabled" in params:
+            self.pitch_fix_enabled = bool(params["pitch_fix_enabled"])
+        if "pitch_fix_strength" in params:
+            # 認不得的強度回預設值（不是保留原值）：強度只有三段而且都有作用，
+            # 送錯字串的那一台不該卡在使用者剛剛才改掉的那一段上。
+            self.pitch_fix_strength = coerce_pitch_fix_strength(params["pitch_fix_strength"])
         if "duet_enabled" in params:
             self.duet_enabled = bool(params["duet_enabled"])
         # 暱稱長度截 12 字：對唱計分板一行要塞兩個名字，手機端塞爆版面的話

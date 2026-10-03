@@ -1096,6 +1096,46 @@ body.hide-pitch .pitch-visualizer-container {
   font-size: 14px;
 }
 
+/* 智能修音徽章（同一欄第六層，右側徽章疊到這裡為止）。
+   綠色是「機器在幫你」的顏色，跟升降 Key（紫）與和聲（粉）分得開 ——
+   三者都在動音高，但修音動的是**使用者自己的聲音**，那是另一回事。
+
+   修音一開就常駐，而且沒在修的時候也要留在畫面上講原因：
+   修音有四種不作用的時機（沒人唱、這一段沒有導唱音符、差太多先不修、
+   對唱模式下停用），其中三種完全正常 —— 徽章消失的話，
+   「開了修音但聽起來一樣」只會被當成故障。
+
+   真的在修的那一刻才整個亮起來（data-engaged）。一直亮著的話，
+   那個提示就失去「現在機器正在動你的聲音」的意義。 */
+.pitch-fix-badge {
+  position: absolute;
+  bottom: 244px;
+  right: 40px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-green, #4ade80);
+  border-left: 3px solid var(--accent-green, #4ade80);
+  animation: guideDuckFadeIn 0.4s ease-out;
+  transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+
+.pitch-fix-badge[data-engaged="1"] {
+  background: rgba(0, 48, 24, 0.68);
+  box-shadow: 0 0 18px rgba(74, 222, 128, 0.28);
+}
+
+.pitch-fix-icon {
+  font-size: 14px;
+}
+
 /* 升降 Key 徽章（同一欄第五層）。
    紫色是「整首歌被搬到別的調上」的顏色，跟和聲（粉）分得開 —— 兩者都在動
    音高，但一個是多疊一個聲部，一個是整個伴奏搬家。

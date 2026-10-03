@@ -2556,6 +2556,13 @@ document.addEventListener("DOMContentLoaded", () => {
       renderHarmonyUI();
     }
 
+    // 智能修音：跟和聲同一個理由，任何一台裝置改過都要同步回來
+    if (state.pitch_fix_enabled !== undefined || state.pitch_fix_strength !== undefined) {
+      if (state.pitch_fix_enabled !== undefined) pitchFixEnabled = !!state.pitch_fix_enabled;
+      if (state.pitch_fix_strength !== undefined) pitchFixStrength = state.pitch_fix_strength;
+      renderPitchFixUI();
+    }
+
     // 對唱模式：舞台端第二支麥克風開不起來時會把 duet_enabled 改回 false，
     // 這裡同步回來，按鈕才不會停在「已開啟」而實際上沒在對唱
     if (state.duet_enabled !== undefined && !!state.duet_enabled !== duetEnabled) {
@@ -2923,6 +2930,63 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPercentSlider(harmonyLevelSlider, harmonyLevelText, "harmony_level");
   renderHarmonyUI();
 
+  // --- 智能修音（把唱出來的音高推回導唱音符上）---
+  // 開關與強度都是共享控制參數：包廂裡任何一台改了，每一台都要看得到 ——
+  // 修音會改變**別人聽到的你**，而「我的聲音怎麼不一樣了」是沒有人查得到的問題，
+  // 除非每一支手機上都寫著現在開著。
+  const pitchFixToggleBtn = document.getElementById("pitchFixToggleBtn");
+  const pitchFixHint = document.getElementById("pitchFixHint");
+  const pitchFixStrengthBtns = document.querySelectorAll(".pitch-fix-strength-btn");
+
+  let pitchFixEnabled = false;
+  let pitchFixStrength = "medium";
+
+  // 一句話說明。三段的差別不是「修多少」而是「修多快」——
+  // 而「修多快」決定的是抖音與轉音活不活得下來，那件事光看「輕／中／強」
+  // 三個字完全猜不到，所以一定要寫出來。
+  const PITCH_FIX_NOTES = {
+    light: "輕：只修定住之後的偏差，抖音與轉音完全保留",
+    medium: "中：聽得出來比較準，但還聽得出是你在唱",
+    strong: "強：貼著導唱音符走，抖音會被削掉一部分",
+  };
+
+  function renderPitchFixUI() {
+    pitchFixToggleBtn.textContent = pitchFixEnabled ? "已開啟" : "關閉中";
+    pitchFixToggleBtn.classList.toggle("btn-primary", pitchFixEnabled);
+    pitchFixToggleBtn.classList.toggle("btn-secondary", !pitchFixEnabled);
+    pitchFixStrengthBtns.forEach((btn) => {
+      btn.classList.toggle("active", pitchFixEnabled && btn.dataset.strength === pitchFixStrength);
+    });
+    if (pitchFixHint) {
+      pitchFixHint.textContent = pitchFixEnabled
+        ? (PITCH_FIX_NOTES[pitchFixStrength] || "")
+        : "關閉中";
+    }
+  }
+
+  pitchFixToggleBtn.addEventListener("click", () => {
+    pitchFixEnabled = !pitchFixEnabled;
+    renderPitchFixUI();
+    window.api.updateControl({ pitch_fix_enabled: pitchFixEnabled });
+  });
+
+  pitchFixStrengthBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pitchFixStrength = btn.dataset.strength;
+      // 跟和聲的聲部鍵同一個決定：直接按強度就等於「我要修音」。
+      // 還要再按一次開關才有聲音的話，沒有人找得到那一步。
+      const patch = { pitch_fix_strength: pitchFixStrength };
+      if (!pitchFixEnabled) {
+        pitchFixEnabled = true;
+        patch.pitch_fix_enabled = true;
+      }
+      renderPitchFixUI();
+      window.api.updateControl(patch);
+    });
+  });
+
+  renderPitchFixUI();
+
   // --- 對唱模式（兩支麥克風分別評分）---
   // 開關與兩位演唱者的暱稱是共享控制參數；「第二支麥克風接在哪」不在這裡 ——
   // 那是舞台端那台機器的硬體接法（見 player.html 的音訊裝置面板）。
@@ -3041,11 +3105,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // 歸零是看得見、推回去就好的（滑桿會跳回 0），不像「音量被偷偷轉小」。
     eqValues.mic = { bass: 0, mid: 0, treble: 0 };
     renderEq("mic");
+    // 修音也一起關掉。「乾聲」是「只剩我自己的聲音」，而修音是這條鏈上
+    // 唯一會改變**音高**的東西 —— 留著它的話，按下乾聲之後出來的
+    // 仍然不完全是這個人唱的那個音。而且修音那條路多背著 22ms 的延遲，
+    // 按乾聲的人常常正是在抱怨「我的聲音慢半拍」。
+    pitchFixEnabled = false;
+    renderPitchFixUI();
     window.api.updateControl({
-      mic_reverb: 0, mic_echo: 0, harmony_enabled: false,
+      mic_reverb: 0, mic_echo: 0, harmony_enabled: false, pitch_fix_enabled: false,
       mic_eq_bass: 0, mic_eq_mid: 0, mic_eq_treble: 0,
     });
-    showNotification("🎙️ 已切換為乾聲（殘響、回音、和聲與麥克風音色歸零）");
+    showNotification("🎙️ 已切換為乾聲（殘響、回音、和聲、修音與麥克風音色歸零）");
   });
 
   // --- 調音台開關 ---
@@ -3384,6 +3454,11 @@ document.addEventListener("DOMContentLoaded", () => {
       },
     },
     default_harmony_level: { label: "和聲音量", percent: true },
+    default_pitch_fix_enabled: { label: "開機就開修音", hint: "預設關" },
+    default_pitch_fix_strength: {
+      label: "修音強度",
+      choiceLabels: { light: "輕", medium: "中", strong: "強" },
+    },
     default_duet_enabled: { label: "開機就開對唱", hint: "預設關" },
     duet_crosstalk_margin_db: { label: "串音判定門檻", unit: " dB", step: 1 },
     default_sing_mode: { label: "演唱模式", choiceLabels: { solo: "🎧 單人", party: "🔊 多人" } },
@@ -3482,6 +3557,7 @@ document.addEventListener("DOMContentLoaded", () => {
              "default_mic_eq_bass", "default_mic_eq_mid", "default_mic_eq_treble",
              "default_music_eq_bass", "default_music_eq_mid", "default_music_eq_treble",
              "default_harmony_enabled", "default_harmony_style", "default_harmony_level",
+             "default_pitch_fix_enabled", "default_pitch_fix_strength",
              "default_sing_mode", "default_show_pitch"],
     },
     {

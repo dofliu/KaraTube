@@ -465,6 +465,48 @@ def test_apply_defaults_pushes_eq_into_live_controls(restore_settings):
         queue_manager._apply_controls(saved)
 
 
+def test_pitch_fix_controls_round_trip_through_the_shared_state():
+    """修音的開關與強度是共享狀態：任何一台裝置改了，每一台都要看得到。
+
+    修音會改變**別人聽到的你**，而「我的聲音怎麼不一樣了」是沒有人查得到的
+    問題 —— 除非每一支手機上都寫著現在開著、開到第幾段。
+    """
+    saved = queue_manager.get_full_state()
+    try:
+        client.post("/api/control", json={"pitch_fix_enabled": True,
+                                          "pitch_fix_strength": "strong"})
+        state = client.get("/api/queue").json()
+        assert state["pitch_fix_enabled"] is True
+        assert state["pitch_fix_strength"] == "strong"
+
+        # 只送強度不該把開關關掉（兩個欄位分開送，滑桿與開關是兩顆按鍵）
+        client.post("/api/control", json={"pitch_fix_strength": "light"})
+        state = client.get("/api/queue").json()
+        assert state["pitch_fix_enabled"] is True
+        assert state["pitch_fix_strength"] == "light"
+
+        # 認不得的強度退回預設，而不是讓整包控制參數被丟掉或回 500
+        res = client.post("/api/control", json={"pitch_fix_strength": "off"})
+        assert res.status_code == 200
+        assert client.get("/api/queue").json()["pitch_fix_strength"] == "medium"
+    finally:
+        queue_manager._apply_controls(saved)
+
+
+def test_apply_defaults_pushes_pitch_fix_into_live_controls(restore_settings):
+    saved = queue_manager.get_full_state()
+    try:
+        client.post("/api/settings", json={"default_pitch_fix_enabled": True,
+                                           "default_pitch_fix_strength": "light"})
+        res = client.post("/api/settings/apply-defaults")
+        assert res.status_code == 200
+        state = client.get("/api/queue").json()
+        assert state["pitch_fix_enabled"] is True
+        assert state["pitch_fix_strength"] == "light"
+    finally:
+        queue_manager._apply_controls(saved)
+
+
 def test_loudness_endpoint_404_for_unknown_song():
     res = client.get("/api/songs/nonexistent_song/loudness")
     assert res.status_code == 404

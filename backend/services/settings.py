@@ -38,6 +38,10 @@ from backend.services.service_calls import (DEFAULT_STALE_MINUTES, MAX_STALE_MIN
                                             MIN_STALE_MINUTES)
 # 三段音色等化器的合法範圍同理：規則寫在 tone_eq，設定頁只是把它們列出來。
 from backend.services.tone_eq import MIC_EQ_LIMIT_DB, MUSIC_EQ_LIMIT_DB
+# 智能修音的強度選項。規則（修多少、滑多快、捕捉範圍）寫在 pitch_fix，
+# 設定頁只是把選項列出來 —— 兩邊各寫一份的話遲早會分岔。
+from backend.services.pitch_fix import (DEFAULT_PITCH_FIX_STRENGTH,
+                                        PITCH_FIX_STRENGTH_CHOICES)
 # 自動接歌的挑歌來源與時間上下限同理：規則寫在 autofill，設定頁只是列出來。
 from backend.services.autofill import (DEFAULT_IDLE_SECONDS, DEFAULT_SOURCE,
                                        DEFAULT_STOP_AFTER, MAX_IDLE_SECONDS, MAX_STOP_AFTER,
@@ -111,6 +115,16 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     "default_harmony_style": {"type": "choice", "default": "third",
                               "choices": HARMONY_STYLE_CHOICES},
     "default_harmony_level": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0},
+
+    # --- 智能修音（把唱出來的音高推回導唱音符上）---
+    # 預設關著，而且這一條比和聲更不能預設打開：修音會改變**使用者自己的聲音**，
+    # 而「我的聲音聽起來不一樣了」在包廂裡是會被當成故障的那一類問題。
+    # 開著出廠的話，第一個覺得怪的人要先知道有這個功能、才查得到原因。
+    # 強度預設「中」—— 三段裡唯一一個「聽得出比較準、也還聽得出是你在唱」的位置；
+    # 預設給「強」的話第一次按下去的人聽到的是修音的味道，不是自己的歌聲。
+    "default_pitch_fix_enabled": {"type": "bool", "default": False},
+    "default_pitch_fix_strength": {"type": "choice", "default": DEFAULT_PITCH_FIX_STRENGTH,
+                                   "choices": PITCH_FIX_STRENGTH_CHOICES},
 
     # --- 對唱模式（兩支麥克風分別評分）---
     # 預設關著：第二支麥克風不是每台機器都有，開機就打開只會讓舞台端
@@ -327,6 +341,8 @@ CONTROL_DEFAULT_KEYS = {
     "default_harmony_enabled": "harmony_enabled",
     "default_harmony_style": "harmony_style",
     "default_harmony_level": "harmony_level",
+    "default_pitch_fix_enabled": "pitch_fix_enabled",
+    "default_pitch_fix_strength": "pitch_fix_strength",
     "default_duet_enabled": "duet_enabled",
     "default_sing_mode": "sing_mode",
     "default_show_pitch": "show_pitch",

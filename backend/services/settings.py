@@ -42,6 +42,9 @@ from backend.services.tone_eq import MIC_EQ_LIMIT_DB, MUSIC_EQ_LIMIT_DB
 # 設定頁只是把選項列出來 —— 兩邊各寫一份的話遲早會分岔。
 from backend.services.pitch_fix import (DEFAULT_PITCH_FIX_STRENGTH,
                                         PITCH_FIX_STRENGTH_CHOICES)
+# 介面語言的清單與夾限同理：規則寫在 i18n，設定頁只是把舞台那一台的選擇存起來。
+# （點歌台與手機的語言不經過這裡 —— 那是每台裝置自己的事，見 i18n.py 決定一。）
+from backend.services.i18n import DEFAULT_STAGE_LOCALE, LOCALE_CODES, coerce_locale
 # 自動接歌的挑歌來源與時間上下限同理：規則寫在 autofill，設定頁只是列出來。
 from backend.services.autofill import (DEFAULT_IDLE_SECONDS, DEFAULT_SOURCE,
                                        DEFAULT_STOP_AFTER, MAX_IDLE_SECONDS, MAX_STOP_AFTER,
@@ -319,6 +322,15 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 跳過會動到播放位置 —— 有些店不希望客人跳過前奏（MV 的版權畫面在那幾秒），
     # 所以關得掉，而且關掉之後倒數照常顯示。
     "interlude_skip_enabled": {"type": "bool", "default": True},
+
+    # --- 介面語言 ---
+    # 舞台那一塊螢幕的語言。它是**包廂的**屬性而不是裝置的：舞台只有一塊，
+    # 不屬於誰，所以換一台筆電開舞台也要是同一種語言。
+    # 點歌台與每支手機的語言各自存在自己的 localStorage 裡，不經過這裡 ——
+    # 同一間包廂的三支手機各看各的語言才合理（見 backend/services/i18n.py 決定一）。
+    # 預設繁中：升級上來的現役機器，舞台的行為跟這一版之前一模一樣。
+    "stage_locale": {"type": "choice", "default": DEFAULT_STAGE_LOCALE,
+                     "choices": list(LOCALE_CODES)},
 }
 
 # 設定裡的「開機預設值」對應到 QueueManager 的哪個控制欄位
@@ -556,4 +568,7 @@ class SystemSettings:
             # 舞台端算的是毫秒（錄音長度用 performance.now() 量），
             # 在這裡換算好，兩邊才不會各自乘一次 1000 而差一個數量級。
             "recording_min_sing_ms": int(data["recording_min_sing_seconds"] * 1000),
+            # 舞台的介面語言。夾一次再送出去，設定檔被手改壞也不會讓舞台
+            # 拿著一個字典裡沒有的代碼去查字（症狀是整面 HUD 只剩 key）。
+            "stage_locale": coerce_locale(data["stage_locale"], DEFAULT_STAGE_LOCALE),
         }

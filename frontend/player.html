@@ -23,8 +23,8 @@
   <div id="audioPromptOverlay" class="audio-prompt-overlay">
     <div class="audio-prompt-box">
       <div style="font-size: 52px; margin-bottom: 12px;">🎤</div>
-      <h2 style="font-size: 26px; font-weight: 800; color: #fff; margin-bottom: 8px;">點擊螢幕啟用 KTV 伴唱音效與麥克風</h2>
-      <p style="font-size: 14px; color: var(--accent-cyan);">點擊後即可解鎖瀏覽器聲音播放與麥克風即時評分！</p>
+      <h2 style="font-size: 26px; font-weight: 800; color: #fff; margin-bottom: 8px;" data-i18n="stage.unlock_title">點擊螢幕啟用 KTV 伴唱音效與麥克風</h2>
+      <p style="font-size: 14px; color: var(--accent-cyan);" data-i18n="stage.unlock_hint">點擊後即可解鎖瀏覽器聲音播放與麥克風即時評分！</p>
     </div>
   </div>
 
@@ -52,8 +52,8 @@
     <!-- Top HUD: Song Info & Score -->
     <header class="stage-header">
       <div class="stage-song-info">
-        <div id="stageTitle" class="stage-song-title">KaraTube 伴唱系統</div>
-        <div id="stageArtist" class="stage-song-artist">請在點歌台搜尋並點播歌曲</div>
+        <div id="stageTitle" class="stage-song-title" data-i18n="stage.idle_title">KaraTube 伴唱系統</div>
+        <div id="stageArtist" class="stage-song-artist" data-i18n="stage.idle_artist">請在點歌台搜尋並點播歌曲</div>
       </div>
 
       <!-- 歡唱時間倒數：只在最後十分鐘出現（見 room-view.js roomStageBadge）。
@@ -105,7 +105,7 @@
            畫面上永遠只有一套倒數在跑。 -->
       <div id="interludeBand" class="interlude-band" style="display: none;">
         <span class="interlude-icon">♪</span>
-        <span id="interludeLabel" class="interlude-label">間奏</span>
+        <span id="interludeLabel" class="interlude-label" data-i18n="stage.interlude">間奏</span>
         <span id="interludeCount" class="interlude-count"></span>
         <div class="interlude-track"><div id="interludeFill" class="interlude-fill"></div></div>
         <span id="interludeHint" class="interlude-hint"></span>
@@ -123,32 +123,32 @@
     <!-- 練唱模式徽章：A-B 循環開著時常駐，讓台上的人知道現在在跳針不是機器壞了 -->
     <div id="practiceBadge" class="practice-badge" style="display: none;">
       <span class="practice-badge-icon">🔁</span>
-      <span id="practiceBadgeText">練唱循環</span>
+      <span id="practiceBadgeText" data-i18n="stage.practice">練唱循環</span>
     </div>
 
     <!-- 導唱自動淡出徽章：導唱被自動壓小時亮，免得被當成機器把導唱吃掉了 -->
     <div id="guideDuckBadge" class="guide-duck-badge" style="display: none;">
       <span class="guide-duck-icon">🎚️</span>
-      <span id="guideDuckBadgeText">導唱自動淡出</span>
+      <span id="guideDuckBadgeText" data-i18n="stage.guide_duck">導唱自動淡出</span>
     </div>
 
     <!-- 麥克風自動增益徽章：機器真的在補償（±1 dB 以上）時亮，讓人知道音量是誰在動 -->
     <div id="micAgcBadge" class="mic-agc-badge" style="display: none;">
       <span class="mic-agc-icon">🎤</span>
-      <span id="micAgcBadgeText">麥克風自動增益</span>
+      <span id="micAgcBadgeText" data-i18n="stage.mic_agc">麥克風自動增益</span>
     </div>
 
     <!-- 防嘯叫徽章：機器正壓著某幾個頻率時亮。做得好的時候現場什麼都聽不到，
          櫃檯會以為這個功能沒在動；壓不住的時候更要講話，因為那時只有實體解法。 -->
     <div id="feedbackBadge" class="feedback-badge" style="display: none;">
       <span class="feedback-icon">🔇</span>
-      <span id="feedbackBadgeText">防嘯叫</span>
+      <span id="feedbackBadgeText" data-i18n="stage.feedback_guard">防嘯叫</span>
     </div>
 
     <!-- 和聲徽章：和聲開著時常駐，並顯示判到的調性（和聲不對時這是唯一有用的線索） -->
     <div id="harmonyBadge" class="harmony-badge" style="display: none;">
       <span class="harmony-icon">🎶</span>
-      <span id="harmonyBadgeText">和聲</span>
+      <span id="harmonyBadgeText" data-i18n="stage.harmony">和聲</span>
     </div>
 
     <!-- 智能修音徽章：修音開著時常駐，並說出「現在有沒有在修、為什麼沒在修」。
@@ -156,7 +156,7 @@
          必須在**當下**看得見，而不是唱完才在紀錄裡看到。 -->
     <div id="pitchFixBadge" class="pitch-fix-badge" style="display: none;" data-engaged="0">
       <span class="pitch-fix-icon">🪄</span>
-      <span id="pitchFixBadgeText">修音</span>
+      <span id="pitchFixBadgeText" data-i18n="stage.pitch_fix">修音</span>
     </div>
 
     <!-- 升降 Key 徽章：不是原調的時候常駐。共享狀態會跟著下一首走，
@@ -170,14 +170,14 @@
          對包廂裡的人是不能接受的（他們的聲音正在被存起來）。 -->
     <div id="recordingBadge" class="recording-badge" style="display: none;">
       <span class="recording-dot"></span>
-      <span>錄音中</span>
+      <span data-i18n="stage.recording">錄音中</span>
     </div>
 
     <!-- 散場畫面：時間到、而且最後一首也唱完了。這個畫面存在的理由是
          「不要讓最後一秒是一片黑」—— 第二行回答所有人的下一個念頭：
          「那我排的歌呢」。 -->
     <div id="roomFinale" class="room-finale">
-      <div id="roomFinaleTitle" class="room-finale-title">🎤 歡唱時間結束</div>
+      <div id="roomFinaleTitle" class="room-finale-title" data-i18n="stage.finale">🎤 歡唱時間結束</div>
       <div id="roomFinaleDetail" class="room-finale-detail"></div>
     </div>
 
@@ -311,6 +311,10 @@
   </div>
 
   <script src="/js/api.js"></script>
+  <!-- 介面語言。舞台的語言是**整間包廂共用的**（存在伺服器的系統設定裡），
+       不是這台裝置的 —— 舞台只有一塊螢幕，它不屬於誰。見 backend/services/i18n.py。 -->
+  <script src="/js/i18n-catalog.js"></script>
+  <script src="/js/i18n.js"></script>
   <!-- 三段音色等化器的純邏輯（濾波器參數、補償增益、嘯叫風險提示）。
        必須在 audio-effects.js 之前：音訊引擎建節點時就會讀 ToneEq.bandSpecs()。 -->
   <script src="/js/tone-eq.js"></script>

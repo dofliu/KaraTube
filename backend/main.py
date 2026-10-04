@@ -51,6 +51,7 @@ from backend.services.share_links import ShareLinkStore, clamp_max_downloads, cl
 from backend.services.transcoder import (TranscodeGate, clamp_bitrate, probe_ffmpeg,
                                          reset_probe_cache, transcode_to_mp3)
 from backend.services.settings import SETTINGS_SPEC, SystemSettings, default_settings
+from backend.services.i18n import locale_info, negotiate_locale
 from backend.version import __version__, version_info
 
 # Logging setup
@@ -511,6 +512,24 @@ def public_base_url() -> str:
 async def get_version():
     """執行中的版本。包廂那台機器跑的是哪一版，看這裡而不是猜。"""
     return version_info()
+
+
+@app.get("/api/i18n")
+async def get_i18n(request: Request):
+    """
+    介面語言：有哪些、舞台現在是哪一種、這個瀏覽器自己偏好哪一種。
+
+    刻意**不**回傳翻譯字典 —— 字典跟著 `/js/i18n-catalog.js` 走瀏覽器快取，
+    不佔每一次開頁的 API 往返，而且舞台離線的時候照樣有字可用。
+
+    `suggested` 是從這個請求的 `Accept-Language` 算出來的：第一次開這一頁、
+    裝置上還沒存過偏好的時候用它。一個日文系統的客人掃了 QR 進來應該直接
+    看到日文，而不是先看到一頁中文、自己去找語言鍵 —— 找得到的前提是
+    他看得懂那顆鍵上的字，而那正是他沒有的東西。
+    """
+    info = locale_info(settings.get("stage_locale"))
+    info["suggested"] = negotiate_locale(request.headers.get("accept-language"))
+    return info
 
 
 @app.get("/api/health")

@@ -409,10 +409,47 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // --- 舞台的介面語言 ---
+  // 舞台只有一塊螢幕，它不屬於誰 —— 所以它的語言是**整間包廂共用的設定**
+  // （系統設定頁的 stage_locale），不是這台裝置自己記的偏好。
+  // 點歌台與每支手機各看各的語言，那是另一條路（見 controller.js）。
+  //
+  // 刻意跟著 SETTINGS_UPDATE 走而不是開頁時另外抓一次：WebSocket 一連上
+  // 伺服器就會推一份完整設定過來（見 main.py 的 websocket 進入點），
+  // 所以第一幀就是對的；另外抓一次只會讓舞台先畫一次中文再跳成日文，
+  // 而那一跳發生在包廂的大電視上。
+  const stageI18n = window.I18n || null;
+  const stageCatalog = window.I18nCatalog || null;
+  let stageLocale = stageI18n ? stageI18n.I18N_BASE_LOCALE : "zh-TW";
+  let stageT = (key) => key;
+
+  // 已經套過一次了沒有。拿它擋重跑，而不是拿「語言有沒有變」擋 ——
+  // 開機第一次要跑（HTML 上的字還是硬寫在那裡的中文，字典沒套過），
+  // 而開機第一次的語言很可能就是 zh-TW。
+  let stageLocaleApplied = false;
+
+  function applyStageLocale(code) {
+    if (!stageI18n || !stageCatalog) return;
+    const next = stageI18n.normalizeLocale(code);
+    if (!next) return;                       // 讀不懂的代碼：維持現狀，不要退回中文
+    // 同一個語言不重跑：applyTranslations 會把每一個 data-i18n 節點寫一次，
+    // 而 SETTINGS_UPDATE 在調音的時候是**每動一下滑桿就來一則**。
+    if (stageLocaleApplied && next === stageLocale) return;
+    stageLocale = next;
+    stageLocaleApplied = true;
+    stageT = stageI18n.createTranslator(stageCatalog.catalogs, stageLocale,
+                                        stageI18n.I18N_BASE_LOCALE);
+    stageI18n.applyTranslations(document, stageT);
+    document.documentElement.setAttribute("lang", stageI18n.documentLangFor(stageLocale));
+  }
+
+  if (stageI18n && stageCatalog) applyStageLocale(stageI18n.I18N_BASE_LOCALE);
+
   // --- 系統設定 ---
   // 片頭卡、結算畫面、自動音量平衡的參數都在點歌台的設定頁，改了立刻生效。
   window.api.on("SETTINGS_UPDATE", (msg) => {
     const s = msg.data || {};
+    if (s.stage_locale !== undefined) applyStageLocale(s.stage_locale);
     if (s.marquee_enabled !== undefined) {
       marqueeEnabled = !!s.marquee_enabled;
       paintMarquee();

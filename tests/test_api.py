@@ -80,6 +80,47 @@ def test_health_endpoint():
     assert res.json()["status"] == "ok"
 
 
+def test_i18n_endpoint_lists_locales_and_the_stage_language():
+    res = client.get("/api/i18n")
+    assert res.status_code == 200
+    data = res.json()
+    codes = [item["code"] for item in data["locales"]]
+    assert codes == ["zh-TW", "en", "ja"]
+    assert data["stage_locale"] in codes
+    assert data["base"] == "zh-TW"
+    # 字典不走這支 API（它跟著 /js/i18n-catalog.js 走瀏覽器快取，
+    # 舞台離線時照樣有字可用）
+    assert "catalog" not in data
+
+
+def test_i18n_suggests_a_language_from_accept_language():
+    """
+    第一次開這一頁、裝置上還沒存過偏好的時候用它：一個日文系統的客人
+    掃了 QR 進來應該直接看到日文，而不是先看到一頁他看不懂的中文。
+    """
+    res = client.get("/api/i18n", headers={"accept-language": "ja-JP,ja;q=0.9,en;q=0.5"})
+    assert res.json()["suggested"] == "ja"
+    res = client.get("/api/i18n", headers={"accept-language": "fr-FR,de;q=0.8,en;q=0.5"})
+    assert res.json()["suggested"] == "en"       # 沒有法文字典就往下找，不是掉回中文
+    res = client.get("/api/i18n")
+    assert res.json()["suggested"] == "zh-TW"
+
+
+def test_stage_locale_round_trips_through_settings():
+    """舞台的語言是包廂的共享設定，存得進去也讀得回來；爛值夾回預設。"""
+    before = settings.get("stage_locale")
+    try:
+        assert client.post("/api/settings", json={"stage_locale": "ja"}).status_code == 200
+        assert client.get("/api/i18n").json()["stage_locale"] == "ja"
+        # 設定會跟著 SETTINGS_UPDATE 推給舞台，所以也要在 /api/settings 裡看得到
+        assert client.get("/api/settings").json()["settings"]["stage_locale"] == "ja"
+        # 字典裡沒有的語言不該存得進去（存進去的症狀是舞台整面 HUD 只剩 key）
+        client.post("/api/settings", json={"stage_locale": "klingon"})
+        assert client.get("/api/i18n").json()["stage_locale"] == "ja"
+    finally:
+        settings.update({"stage_locale": before})
+
+
 def test_public_base_url_prefers_configured_host(monkeypatch):
     """
     容器與反向代理情境：自動偵測到的 bridge IP 手機連不進去，

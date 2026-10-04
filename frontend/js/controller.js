@@ -50,6 +50,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const keyFemaleBtn = document.getElementById("keyFemaleBtn");
   const nickBtn = document.getElementById("nickBtn");
   const nickText = document.getElementById("nickText");
+  const langBtn = document.getElementById("langBtn");
+  const langText = document.getElementById("langText");
   const micVolumeSlider = document.getElementById("micVolumeSlider");
   const micVolumeText = document.getElementById("micVolumeText");
   const micReverbSlider = document.getElementById("micReverbSlider");
@@ -118,8 +120,73 @@ document.addEventListener("DOMContentLoaded", () => {
   let nickname = "";
   try { nickname = (localStorage.getItem(NICK_STORAGE_KEY) || "").trim(); } catch (e) { }
 
+  // --- 介面語言（這台裝置的）---
+  // 跟暱稱放在一起是刻意的：兩者是同一類東西 —— 每台裝置自己記、
+  // 不影響別人。同一間包廂的三支手機各看各的語言才合理。
+  // 舞台那塊螢幕的語言**不在這裡**：它只有一塊、不屬於誰，所以是包廂的
+  // 共享設定（系統設定頁的 stage_locale），見 backend/services/i18n.py 決定一。
+  const i18nLib = window.I18n || null;
+  const i18nData = window.I18nCatalog || null;
+  let deviceLocale = i18nLib ? i18nLib.I18N_BASE_LOCALE : "zh-TW";
+  let t = (key) => key;
+
+  function readStoredLocale() {
+    // 讀不到（無痕模式、關掉 storage）回 null 而不是預設值：null 的意思是
+    // 「這台裝置還沒選過」，於是會去看瀏覽器的語言 —— 一個日文系統的客人
+    // 掃 QR 進來應該直接看到日文，而不是先看到一頁他看不懂的中文。
+    try { return localStorage.getItem(i18nLib.I18N_DEVICE_KEY); } catch (e) { return null; }
+  }
+
+  function applyLocale(code, { save } = {}) {
+    if (!i18nLib || !i18nData) return;
+    deviceLocale = i18nLib.normalizeLocale(code) || deviceLocale;
+    t = i18nLib.createTranslator(i18nData.catalogs, deviceLocale, i18nLib.I18N_BASE_LOCALE);
+    if (save) {
+      try { localStorage.setItem(i18nLib.I18N_DEVICE_KEY, deviceLocale); } catch (e) { }
+    }
+    i18nLib.applyTranslations(document, t);
+    // <html lang> 要跟著改：瀏覽器照它決定斷行規則與預設字型，
+    // 螢幕閱讀器照它決定用哪一種發音念。
+    document.documentElement.setAttribute("lang", i18nLib.documentLangFor(deviceLocale));
+    if (langText) langText.textContent = i18nLib.localeLabel(deviceLocale, i18nData.locales);
+    // 套完字典之後，那些被 render 寫過的動態文字要重畫一次 ——
+    // data-i18n 只管得到 HTML 裡的靜態字。暱稱是其中最明顯的一個
+    // （沒設暱稱時那顆鍵印的是「設定暱稱」，那是介面文字，要跟著翻）。
+    updateNickUI();
+  }
+
+  /**
+   * 按一下換下一種語言（不開選單）。
+   *
+   * 三種語言用輪替而不是下拉選單是刻意的：點歌台是觸控的，而一個
+   * 「按一下就看得到結果」的鍵，比一個要先展開、再從三個看不懂的選項裡
+   * 挑一個的選單好用得多 —— 尤其是對那個正在找自己語言的人來說，
+   * 他連「請選擇語言」那四個字都看不懂。輪一圈最多三下就回到原點。
+   */
+  function cycleLocale() {
+    if (!i18nLib || !i18nData) return;
+    const list = i18nData.locales.map((item) => item.code);
+    const index = list.indexOf(deviceLocale);
+    applyLocale(list[(index + 1) % list.length], { save: true });
+  }
+
+  if (i18nLib && i18nData) {
+    const browserLangs = (typeof navigator !== "undefined" && navigator.languages)
+      ? navigator.languages
+      : (typeof navigator !== "undefined" ? [navigator.language] : []);
+    applyLocale(
+      i18nLib.resolveDeviceLocale(readStoredLocale(), browserLangs, i18nLib.I18N_BASE_LOCALE),
+      // 第一次開不存：存了的話「跟著系統語言走」就變成「鎖在第一次開的語言」，
+      // 客人之後把手機改成英文，這一頁還是日文而且他不知道為什麼。
+      { save: false },
+    );
+    if (langBtn) langBtn.addEventListener("click", cycleLocale);
+  }
+
   function updateNickUI() {
-    if (nickText) nickText.textContent = nickname ? nickname : "設定暱稱";
+    // 有暱稱就印暱稱 —— 那是客人自己打的名字，**一個字都不翻**
+    // （見 backend/services/i18n.py 決定二）。沒設的時候印的才是介面文字。
+    if (nickText) nickText.textContent = nickname ? nickname : t("header.nickname");
   }
 
   function promptNickname() {
@@ -2451,7 +2518,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateDeckControls(state) {
     isPlaying = state.is_playing;
-    playPauseBtn.textContent = isPlaying ? "⏸ 暫停" : "▶ 播放";
+    // 這顆鍵的字是 render 當場寫的（兩種狀態），所以走字典而不是 data-i18n ——
+    // 它是整場最常按的一顆，第一眼翻好、按下去卻跳回中文是最糟的那種半套。
+    playPauseBtn.textContent = isPlaying ? t("deck.pause") : t("deck.play");
 
     // 換歌就重抓曲式分析（副歌位置、段落清單都是跟著歌走的）
     const songId = state.current_song ? state.current_song.song_id : null;
@@ -3545,6 +3614,12 @@ document.addEventListener("DOMContentLoaded", () => {
     interlude_skip_enabled: { label: "允許跳過前奏／間奏" },
     settlement_enabled: { label: "顯示唱畢結算畫面" },
     settlement_seconds: { label: "結算畫面秒數", unit: " 秒", step: 0.5 },
+    stage_locale: {
+      label: "舞台螢幕語言",
+      // 選項印的是那個語言自己的名字，不是「英文」「日文」——
+      // 設定頁上要挑語言的人，多半正是看不懂現在這一頁的那一位。
+      choiceLabels: { "zh-TW": "繁體中文", en: "English", ja: "日本語" },
+    },
   };
 
   const SETTINGS_GROUPS = [
@@ -3770,6 +3845,17 @@ document.addEventListener("DOMContentLoaded", () => {
       keys: ["intro_card_enabled", "intro_card_seconds", "settlement_enabled",
              "settlement_seconds", "interlude_countdown_enabled",
              "interlude_min_seconds", "interlude_skip_enabled"],
+    },
+    {
+      title: "🌐 介面語言",
+      hint: "這裡設的是**舞台螢幕**的語言 —— 舞台只有一塊、不屬於誰，" +
+            "所以它是整間包廂共用的設定，而且改了之後所有裝置看到的舞台都一樣。" +
+            "點歌台與每支掃碼進來的手機各有各的語言（最上排的 🌐 那顆鍵，" +
+            "存在各自的裝置裡）：同一間包廂裡兩支手機各看自己的語言才合理，" +
+            "為了其中一位把所有人的點歌台一起換掉並不合理。" +
+            "歌名、歌星、客人取的暱稱與櫃檯打上舞台的訊息永遠照原樣顯示，" +
+            "一個字都不翻 —— 歌名被翻掉的話，使用者從此查不到那首歌。",
+      keys: ["stage_locale"],
     },
   ];
 

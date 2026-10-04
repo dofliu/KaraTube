@@ -17,51 +17,68 @@
       <!-- 包廂計時（歡唱時間）。放在最上排而不是收進系統設定頁裡：這是整台機器上
            唯一一個「所有人都要看得到、而且看錯就會吵起來」的數字。
            沒開計時（系統設定頁的開關）時整組不出現，見 controller.js renderRoom。 -->
+      <!-- 這顆鍵的字是 render 當場寫進去的（狀態就寫在字上），所以沒有 data-i18n：
+           標了也會在第一次 render 時被覆蓋掉，留著只會讓人以為它翻好了。
+           滑鼠提示不會被覆蓋，所以那一半照常跟著語言走。
+           動態訊息的三語化是下一輪的事（見 docs/ROADMAP.md）。 -->
       <span class="room-timer" id="roomTimer" style="display: none;">
         <button class="btn btn-secondary room-clock" id="roomClockBtn"
+                data-i18n-title="header.room_clock_hint"
                 title="歡唱時間。還沒開始計時就按一下開始；計時中按一下可以結束計時">⏱️ 開始計時</button>
         <button class="btn btn-secondary room-step" id="roomExtendBtn"
+                data-i18n-title="header.room_extend_hint"
                 title="續時：加時間，不是重開一場。時間到停住時按它會接著播下一首">＋時間</button>
         <button class="btn btn-secondary room-step" id="roomPauseBtn"
+                data-i18n-title="header.room_pause_hint"
                 title="暫停計時（中場休息、餐點來了）。播放不受影響">⏸️</button>
       </span>
       <!-- 舞台訊息（跑馬燈）：櫃檯把字打到包廂螢幕上。放在最上排、不收進設定頁裡 ——
            要用到它的時候（餐點送到門口、有人要唱生日歌）是分秒的事，
            翻三層選單才找得到的功能等於沒有。 -->
-      <button class="btn btn-secondary" id="marqueeBtn" title="把一句話打到舞台螢幕上（餐點到了、生日祝福）">
-        📺 舞台訊息<span id="marqueeCountBadge" class="marquee-count" style="display: none;"></span>
+      <button class="btn btn-secondary" id="marqueeBtn" data-i18n-title="header.marquee_hint"
+              title="把一句話打到舞台螢幕上（餐點到了、生日祝福）">
+        <span data-i18n="header.marquee">📺 舞台訊息</span><span id="marqueeCountBadge" class="marquee-count" style="display: none;"></span>
       </button>
       <!-- 服務鈴（包廂呼叫櫃檯）：跑馬燈的反方向。同樣放在最上排 ——
            要按它的時候（麥克風沒聲音、餐點還沒來）翻三層選單才找得到，
            那個人會直接推開門走出去，而這顆鍵存在的意義就是讓他不必。
            等待中的單會讓這顆鍵一直亮著（見 controller.js renderServiceBell）。 -->
-      <button class="btn btn-secondary" id="serviceBtn" title="叫櫃檯：送餐、加冰塊、清潔、麥克風／音響、結帳">
-        🔔 服務鈴<span id="serviceCountBadge" class="marquee-count" style="display: none;"></span>
+      <button class="btn btn-secondary" id="serviceBtn" data-i18n-title="header.service_hint"
+              title="叫櫃檯：送餐、加冰塊、清潔、麥克風／音響、結帳">
+        <span data-i18n="header.service">🔔 服務鈴</span><span id="serviceCountBadge" class="marquee-count" style="display: none;"></span>
       </button>
       <!-- 多包廂：這一頁現在在哪一間。只有一間包廂的機器整顆不出現 ——
            家裡那台不需要看到一個永遠只有一個選項的切換鍵。
            按下去會跳到「🏠 包廂」那一頁（櫃檯總覽），不另外開一層 modal：
            切房間是要看著全店的狀況做的決定，不是從下拉選單裡盲選一個房號。 -->
       <button class="btn btn-secondary" id="roomSwitchBtn" style="display: none;"
+              data-i18n-title="header.room_switch_hint"
               title="這一頁現在在哪一間包廂。按一下看全店總覽並切換">🏠 包廂</button>
-      <button class="btn btn-secondary" id="nickBtn" title="設定顯示在佇列上的暱稱，讓大家知道是誰點的歌">
-        👤 <span id="nickText">設定暱稱</span>
+      <button class="btn btn-secondary" id="nickBtn" data-i18n-title="header.nickname_hint"
+              title="設定顯示在佇列上的暱稱，讓大家知道是誰點的歌">
+        👤 <span id="nickText" data-i18n="header.nickname">設定暱稱</span>
       </button>
       <!-- 舞台大螢幕的連結帶著房號（controller.js 開機時補上 ?room=）：
            不帶的話，在 202 包廂的點歌台按下去會開出一台播 default 的舞台。 -->
-      <a href="/player.html" target="_blank" class="btn btn-primary" id="openPlayerBtn">
-        🖥️ 開啟舞台大螢幕
-      </a>
-      <button class="btn btn-secondary" id="qrBtn">
-        📱 手機點歌 QR
-      </button>
-      <button class="btn btn-secondary" id="settingsBtn" title="開機預設音效、自動音量平衡、快取上限、AI 模型">
-        ⚙️ 系統設定
-      </button>
+      <a href="/player.html" target="_blank" class="btn btn-primary" id="openPlayerBtn"
+         data-i18n="header.open_stage">🖥️ 開啟舞台大螢幕</a>
+      <button class="btn btn-secondary" id="qrBtn" data-i18n="header.qr">📱 手機點歌 QR</button>
+      <!-- 介面語言：**這台裝置的**語言，存在自己的 localStorage 裡。
+           同一間包廂的三支手機各看各的語言，誰都不會動到誰。
+           舞台那塊螢幕的語言不在這裡（它是整間包廂共用的，在系統設定頁）。
+           鍵上印的是那個語言自己的名字（English／日本語）而不是「英文」「日文」——
+           一個看不懂中文的人在選單裡要找的是看得懂的那一個，而這也是整個
+           介面裡唯一一處刻意**不跟著語言變**的文字。 -->
+      <button class="btn btn-secondary" id="langBtn" data-i18n-title="header.language_hint"
+              title="這台裝置的介面語言">🌐 <span id="langText">繁體中文</span></button>
+      <button class="btn btn-secondary" id="settingsBtn" data-i18n-title="header.settings_hint"
+              title="開機預設音效、自動音量平衡、快取上限、AI 模型"
+              data-i18n="header.settings">⚙️ 系統設定</button>
       <!-- 櫃檯管理鎖：機器層級的動作（刪曲庫、改設定、包廂計時）要櫃檯密碼。
            沒設密碼時整顆不出現 —— 家裡唱歌不需要看到一把用不到的鎖。
            點歌、切歌、調音效永遠不受它影響（見 backend/services/access_policy.py）。 -->
       <button class="btn btn-secondary staff-lock-btn" id="staffLockBtn" style="display: none;"
+              data-i18n-title="header.staff_lock_hint"
               title="櫃檯管理鎖">🔒 <span id="staffLockText">櫃檯管理</span></button>
     </div>
   </header>
@@ -79,30 +96,30 @@
       <div class="search-container">
         <div class="search-input-wrapper">
           <span style="font-size: 20px; margin-right: 8px; opacity: 0.7;">🔍</span>
-          <input type="text" id="searchInput" class="search-input" placeholder="輸入歌曲名稱、歌手、或貼上 YouTube / YouTube Music 網址...">
-          <button id="searchBtn" class="btn btn-primary" style="padding: 8px 20px;">搜尋</button>
+          <input type="text" id="searchInput" class="search-input" data-i18n-placeholder="search.placeholder" placeholder="輸入歌曲名稱、歌手、或貼上 YouTube / YouTube Music 網址...">
+          <button id="searchBtn" class="btn btn-primary" style="padding: 8px 20px;" data-i18n="search.button">搜尋</button>
         </div>
       </div>
 
       <!-- 曲庫切換：搜尋結果 / 本地快取 / 熱門點唱排行 -->
       <div class="library-tabs">
-        <button class="btn btn-secondary lib-tab active" data-lib="cached">📚 快取歌曲</button>
-        <button class="btn btn-secondary lib-tab" data-lib="browse" title="依語言別與歌手分類點歌">🎼 分類瀏覽</button>
-        <button class="btn btn-secondary lib-tab" data-lib="find" title="只在已備好的曲庫裡查歌：注音首字、歌名字數，查到的每一首都是快取秒播">🔤 注音查歌</button>
-        <button class="btn btn-secondary lib-tab" data-lib="numbers" title="歌號點歌：直接打六位數歌號（每首歌的號碼印在歌卡上，而且永遠不會變成別首歌）">🔢 歌號點歌</button>
-        <button class="btn btn-secondary lib-tab" data-lib="artists" title="歌星查歌：按歌星名字的注音首字（周杰倫＝ㄓㄐㄌ），選一位就翻開他的歌單">🎤 歌星查歌</button>
-        <button class="btn btn-secondary lib-tab" data-lib="new" title="最近加入曲庫的新歌與為你推薦的歌單">🆕 新歌推薦</button>
-        <button class="btn btn-secondary lib-tab" data-lib="favorites">⭐ 我的最愛</button>
-        <button class="btn btn-secondary lib-tab" data-lib="rankings">🏆 點唱排行</button>
-        <button class="btn btn-secondary lib-tab" data-lib="history">🕘 已唱歷史</button>
-        <button class="btn btn-secondary lib-tab" data-lib="voice" title="我的音域：機器從你唱過的歌認識你的聲音，之後對每一首歌說「這首對你偏高，建議降 2 個 Key」">🎤 我的音域</button>
-        <button class="btn btn-secondary lib-tab" data-lib="trends" title="跨場次段落趨勢：同一首唱滿三次就看得出你一向強在哪一段">📊 我的成績</button>
-        <button class="btn btn-secondary lib-tab" data-lib="contest" title="今晚擂台：這一場誰是歌王。唱滿三首不同的歌就上榜，代表分＝最好的三首平均命中率">🥇 今晚擂台</button>
-        <button class="btn btn-secondary lib-tab" data-lib="recordings" title="錄唱回放：把剛剛唱的那一次聽回來（要先到系統設定頁打開錄音）">🎙️ 錄唱回放</button>
-        <button class="btn btn-secondary lib-tab" data-lib="cache">🗂️ 快取管理</button>
-        <button class="btn btn-secondary lib-tab" data-lib="batch" title="半夜自動把整張播放清單處理好，隔天點下去就是秒播">🌙 排程預處理</button>
-        <button class="btn btn-secondary lib-tab" data-lib="rooms" title="多包廂：一台伺服器帶多組舞台與佇列。這一頁是櫃檯總覽（哪一間在叫櫃檯、哪一間快到時間）">🏠 包廂</button>
-        <button class="btn btn-secondary lib-tab" data-lib="import" title="本機匯入：把自己的伴唱影片或音檔放進 cache/import/，跑同一條流水線變成曲庫裡的歌（不必上 YouTube）">📁 本機匯入</button>
+        <button class="btn btn-secondary lib-tab active" data-lib="cached" data-i18n="lib.cached">📚 快取歌曲</button>
+        <button class="btn btn-secondary lib-tab" data-lib="browse" title="依語言別與歌手分類點歌" data-i18n="lib.browse" data-i18n-title="lib.browse_hint">🎼 分類瀏覽</button>
+        <button class="btn btn-secondary lib-tab" data-lib="find" title="只在已備好的曲庫裡查歌：注音首字、歌名字數，查到的每一首都是快取秒播" data-i18n="lib.find" data-i18n-title="lib.find_hint">🔤 注音查歌</button>
+        <button class="btn btn-secondary lib-tab" data-lib="numbers" title="歌號點歌：直接打六位數歌號（每首歌的號碼印在歌卡上，而且永遠不會變成別首歌）" data-i18n="lib.numbers" data-i18n-title="lib.numbers_hint">🔢 歌號點歌</button>
+        <button class="btn btn-secondary lib-tab" data-lib="artists" title="歌星查歌：按歌星名字的注音首字（周杰倫＝ㄓㄐㄌ），選一位就翻開他的歌單" data-i18n="lib.artists" data-i18n-title="lib.artists_hint">🎤 歌星查歌</button>
+        <button class="btn btn-secondary lib-tab" data-lib="new" title="最近加入曲庫的新歌與為你推薦的歌單" data-i18n="lib.new" data-i18n-title="lib.new_hint">🆕 新歌推薦</button>
+        <button class="btn btn-secondary lib-tab" data-lib="favorites" data-i18n="lib.favorites">⭐ 我的最愛</button>
+        <button class="btn btn-secondary lib-tab" data-lib="rankings" data-i18n="lib.rankings">🏆 點唱排行</button>
+        <button class="btn btn-secondary lib-tab" data-lib="history" data-i18n="lib.history">🕘 已唱歷史</button>
+        <button class="btn btn-secondary lib-tab" data-lib="voice" title="我的音域：機器從你唱過的歌認識你的聲音，之後對每一首歌說「這首對你偏高，建議降 2 個 Key」" data-i18n="lib.voice" data-i18n-title="lib.voice_hint">🎤 我的音域</button>
+        <button class="btn btn-secondary lib-tab" data-lib="trends" title="跨場次段落趨勢：同一首唱滿三次就看得出你一向強在哪一段" data-i18n="lib.trends" data-i18n-title="lib.trends_hint">📊 我的成績</button>
+        <button class="btn btn-secondary lib-tab" data-lib="contest" title="今晚擂台：這一場誰是歌王。唱滿三首不同的歌就上榜，代表分＝最好的三首平均命中率" data-i18n="lib.contest" data-i18n-title="lib.contest_hint">🥇 今晚擂台</button>
+        <button class="btn btn-secondary lib-tab" data-lib="recordings" title="錄唱回放：把剛剛唱的那一次聽回來（要先到系統設定頁打開錄音）" data-i18n="lib.recordings" data-i18n-title="lib.recordings_hint">🎙️ 錄唱回放</button>
+        <button class="btn btn-secondary lib-tab" data-lib="cache" data-i18n="lib.cache">🗂️ 快取管理</button>
+        <button class="btn btn-secondary lib-tab" data-lib="batch" title="半夜自動把整張播放清單處理好，隔天點下去就是秒播" data-i18n="lib.batch" data-i18n-title="lib.batch_hint">🌙 排程預處理</button>
+        <button class="btn btn-secondary lib-tab" data-lib="rooms" title="多包廂：一台伺服器帶多組舞台與佇列。這一頁是櫃檯總覽（哪一間在叫櫃檯、哪一間快到時間）" data-i18n="lib.rooms" data-i18n-title="lib.rooms_hint">🏠 包廂</button>
+        <button class="btn btn-secondary lib-tab" data-lib="import" title="本機匯入：把自己的伴唱影片或音檔放進 cache/import/，跑同一條流水線變成曲庫裡的歌（不必上 YouTube）" data-i18n="lib.import" data-i18n-title="lib.import_hint">📁 本機匯入</button>
         <span id="libSummary" class="lib-summary"></span>
       </div>
 
@@ -115,28 +132,34 @@
     <!-- Playlist & Queue Column -->
     <aside class="queue-panel glass-panel">
       <div class="panel-title">
-        <span>📋 點歌排隊佇列</span>
+        <span data-i18n="queue.title">📋 點歌排隊佇列</span>
         <!-- 公平輪唱：一個人連點五首時，其他人不必等完那五首。
              狀態寫在按鈕的字上（包廂的燈是暗的，只靠顏色看不出來）。 -->
         <button class="btn btn-secondary rotation-toggle" id="rotationToggle"
+                data-i18n-title="queue.rotation_hint"
                 title="公平輪唱：新點的歌照「這是誰的第幾首」排，讓大家輪流唱">🔁 先到先唱</button>
         <!-- 每人待唱上限：輪唱管順序，這一顆管量（佇列不要被一個人塞滿）。
              是數字不是開關，所以做成 −／＋ 而不是切換鈕；包廂中途講好要限制時
              不該還得跑進系統設定頁。 -->
         <span class="quota-stepper" id="quotaStepper">
           <button class="btn btn-secondary quota-step" id="quotaDownBtn"
+                  data-i18n-title="queue.quota_down_hint"
                   title="每人待唱上限減一（減到 0 就是不限）">−</button>
           <button class="btn btn-secondary quota-toggle" id="quotaLabel"
+                  data-i18n-title="queue.quota_hint"
                   title="每人同時最多能排幾首待唱。按一下在「不限」與上次的上限之間切換">🎫 不限首數</button>
           <button class="btn btn-secondary quota-step" id="quotaUpBtn"
+                  data-i18n-title="queue.quota_up_hint"
                   title="每人待唱上限加一">＋</button>
         </span>
       </div>
       <div id="rotationBar" class="rotation-bar" style="display: none;">
         <div class="rotation-bar-head">
-          <span id="rotationLine" class="rotation-line">還沒有人點歌</span>
+          <span id="rotationLine" class="rotation-line" data-i18n="queue.rotation_empty">還沒有人點歌</span>
           <button class="btn btn-secondary rotation-reset" id="rotationResetBtn"
-                  title="把「誰唱過幾首」歸零（換一批客人時用）。佇列不動">重新排</button>
+                  data-i18n-title="queue.rotation_reset_hint"
+                  title="把「誰唱過幾首」歸零（換一批客人時用）。佇列不動"
+                  data-i18n="queue.rotation_reset">重新排</button>
         </div>
         <div id="rotationHint" class="rotation-hint" style="display: none;"></div>
       </div>
@@ -156,9 +179,11 @@
            解的是另一個問題 —— 想唱歌但想不到要唱什麼。 -->
       <div id="autofillBar" class="rotation-bar autofill-bar">
         <div class="rotation-bar-head">
-          <span id="autofillLine" class="rotation-line">想不到要唱什麼？讓機器從曲庫裡挑一首</span>
+          <span id="autofillLine" class="rotation-line" data-i18n="queue.autofill_idle">想不到要唱什麼？讓機器從曲庫裡挑一首</span>
           <button class="btn btn-secondary rotation-reset" id="randomPickBtn"
-                  title="從已經備好的曲庫隨機點一首（算你點的，會佔額度與輪序）">🎲 來一首</button>
+                  data-i18n-title="queue.random_pick_hint"
+                  title="從已經備好的曲庫隨機點一首（算你點的，會佔額度與輪序）"
+                  data-i18n="queue.random_pick">🎲 來一首</button>
         </div>
       </div>
       <div id="queueList" class="queue-list">
@@ -178,10 +203,10 @@
     <div class="now-playing-mini">
       <img id="nowPlayingThumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='54' height='38' fill='%23222'></svg>" style="width: 54px; height: 38px; border-radius: 8px; object-fit: cover;">
       <div style="min-width: 0; flex: 1;">
-        <div id="nowPlayingTitle" style="font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">尚未播放歌曲</div>
-        <div id="nowPlayingArtist" style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">請從上方搜尋點歌</div>
+        <div id="nowPlayingTitle" style="font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" data-i18n="deck.idle_title">尚未播放歌曲</div>
+        <div id="nowPlayingArtist" style="font-size: 11px; color: var(--text-muted); margin-top: 2px;" data-i18n="deck.idle_artist">請從上方搜尋點歌</div>
         <!-- Mini Progress（可點擊跳轉） -->
-        <div id="progressTrack" class="progress-track" title="點一下跳到該處播放">
+        <div id="progressTrack" class="progress-track" data-i18n-title="deck.seek_hint" title="點一下跳到該處播放">
           <div id="progressBar" class="progress-bar"></div>
           <div id="loopRangeMark" class="loop-range-mark" style="display: none;"></div>
         </div>
@@ -194,9 +219,11 @@
 
     <!-- Playback Core Buttons -->
     <div class="deck-controls">
-      <button id="restartBtn" class="btn btn-secondary" title="重新開始">🔄 重唱</button>
-      <button id="playPauseBtn" class="btn btn-primary">▶ 播放</button>
-      <button id="skipBtn" class="btn btn-pink" title="切歌 / 下一首">⏭ 切歌</button>
+      <button id="restartBtn" class="btn btn-secondary" data-i18n-title="deck.restart_hint"
+              title="重新開始" data-i18n="deck.restart">🔄 重唱</button>
+      <button id="playPauseBtn" class="btn btn-primary" data-i18n="deck.play">▶ 播放</button>
+      <button id="skipBtn" class="btn btn-pink" data-i18n-title="deck.skip_hint"
+              title="切歌 / 下一首" data-i18n="deck.skip">⏭ 切歌</button>
     </div>
 
     <!-- 原唱 / 伴奏：整場最常動的一個，留在最外層 -->
@@ -780,6 +807,10 @@
   </div>
 
   <script src="/js/api.js"></script>
+  <!-- 介面語言。字典（i18n-catalog）與引擎（i18n）都排在最前面：
+       套語言是 controller 開機的第一個動作，晚載入的話第一眼會看到中文再跳成英文。 -->
+  <script src="/js/i18n-catalog.js"></script>
+  <script src="/js/i18n.js"></script>
   <!-- 排程分頁的純顯示邏輯（有單元測試），要在 controller 之前載入 -->
   <script src="/js/batch-view.js"></script>
   <!-- 本機匯入那一頁的說法。這一頁的錯誤幾乎都不會拋例外，只會安靜地騙人

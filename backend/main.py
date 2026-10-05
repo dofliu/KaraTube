@@ -30,6 +30,7 @@ from backend.services.queue_manager import QueueManager
 from backend.services.play_stats import PlayStats
 from backend.services.favorites import Favorites
 from backend.services.library import LANGUAGE_SPEC, NEW_SONG_DAYS, LibraryIndex
+from backend.services import ruby
 from backend.services.song_index import SongFinder
 from backend.services.song_numbers import SongNumberBook, parse_number
 from backend.services.lyric_offsets import (MAX_OFFSET_MS, MAX_RATE, MIN_RATE,
@@ -2958,13 +2959,37 @@ async def get_song_loudness(song_id: str):
     }
 
 
+def _song_ruby(song_id: str, lyrics: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    這首歌的拼音標注。沒算過就當場算，算完寫回歌的資料夾。
+
+    **為什麼是懶算而不是進流水線**：功能上線之前處理好的歌一首都沒有這個檔案
+    （跟 alignment.json 同一個問題），而要求店家為了一行拼音把整個曲庫重跑一次
+    是不合理的 —— 那是幾小時的 GPU 時間換幾毫秒的字串處理。
+
+    **為什麼跟歌詞同一個回應**：拼音與歌詞必須是同一次讀檔的結果。
+    分成兩支 API 的話，兩次請求中間剛好有人按下「重算歌詞」，舞台就會拿到
+    新的詞配舊的拼音 —— 每個字的拼音都標在隔壁那個字上面，而且畫面看起來正常。
+    （`ruby.is_stale` 的指紋比對是第二道防線，同一個回應是第一道。）
+    """
+    doc = storage.get_song_ruby(song_id)
+    # 語言別是歌的屬性，分類結果快取在 metadata 裡（算過就不會再算一次）。
+    language = library.classify(song_id).get("language", "")
+    if ruby.is_stale(doc, lyrics, language):
+        doc = ruby.build(lyrics, language)
+        storage.save_song_ruby(song_id, doc)
+    return doc
+
+
 @app.get("/api/songs/{song_id}/lyrics")
 async def get_lyrics(song_id: str):
     # 偏移跟著歌詞一起回：舞台換歌時本來就會抓這一支，多一個欄位就不必多打一次
     # 請求（不過真正沒有空窗的那條路是 STATE_UPDATE 上的 song_lyric_offset_ms ——
     # 那一份跟 current_song 同一則訊息抵達）。
     lyrics = storage.get_song_lyrics(song_id)
-    return {"song_id": song_id, "lyrics": lyrics,
+    # 拼音標注（1.35）同理跟著歌詞一起回。它是畫面上的一行字，算不出來
+    # （日語歌、沒裝 pypinyin）就是一份 available: False 的文件，歌照唱。
+    return {"song_id": song_id, "lyrics": lyrics, "ruby": _song_ruby(song_id, lyrics),
             **lyric_offsets.calibration(song_id)}
 
 

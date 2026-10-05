@@ -461,6 +461,63 @@ body.stage-mode {
   text-shadow: 0 0 16px var(--accent-pink), 0 0 30px var(--accent-pink);
 }
 
+/* --- 歌詞拼音標注（1.35）---
+   拼音是**浮在字的上面**的，不排進版面：排進去的話，有拼音的那幾行會把
+   歌詞往下推，而沒有拼音的那幾行（純英文的副歌）不會 —— 於是歌詞會在
+   換行的瞬間上下跳一格，正好是最需要畫面穩定的那一刻。
+   空間改用整行的 padding 保留，而那個 class 是整首歌一起上的。 */
+.ktv-line.with-ruby {
+  padding-top: 26px;
+}
+
+.ktv-char .ktv-ruby {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  margin-bottom: 2px;
+  /* 字級是量出來的（見 frontend/js/ruby-layout.js），這裡只留一個保底值：
+     JS 還沒跑到的那一幀不要用 46px 的歌詞字級去畫拼音。 */
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.ktv-ruby .ruby-bg {
+  display: block;
+  color: #ffffff;
+  /* 描邊比歌詞細（歌詞 3.5px）：同樣粗細套在 16px 的字上會把字心糊掉，
+     而糊掉的拼音等於沒有拼音 —— 它唯一的工作就是被看清楚。 */
+  -webkit-text-stroke: 1.6px #000000;
+  paint-order: stroke fill;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.ktv-ruby .ruby-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 0%;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--accent-cyan);
+  -webkit-text-stroke: 1.6px #000000;
+  paint-order: stroke fill;
+  text-shadow: 0 0 10px var(--accent-cyan);
+  pointer-events: none;
+}
+
+/* 對唱時第二位的顏色。跟歌詞同一條規則 —— 兩個人的拼音分不出來的話，
+   接唱的那一句會有兩個人同時開口。 */
+.ktv-line.duet-female .ktv-ruby .ruby-fill {
+  color: var(--accent-pink);
+  text-shadow: 0 0 10px var(--accent-pink);
+}
+
 /* Up Next / Queue Floating Toast */
 .next-song-toast {
   position: absolute;

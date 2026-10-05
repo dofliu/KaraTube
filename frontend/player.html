@@ -319,6 +319,9 @@
        必須在 audio-effects.js 之前：音訊引擎建節點時就會讀 ToneEq.bandSpecs()。 -->
   <script src="/js/tone-eq.js"></script>
   <script src="/js/audio-effects.js"></script>
+  <!-- 歌詞拼音標注的版面規則（字級怎麼算、什麼時候整行不標）。
+       必須在 karaoke-renderer.js 之前：渲染器每畫一行就會問它一次。 -->
+  <script src="/js/ruby-layout.js"></script>
   <script src="/js/karaoke-renderer.js"></script>
   <!-- section-scorer.js 必須在 pitch-engine.js 之前：後者用它做段落評分與等級換算 -->
   <script src="/js/section-scorer.js"></script>

@@ -2582,6 +2582,86 @@ def test_lyrics_endpoint_carries_the_calibration(lyric_offsets_clean):
     assert body["offset_ms"] == 120 and body["rate"] == 0.98
 
 
+# --- 歌詞拼音標注（1.35）---
+
+
+@pytest.fixture()
+def fake_mandarin_song():
+    """一首國語歌，歌詞是真的中文（拼音算得出來）。測完清掉。"""
+    song_id = "test_ruby_song_01"
+    song_dir = SONGS_DIR / song_id
+    song_dir.mkdir(parents=True, exist_ok=True)
+    (song_dir / "metadata.json").write_text(
+        json.dumps({"id": song_id, "title": "稻香", "artist": "周杰倫",
+                    "language": "mandarin", "artist_name": "周杰倫"},
+                   ensure_ascii=False), encoding="utf-8")
+
+    def line(idx, start, text):
+        n = len(text)
+        return {"line_idx": idx, "start": start, "end": start + 3.0, "text": text,
+                "words": [{"char": c, "start": start + i * 3.0 / n,
+                           "end": start + (i + 1) * 3.0 / n}
+                          for i, c in enumerate(text)]}
+
+    lyrics = [line(0, 10.0, "還記得你說家是唯一的城堡"),
+              line(1, 14.0, "隨著稻香河流繼續奔跑")]
+    (song_dir / "lyrics.json").write_text(
+        json.dumps(lyrics, ensure_ascii=False), encoding="utf-8")
+    yield song_id
+    storage.delete_song(song_id)
+
+
+def test_lyrics_endpoint_carries_the_ruby(fake_mandarin_song):
+    """
+    拼音與歌詞是**同一次回應**。分成兩支 API 的話，兩次請求中間剛好有人按下
+    「重算歌詞」，舞台就會拿到新的詞配舊的拼音 —— 每個字的拼音都標在隔壁
+    那個字上面，而且畫面看起來正常。
+    """
+    body = client.get(f"/api/songs/{fake_mandarin_song}/lyrics").json()
+    doc = body["ruby"]
+    assert doc["available"] is True
+    assert len(doc["lines"]) == len(body["lyrics"])
+    for row, line in zip(doc["lines"], body["lyrics"], strict=True):
+        assert len(row) == len(line["text"])
+    assert doc["lines"][0][0]  # 第一個字有讀音
+
+
+def test_ruby_is_cached_on_disk_and_reused(fake_mandarin_song):
+    """算一次就好：寫回歌的資料夾，刪快取就跟著消失（不留孤兒索引）。"""
+    client.get(f"/api/songs/{fake_mandarin_song}/lyrics")
+    ruby_file = SONGS_DIR / fake_mandarin_song / "ruby.json"
+    assert ruby_file.exists()
+    first = ruby_file.read_text(encoding="utf-8")
+    client.get(f"/api/songs/{fake_mandarin_song}/lyrics")
+    assert ruby_file.read_text(encoding="utf-8") == first
+
+
+def test_ruby_is_recomputed_when_the_lyrics_change(fake_mandarin_song):
+    """
+    重算歌詞那條路**完全不必知道拼音的存在**：指紋對不上就重算。
+    靠「記得一起刪掉 ruby.json」來防的話，那是一條寫在另一個檔案裡、
+    三個月後沒有人記得的規則。
+    """
+    before = client.get(f"/api/songs/{fake_mandarin_song}/lyrics").json()["ruby"]
+    new_lyrics = [{"line_idx": 0, "start": 5.0, "end": 8.0, "text": "完全不一樣的歌詞",
+                   "words": [{"char": c, "start": 5.0, "end": 8.0}
+                             for c in "完全不一樣的歌詞"]}]
+    (SONGS_DIR / fake_mandarin_song / "lyrics.json").write_text(
+        json.dumps(new_lyrics, ensure_ascii=False), encoding="utf-8")
+
+    after = client.get(f"/api/songs/{fake_mandarin_song}/lyrics").json()["ruby"]
+    assert after["fingerprint"] != before["fingerprint"]
+    assert len(after["lines"]) == 1
+    assert len(after["lines"][0]) == len("完全不一樣的歌詞")
+
+
+def test_lyrics_endpoint_never_fails_over_ruby():
+    """拼音只是畫面上的一行字。算不出來（沒有這首歌）照樣要回得了歌詞。"""
+    body = client.get("/api/songs/nonexistent_song/lyrics").json()
+    assert body["lyrics"] == []
+    assert body["ruby"]["available"] is False
+
+
 # --- 對齊診斷與重算歌詞 ---
 
 

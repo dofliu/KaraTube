@@ -67,6 +67,44 @@ class SongStorage:
                 logger.error(f"Error reading alignment for {song_id}: {e}")
         return None
 
+    def get_song_ruby(self, song_id: str) -> Optional[Dict[str, Any]]:
+        """
+        這首歌已經算好的拼音標注（`ruby.json`）。沒有就回 `None`。
+
+        跟 `get_song_alignment` 一樣用 `None` 而不是空字典表示「沒有」：
+        「還沒算過」與「算過了但這首歌沒有拼音（日語歌、英文歌）」是兩件事，
+        後者是一份 `available: False` 的文件，而且**要存下來** ——
+        不存的話每次載入那首歌都會重算一次，而答案永遠一樣。
+        """
+        ruby_file = self.storage_dir / song_id / "ruby.json"
+        if ruby_file.exists():
+            try:
+                with open(ruby_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else None
+            except Exception as e:
+                # 寫到一半斷電的半份 JSON 也走這裡：當成沒算過，下一次重算。
+                logger.error(f"Error reading ruby for {song_id}: {e}")
+        return None
+
+    def save_song_ruby(self, song_id: str, doc: Dict[str, Any]) -> bool:
+        """
+        把算好的拼音寫回歌的資料夾。歌還沒建資料夾就不寫（不要憑空生出一首歌）。
+
+        寫不進去不是錯誤 —— 唯讀掛載、磁碟滿了都會走到這裡，而拼音只是
+        畫面上的一行字：寫不進去就每次重算，歌照唱。
+        """
+        song_folder = self.storage_dir / song_id
+        if not song_folder.is_dir():
+            return False
+        try:
+            (song_folder / "ruby.json").write_text(
+                json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            return True
+        except OSError as e:
+            logger.warning(f"ruby 寫入失敗 {song_id}: {e}")
+            return False
+
     def list_cached_songs(self) -> List[Dict[str, Any]]:
         songs = []
         for song_folder in self.storage_dir.iterdir():

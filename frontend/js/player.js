@@ -445,11 +445,32 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (stageI18n && stageCatalog) applyStageLocale(stageI18n.I18N_BASE_LOCALE);
 
+  // --- 舞台的歌詞拼音（1.35）---
+  // 「要不要顯示」的答案一半寫在設定裡（off / auto / on），另一半寫在上面那個
+  // 語言裡：auto = 舞台不是中文介面時才顯示。所以語言改了也要重算一次 ——
+  // 把舞台切成英文的那個動作，本身就是「這塊螢幕現在是給外國客人看的」。
+  let stageRubyMode = (window.RubyLayout && window.RubyLayout.DEFAULT_RUBY_MODE) || "auto";
+
+  function applyStageRuby() {
+    const layout = window.RubyLayout;
+    if (!layout || !karaokeRenderer) return;
+    const hasRuby = Array.isArray(karaokeRenderer.rubyRows);
+    karaokeRenderer.setRubyEnabled(layout.rubyVisible(stageRubyMode, stageLocale, hasRuby));
+  }
+
   // --- 系統設定 ---
   // 片頭卡、結算畫面、自動音量平衡的參數都在點歌台的設定頁，改了立刻生效。
   window.api.on("SETTINGS_UPDATE", (msg) => {
     const s = msg.data || {};
-    if (s.stage_locale !== undefined) applyStageLocale(s.stage_locale);
+    if (s.stage_locale !== undefined) {
+      applyStageLocale(s.stage_locale);
+      // auto 的答案跟著語言走，所以語言一變就要重算一次拼音要不要顯示。
+      applyStageRuby();
+    }
+    if (s.stage_ruby !== undefined) {
+      stageRubyMode = s.stage_ruby;
+      applyStageRuby();
+    }
     if (s.marquee_enabled !== undefined) {
       marqueeEnabled = !!s.marquee_enabled;
       paintMarquee();
@@ -2914,14 +2935,19 @@ document.addEventListener("DOMContentLoaded", () => {
     // 先用上一首的增益開唱，算完再平滑接上（setTargetAtTime 不會有爆音）。
     applyLoudness(song.song_id);
 
-    const [lyrics, pitch, structure] = await Promise.all([
-      window.api.getLyrics(song.song_id),
+    const [lyricsBundle, pitch, structure] = await Promise.all([
+      window.api.getLyricsBundle(song.song_id),
       window.api.getPitch(song.song_id),
       // 段落評分是附加資訊，抓不到不能擋播放（歌詞還沒好的歌就是沒有曲式）
       window.api.getSections(song.song_id).catch(() => ({ sections: [] }))
     ]);
 
+    const lyrics = lyricsBundle.lyrics;
     karaokeRenderer.setLyrics(lyrics);
+    // 拼音一定要在 setLyrics 之後送：長度比對比的是這一份歌詞的行數，
+    // 順序反了會拿上一首的行數去比對這一首的拼音（見 karaoke-renderer.setRuby）。
+    karaokeRenderer.setRuby(lyricsBundle.ruby);
+    applyStageRuby();
     // 空檔表跟歌詞是同一份資料（而且是同一把尺：歌詞時間軸）
     setInterludeLyrics(lyrics);
     // 換歌：音域採集歸零。不歸零的話上一首的直方圖會被算進這一首送出去，

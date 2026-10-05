@@ -1116,10 +1116,18 @@ class KaraTubeAPI {
     return await res.json();
   }
 
-  async getLyrics(songId) {
+  // 歌詞與它的拼音標注（1.35）是**同一次回應**。分成兩支 API 的話，
+  // 兩次請求中間剛好有人按下「重算歌詞」，舞台就會拿到新的詞配舊的拼音 ——
+  // 每個字的拼音都標在隔壁那個字上面，而且畫面看起來正常。
+  async getLyricsBundle(songId) {
     const res = await this.fetch(`${this.baseUrl}/api/songs/${songId}/lyrics`);
     const data = await res.json();
-    return data.lyrics;
+    return { lyrics: data.lyrics || [], ruby: data.ruby || null };
+  }
+
+  async getLyrics(songId) {
+    const bundle = await this.getLyricsBundle(songId);
+    return bundle.lyrics;
   }
 
   async getPitch(songId) {

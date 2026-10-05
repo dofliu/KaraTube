@@ -45,6 +45,9 @@ from backend.services.pitch_fix import (DEFAULT_PITCH_FIX_STRENGTH,
 # 介面語言的清單與夾限同理：規則寫在 i18n，設定頁只是把舞台那一台的選擇存起來。
 # （點歌台與手機的語言不經過這裡 —— 那是每台裝置自己的事，見 i18n.py 決定一。）
 from backend.services.i18n import DEFAULT_STAGE_LOCALE, LOCALE_CODES, coerce_locale
+# 歌詞拼音標注的顯示模式同理：規則（標哪些語言、為什麼只標國語）寫在 ruby.py，
+# 設定頁只是把三個選項列出來。
+from backend.services.ruby import DEFAULT_RUBY_MODE, RUBY_MODE_CHOICES
 # 自動接歌的挑歌來源與時間上下限同理：規則寫在 autofill，設定頁只是列出來。
 from backend.services.autofill import (DEFAULT_IDLE_SECONDS, DEFAULT_SOURCE,
                                        DEFAULT_STOP_AFTER, MAX_IDLE_SECONDS, MAX_STOP_AFTER,
@@ -331,6 +334,12 @@ SETTINGS_SPEC: Dict[str, Dict[str, Any]] = {
     # 預設繁中：升級上來的現役機器，舞台的行為跟這一版之前一模一樣。
     "stage_locale": {"type": "choice", "default": DEFAULT_STAGE_LOCALE,
                      "choices": list(LOCALE_CODES)},
+    # 舞台歌詞上面那一行拼音。預設 auto —— 「要不要顯示」的答案其實已經寫在
+    # 上面那一格裡：舞台的介面語言就是「這塊螢幕現在是給誰看的」。
+    # 中文介面的包廂不會多出一行拼音（升級上來的現役機器畫面完全不變），
+    # 而把舞台切成英文或日文的那一間，拼音跟著出現 —— 不必再找第二個開關。
+    "stage_ruby": {"type": "choice", "default": DEFAULT_RUBY_MODE,
+                   "choices": list(RUBY_MODE_CHOICES)},
 }
 
 # 設定裡的「開機預設值」對應到 QueueManager 的哪個控制欄位
@@ -571,4 +580,8 @@ class SystemSettings:
             # 舞台的介面語言。夾一次再送出去，設定檔被手改壞也不會讓舞台
             # 拿著一個字典裡沒有的代碼去查字（症狀是整面 HUD 只剩 key）。
             "stage_locale": coerce_locale(data["stage_locale"], DEFAULT_STAGE_LOCALE),
+            # 拼音的顯示模式。舞台端自己再照 stage_locale 解一次 auto ——
+            # 在這裡解掉的話，設定檔裡就看不出店家選的是 auto 還是 on，
+            # 而那兩個在「之後有人把舞台切回中文」時行為不同。
+            "stage_ruby": data["stage_ruby"],
         }

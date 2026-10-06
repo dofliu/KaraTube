@@ -23,7 +23,7 @@ const {
 } = require("../js/i18n.js");
 
 const {
-  I18N_CATALOGS, I18N_LOCALES, I18N_WIDTH_BUDGET, I18N_ZH_TW,
+  I18N_CATALOGS, I18N_LOCALES, I18N_WIDTH_BUDGET, I18N_ZH_TW, I18N_ZH_CN,
 } = require("../js/i18n-catalog.js");
 
 const FRONTEND = path.join(__dirname, "..");
@@ -129,6 +129,89 @@ test("沒有一句翻譯是原封不動抄過去的中文", () => {
       (k) => I18N_CATALOGS[code][k] === I18N_ZH_TW[k] && hasCjk(I18N_ZH_TW[k]));
     assert.deepEqual(copied, [], `${code} 有幾句直接抄了中文：${copied.join(", ")}`);
   }
+});
+
+// --- 簡體中文：不是把繁體逐字換成簡體 ---
+
+// 繁中字典裡出現過、而且在簡體裡寫法不同的每一個字（用 OpenCC t2s 量出來的，
+// 不是手挑的）。簡體字典裡出現其中任何一個，就是「複製繁中、只改了一半」。
+// 繁中字典加了新字的時候這張表不會自己長大 —— 那一半由下面的
+// 「跟繁中一字不差要列名」那條守衛接住。
+const TRADITIONAL_ONLY =
+  "並佇佔來個倫備別剛動務勢匯啟單嘯場塊尋對導帳帶幾庫廂張強後從愛換擊數時暫" +
+  "會條機檔檯櫃歡歷歸沒減滿潔瀏為現環碼稱組結統經網線練總績續聲聽與薦處號螢" +
+  "裝裡覽計訊設評話該認語說誰請識議變讓貼趨輪輸這進過遠選還鈴錄鎖開間隊隨響頁" +
+  "預額類顯風麥麼點";
+
+// 兩岸本來就同形的那幾句。不在這張表裡卻跟繁中一字不差的，就是漏翻。
+// （完整性測試抓不到這種：key 是在的，字也是中文的。）
+const SAME_IN_BOTH_SCRIPTS = new Set([
+  "lib.find", "lib.voice", "lib.contest", "queue.quota_up_hint", "queue.rotation_reset",
+  "deck.restart", "deck.play", "deck.skip", "deck.skip_hint", "deck.idle_title",
+  "stage.pitch_fix",
+]);
+
+// 寫成簡體字的台灣用詞。逐字轉換做得出這些詞，而它們每一個字都是簡體 ——
+// 所以「沒有繁體字」那條守衛擋不到，只能照詞擋。
+// 右邊是對岸的說法，給補字的人參考。
+const TAIWAN_TERMS = {
+  "快取": "缓存", "萤幕": "屏幕", "伫列": "队列", "预设": "默认", "影片": "视频",
+  "设定": "设置", "暱称": "昵称", "本机": "本地", "伺服器": "服务器", "网址": "链接",
+  "柜台": "前台", "柜檯": "前台", "音档": "音频文件", "讯息": "消息", "滑鼠": "鼠标",
+  "介面": "界面", "装置": "设备", "档案": "文件", "网路": "网络", "软体": "软件",
+  "支援": "支持", "即时": "实时", "贴上": "粘贴", "歌星": "歌手", "按一下": "点一下",
+};
+
+test("简体字典裡沒有殘留的繁體字", () => {
+  const bad = [];
+  for (const [key, text] of Object.entries(I18N_ZH_CN)) {
+    const found = Array.from(text).filter((ch) => TRADITIONAL_ONLY.includes(ch));
+    if (found.length) bad.push(`${key}: ${found.join("")}「${text}」`);
+  }
+  assert.deepEqual(bad, [], `zh-CN 還有繁體字：\n  ${bad.join("\n  ")}`);
+});
+
+test("简体字典裡沒有台灣用詞（字是簡體，詞是台灣的）", () => {
+  const bad = [];
+  for (const [key, text] of Object.entries(I18N_ZH_CN)) {
+    for (const [term, mainland] of Object.entries(TAIWAN_TERMS)) {
+      if (text.includes(term)) bad.push(`${key}: 「${term}」→ 對岸說「${mainland}」`);
+    }
+  }
+  assert.deepEqual(bad, [], `zh-CN 有台灣用詞：\n  ${bad.join("\n  ")}`);
+});
+
+test("跟繁中一字不差的句子要列名（否則跟漏翻分不出來）", () => {
+  const copied = Object.keys(I18N_ZH_TW).filter(
+    (k) => I18N_ZH_CN[k] === I18N_ZH_TW[k] && !SAME_IN_BOTH_SCRIPTS.has(k));
+  assert.deepEqual(copied, [], `zh-CN 這幾句跟繁中一模一樣，卻沒有列在同形清單裡：${copied.join(", ")}`);
+  // 反過來：列名的那幾句要真的還一樣。繁中改了字之後清單沒跟著清，
+  // 這張表就會慢慢變成「漏翻的通行證」。
+  const stale = [...SAME_IN_BOTH_SCRIPTS].filter((k) => I18N_ZH_CN[k] !== I18N_ZH_TW[k]);
+  assert.deepEqual(stale, [], `同形清單裡這幾句已經不一樣了，請移出清單：${stale.join(", ")}`);
+});
+
+test("繁體字表本身沒有混進簡體也有的字（守衛不能誤殺）", () => {
+  // 例如「後」「着」：前者只在繁體，後者兩岸都用。把兩岸通用的字放進表裡，
+  // 簡體字典就永遠過不了，而下一個人的解法會是把這條測試刪掉。
+  const zhCnChars = new Set(Object.values(I18N_ZH_CN).join(""));
+  const overlap = Array.from(TRADITIONAL_ONLY).filter((ch) => zhCnChars.has(ch));
+  assert.deepEqual(overlap, []);
+  assert.equal(new Set(TRADITIONAL_ONLY).size, Array.from(TRADITIONAL_ONLY).length, "表裡有重複的字");
+});
+
+test("簡體系統的瀏覽器直接看到簡體，香港澳門留在繁體", () => {
+  assert.equal(normalizeLocale("zh-CN"), "zh-CN");
+  assert.equal(normalizeLocale("zh-Hans"), "zh-CN");
+  assert.equal(normalizeLocale("zh_SG"), "zh-CN");
+  assert.equal(normalizeLocale("zh-Hans-HK"), "zh-CN");
+  assert.equal(normalizeLocale("zh-HK"), "zh-TW");
+  assert.equal(normalizeLocale("zh-Hant-CN"), "zh-TW");
+  assert.equal(normalizeLocale("zh"), "zh-TW");
+  assert.equal(resolveDeviceLocale(null, ["zh-CN", "en"], I18N_BASE_LOCALE), "zh-CN");
+  // 1.35 時代存下來的 "zh-TW" 不會在升級後自己變成簡體
+  assert.equal(resolveDeviceLocale("zh-TW", ["zh-CN"], I18N_BASE_LOCALE), "zh-TW");
+  assert.ok(localeLabel("zh-CN", I18N_LOCALES).includes("简体中文"));
 });
 
 // --- 版面寬度 ---

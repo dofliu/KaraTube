@@ -36,6 +36,7 @@ from backend.services.library import UNKNOWN_ARTIST
 from backend.services.song_index import (
     BOPOMOFO_AVAILABLE,
     BOPOMOFO_ROWS,
+    fold_text,
     is_key_query,
     match_keys,
     normalize_query,
@@ -256,7 +257,7 @@ class ArtistFinder:
                 return min(hits), "keys"
         if text_query:
             for cand in [group["name"]] + list(group["aliases"]):
-                where = cand.lower().find(text_query)
+                where = fold_text(cand).find(text_query)
                 if where >= 0:
                     return where, "text"
         return None
@@ -294,7 +295,8 @@ class ArtistFinder:
         groups = self.groups()
         text = (query or "").strip()
         keys_query = normalize_query(text) if is_key_query(text) else []
-        text_query = text.lower() if text and not _BOPOMOFO_RE.search(text) else ""
+        # 簡繁不分（打「周杰伦」要找得到「周杰倫」），見 song_index.fold_text
+        text_query = fold_text(text) if text and not _BOPOMOFO_RE.search(text) else ""
 
         matched: List[Dict[str, Any]] = []
         for group in groups:

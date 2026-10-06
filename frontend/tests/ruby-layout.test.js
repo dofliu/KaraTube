@@ -45,6 +45,8 @@ test("模式只有三個，而且認不得的一律退回預設", () => {
 test("auto 跟著舞台語言走：中文介面不顯示，英日文顯示", () => {
   assert.equal(rubyVisible("auto", "zh-TW", true), false);
   assert.equal(rubyVisible("auto", "zh-Hant", true), false);
+  // 簡體中文的舞台也不標：看得懂那幾個字的人讀拼音只會慢半拍
+  assert.equal(rubyVisible("auto", "zh-CN", true), false);
   assert.equal(rubyVisible("auto", "en", true), true);
   assert.equal(rubyVisible("auto", "ja", true), true);
 });

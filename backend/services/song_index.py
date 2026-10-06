@@ -27,6 +27,7 @@
 import logging
 import re
 from collections import Counter
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence
 
 from backend.services.library import UNKNOWN_ARTIST, looks_like_channel
@@ -46,6 +47,42 @@ except Exception:  # pragma: no cover - 只有沒裝套件的環境會走到
     Style = None
     _pinyin = None
     BOPOMOFO_AVAILABLE = False
+
+# --- 簡繁不分的文字比對 ---
+#
+# 1.36 有了簡體介面，馬上冒出一個介面翻譯碰不到的洞：用簡體的人在曲庫裡打
+# 「周杰伦」，曲庫裡存的是「周杰倫」—— 一首都查不到，而他會以為曲庫裡沒有。
+# 反過來也一樣：從對岸頻道下載的歌，標題是「后来」，用繁體打「後來」的人查不到。
+#
+# 解法是**只在比對的那一刻**把兩邊折成同一種寫法，存的、顯示的那串字一個字
+# 都不動（歌名是資料，見 backend/services/i18n.py 決定二）。
+# 折成簡體而不是繁體：繁→簡是多對一（乾、幹、干 → 干），往這個方向折只會
+# 讓比對變寬；簡→繁是一對多，往那邊折得猜，猜錯就漏。
+# 用 zh-hans（純字形）而不是 zh-cn（連用詞一起換）：「影片」不該去匹配「视频」。
+try:  # zhconv 已經是歌詞對齊的依賴；沒裝的話退回只比小寫，行為跟 1.35 一樣
+    from zhconv import convert as _zh_convert
+    SCRIPT_FOLD_AVAILABLE = True
+except Exception:  # pragma: no cover - 只有沒裝套件的環境會走到
+    _zh_convert = None
+    SCRIPT_FOLD_AVAILABLE = False
+
+
+@lru_cache(maxsize=8192)
+def fold_text(text: str) -> str:
+    """
+    比對用的正規形：小寫 + 簡繁折成同一種。**只拿來比，不拿來顯示。**
+
+    每次查歌會對曲庫裡每一首歌各呼叫一次，所以快取起來 ——
+    曲庫的標題是同一批字串，第二次查起就是查表。
+    """
+    low = (text or "").lower()
+    if not low or _zh_convert is None or not _HAN_RE.search(low):
+        return low
+    try:
+        return _zh_convert(low, "zh-hans")
+    except Exception:  # pragma: no cover - 轉換器壞掉時寧可退回原字串比
+        return low
+
 
 # 標準注音鍵盤的四排：聲母 21、介音 3、韻母 13（含 ㄦ）。
 # 順序照實體點歌機/注音鍵盤的排法，讓用慣的人手指找得到。
@@ -431,17 +468,18 @@ class SongFinder:
 
         text = (query or "").strip()
         keys_query = normalize_query(text) if is_key_query(text) else []
-        text_query = text.lower() if text and not _BOPOMOFO_RE.search(text) else ""
+        text_query = fold_text(text) if text and not _BOPOMOFO_RE.search(text) else ""
 
         matched: List[Dict[str, Any]] = []
         for e in entries:
             pos = match_keys(keys_query, e["keys"]) if keys_query else None
             kind = "keys" if pos is not None else ""
             if pos is None and text_query:
-                core = (e.get("core_title") or "").lower()
+                core = fold_text(e.get("core_title") or "")
                 where = core.find(text_query)
                 if where < 0:
-                    haystack = f"{e.get('title', '')} {e.get('artist_name', '')}".lower()
+                    haystack = (fold_text(e.get("title") or "") + " "
+                                + fold_text(e.get("artist_name") or ""))
                     where = 0 if text_query in haystack else -1
                     if where == 0:
                         # 命中在原標題或歌手名上，比命中歌名本體弱，排到後面去

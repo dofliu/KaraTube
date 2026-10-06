@@ -63,12 +63,16 @@ from typing import Any, Dict, List, Optional
 # 介面語言。每一種都要有「用它自己的文字寫的名字」—— 一個看不懂中文的人
 # 在語言選單裡要找的是「日本語」，不是「日文」。
 #
-# 為什麼是這三種：繁體中文是母語；英語是「看不懂中文的人至少看得懂」的
+# 簡體中文（1.36）排在繁中後面而不是最後：語言鍵是循環切換的，
+# 兩種中文相鄰，切錯了按一下就回來。
+#
+# 為什麼是最早那三種：繁體中文是母語；英語是「看不懂中文的人至少看得懂」的
 # 最大公約數；日語則是這台機器的主要客群裡唯一一個**非拉丁字母**的語言 ——
 # 挑它當第三種，是為了讓版面在「字母語言」之外也被實際驗證過一次
 # （日文的按鈕字長介於中英文之間，而且它會換行在跟中文不同的地方）。
 LOCALES: List[Dict[str, str]] = [
     {"code": "zh-TW", "name": "繁體中文", "english": "Traditional Chinese", "flag": "🇹🇼"},
+    {"code": "zh-CN", "name": "简体中文", "english": "Simplified Chinese", "flag": "🇨🇳"},
     {"code": "en", "name": "English", "english": "English", "flag": "🇬🇧"},
     {"code": "ja", "name": "日本語", "english": "Japanese", "flag": "🇯🇵"},
 ]
@@ -90,13 +94,20 @@ DEFAULT_STAGE_LOCALE = BASE_LOCALE
 # `navigator.language` 在不同系統上會是 zh-TW / zh-Hant / zh-Hant-TW / zh_TW，
 # Accept-Language 還會帶 en-US、en-GB、ja-JP。全部要落在同一格。
 #
-# zh-CN / zh-Hans（簡體）刻意**也**對到繁中而不是被拒絕：這一版沒有簡體字典，
-# 而一個簡體系統的使用者看繁體看得懂，看英文不一定。等真的補了簡體字典，
-# 這兩行要改成指向新的那一格 —— 留在這裡的註解就是給那天的提醒。
+# 簡體看的是**文字系統**（Hans），不是國家：zh-SG、zh-MY 也寫簡體，
+# 而 zh-HK、zh-MO 寫的是繁體 —— 所以香港澳門留在繁中那一格。
+# 一個不帶地區的 "zh" 仍然對到繁中（基準語言）：沒有線索的時候，
+# 給的是這台機器出廠的樣子，而不是猜一個。
+#
+# 1.36 之前 zh-CN／zh-Hans 是對到繁中的（看得懂，但不是母語體驗）；
+# 這兩行改指向 zh-CN 之後，原本存著 "zh-TW" 的裝置**不受影響** ——
+# 存下來的是解析後的代碼，不是瀏覽器原本送的字串，所以沒有人的介面
+# 會在升級後突然自己換成簡體。只有還沒選過語言的簡體系統會直接看到簡體。
 _ALIASES = {
     "zh": "zh-TW", "zh-tw": "zh-TW", "zh-hant": "zh-TW", "zh-hant-tw": "zh-TW",
     "zh-hk": "zh-TW", "zh-mo": "zh-TW", "zh-hant-hk": "zh-TW",
-    "zh-cn": "zh-TW", "zh-hans": "zh-TW", "zh-sg": "zh-TW", "zh-hans-cn": "zh-TW",
+    "zh-cn": "zh-CN", "zh-hans": "zh-CN", "zh-sg": "zh-CN", "zh-my": "zh-CN",
+    "zh-hans-cn": "zh-CN", "zh-hans-sg": "zh-CN",
     "en": "en", "en-us": "en", "en-gb": "en", "en-au": "en", "en-ca": "en",
     "ja": "ja", "ja-jp": "ja", "jp": "ja",
 }

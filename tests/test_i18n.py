@@ -43,6 +43,8 @@ def test_every_locale_has_a_name_in_its_own_script():
     names = {item["code"]: item["name"] for item in LOCALES}
     assert names["en"] == "English"
     assert names["ja"] == "日本語"
+    # 簡體使用者在選單裡找的是用簡體字寫的「简体中文」
+    assert names["zh-CN"] == "简体中文"
     # 「日文」「英文」這種中文寫法不該出現在 name 欄位
     assert "日文" not in json.dumps(names, ensure_ascii=False)
 
@@ -60,13 +62,23 @@ def test_normalize_handles_what_browsers_actually_send(raw, expected):
     assert normalize_locale(raw) == expected
 
 
-def test_simplified_chinese_falls_back_to_traditional_for_now():
+@pytest.mark.parametrize("raw", ["zh-CN", "zh_CN", "zh-Hans", "zh-Hans-CN", "zh-SG",
+                                 "zh-Hans-SG", "zh-MY", "zh-Hans-HK"])
+def test_simplified_chinese_goes_to_its_own_dictionary(raw):
     """
-    這一版沒有簡體字典。簡體系統的使用者看繁體看得懂，看英文不一定 ——
-    所以 zh-CN 對到繁中而不是被拒絕。補了簡體字典的那一天這條要改。
+    簡體看的是文字系統（Hans），不是國家：新加坡、馬來西亞也寫簡體。
+    1.35 之前這幾個對到繁中（沒有簡體字典時的退路），1.36 起有自己的那一格。
     """
-    assert normalize_locale("zh-CN") == "zh-TW"
-    assert normalize_locale("zh-Hans") == "zh-TW"
+    assert normalize_locale(raw) == "zh-CN"
+
+
+@pytest.mark.parametrize("raw", ["zh", "zh-HK", "zh-MO", "zh-Hant-HK", "zh-Hant-CN"])
+def test_traditional_script_stays_traditional(raw):
+    """
+    香港、澳門寫繁體；一個沒有地區的 "zh" 沒有線索，給的是出廠的樣子。
+    zh-Hant-CN（在大陸用繁體）也是繁體 —— 先看文字系統，不看國家。
+    """
+    assert normalize_locale(raw) == "zh-TW"
 
 
 @pytest.mark.parametrize("raw", ["", None, "   ", "klingon", "xx-YY", 42, {}])
@@ -208,3 +220,18 @@ def test_the_dictionary_never_contains_a_key_for_data():
     assert not offenders, (
         f"字典裡出現了不該翻的東西：{offenders}。"
         f"這幾種是資料不是介面：{list(LOCALE_NEVER_TRANSLATE)}")
+
+
+def test_frontend_alias_table_matches_the_backend():
+    """
+    前後端各有一張語言別名表（舞台離線時也要能自己解析瀏覽器語言）。
+    兩張對不上的症狀是：同一支手機從 Accept-Language 拿到的語言，
+    跟它自己用 navigator.language 算出來的不一樣 —— 補簡體字典那一輪
+    最容易只改到其中一邊。
+    """
+    from backend.services.i18n import _ALIASES
+    src = ENGINE_JS.read_text(encoding="utf-8")
+    block = re.search(r"const I18N_ALIASES = \{(.*?)\};", src, re.S)
+    assert block, "i18n.js 裡找不到 I18N_ALIASES"
+    pairs = dict(re.findall(r'"([\w-]+)":\s*"([\w-]+)"', block.group(1)))
+    assert pairs == _ALIASES

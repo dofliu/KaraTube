@@ -20,7 +20,8 @@ from backend.services.artist_index import (
     name_parts,
 )
 from backend.services.library import LibraryIndex
-from backend.services.song_index import BOPOMOFO_AVAILABLE, BOPOMOFO_ROWS, SongFinder
+from backend.services.song_index import (BOPOMOFO_AVAILABLE, BOPOMOFO_ROWS,
+                                         SCRIPT_FOLD_AVAILABLE, SongFinder)
 from backend.services.storage import SongStorage
 
 needs_bopomofo = pytest.mark.skipif(
@@ -153,6 +154,15 @@ def test_search_by_typed_name(tmp_path):
     make_song(tmp_path, "s2", "溫柔", "五月天 - Topic")
     res = build_finder(tmp_path).search(query="五月")
     assert [a["name"] for a in res["artists"]] == ["五月天"]
+
+
+@pytest.mark.skipif(not SCRIPT_FOLD_AVAILABLE, reason="這個環境沒有 zhconv")
+def test_search_by_typed_name_ignores_script(tmp_path):
+    # 簡體介面的使用者打「周杰伦」，歌手卡上的名字照舊是「周杰倫」
+    make_song(tmp_path, "s1", "稻香", "周杰倫 - Topic")
+    make_song(tmp_path, "s2", "溫柔", "五月天 - Topic")
+    res = build_finder(tmp_path).search(query="周杰伦")
+    assert [a["name"] for a in res["artists"]] == ["周杰倫"]
 
 
 def test_single_match_is_auto_selected(tmp_path):

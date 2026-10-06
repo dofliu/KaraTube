@@ -3618,7 +3618,7 @@ document.addEventListener("DOMContentLoaded", () => {
       label: "舞台螢幕語言",
       // 選項印的是那個語言自己的名字，不是「英文」「日文」——
       // 設定頁上要挑語言的人，多半正是看不懂現在這一頁的那一位。
-      choiceLabels: { "zh-TW": "繁體中文", en: "English", ja: "日本語" },
+      choiceLabels: { "zh-TW": "繁體中文", "zh-CN": "简体中文", en: "English", ja: "日本語" },
     },
     stage_ruby: {
       label: "歌詞上方標拼音",

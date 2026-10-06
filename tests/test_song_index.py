@@ -19,8 +19,10 @@ from backend.services.song_index import (
     BOPOMOFO_AVAILABLE,
     BOPOMOFO_ROWS,
     INDEX_VERSION,
+    SCRIPT_FOLD_AVAILABLE,
     SongFinder,
     char_initials,
+    fold_text,
     han_char_count,
     is_key_query,
     match_keys,
@@ -30,6 +32,8 @@ from backend.services.song_index import (
 )
 from backend.services.storage import SongStorage
 
+needs_script_fold = pytest.mark.skipif(
+    not SCRIPT_FOLD_AVAILABLE, reason="這個環境沒有 zhconv，簡繁折疊本來就關閉")
 needs_bopomofo = pytest.mark.skipif(
     not BOPOMOFO_AVAILABLE, reason="這個環境沒有 pypinyin，注音查詢本來就關閉")
 
@@ -288,3 +292,47 @@ def test_next_keys_is_empty_when_user_typed_text(tmp_path):
     # 直接打字的時候算不出「下一鍵」，回空清單讓呼叫端把整個鍵盤當成可按
     make_song(tmp_path, "s1", "稻香", "周杰倫")
     assert build_finder(tmp_path).search(query="稻香")["next_keys"] == []
+
+
+# --- 簡繁不分的文字比對（1.36）---
+
+@needs_script_fold
+def test_fold_text_puts_both_scripts_in_one_shape():
+    assert fold_text("周杰倫") == fold_text("周杰伦")
+    assert fold_text("後來") == fold_text("后来")
+    assert fold_text("Jay CHOU") == "jay chou"
+
+
+def test_fold_text_leaves_non_han_alone():
+    # 沒有漢字的字串連轉換器都不進：英文歌名、日文假名、空字串
+    assert fold_text("") == ""
+    assert fold_text("ABC") == "abc"
+    assert fold_text("さくら") == "さくら"
+
+
+@needs_script_fold
+def test_fold_text_only_changes_script_not_vocabulary():
+    # zh-hans 是純字形；zh-cn 會連用詞一起換（影片 → 视频）。
+    # 歌名裡的「影片」被當成「视频」去比，是把資料翻譯了。
+    assert "影片" in fold_text("影片")
+
+
+@needs_script_fold
+def test_simplified_query_finds_traditional_title(tmp_path):
+    """簡體介面的使用者打「周杰伦」「稻香」—— 曲庫存的是繁體，要查得到。"""
+    make_song(tmp_path, "s1", "周杰倫 - 晴天", "周杰倫 - Topic")
+    make_song(tmp_path, "s2", "五月天 - 溫柔", "五月天 - Topic")
+    finder = build_finder(tmp_path)
+    assert [s["song_id"] for s in finder.search(query="周杰伦")["songs"]] == ["s1"]
+    assert [s["song_id"] for s in finder.search(query="温柔")["songs"]] == ["s2"]
+
+
+@needs_script_fold
+def test_traditional_query_finds_simplified_title(tmp_path):
+    """反過來：從對岸頻道下載的歌標題是簡體，用繁體打的人也要查得到。"""
+    make_song(tmp_path, "s1", "后来", "刘若英")
+    finder = build_finder(tmp_path)
+    res = finder.search(query="後來")
+    assert [s["song_id"] for s in res["songs"]] == ["s1"]
+    # 比對時折疊，顯示的歌名一個字都不動（歌名是資料）
+    assert res["songs"][0]["title"] == "后来"

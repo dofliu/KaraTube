@@ -1,5 +1,5 @@
 /**
- * 介面字典（繁體中文 / English / 日本語）。
+ * 介面字典（繁體中文 / 简体中文 / English / 日本語）。
  *
  * 引擎在 `i18n.js`，伺服器那一半在 `backend/services/i18n.py`。
  * 這一支只有資料，刻意沒有任何邏輯 —— 它是整個專案裡**最有可能被非工程師
@@ -131,6 +131,110 @@ const I18N_ZH_TW = {
   "stage.pitch_fix": "修音",
   "stage.recording": "錄音中",
   "stage.finale": "🎤 歡唱時間結束",
+};
+
+/**
+ * 簡體中文。**不是**把繁體逐字換成簡體 —— 那樣做出來的是「快取歌曲」「螢幕」
+ * 「佇列」「預設」，每一個字都是簡體，整句卻是台灣話；對岸的使用者一眼
+ * 看得出這是機器轉的，而且「快取」「佇列」他真的要停下來想一下是什麼。
+ * 所以這一份是照用詞重寫的（缓存、屏幕、队列、默认、视频、本地、二维码），
+ * `frontend/tests/i18n.test.js` 有兩條守衛：不准殘留繁體字，也不准出現
+ * 台灣用詞（寫成簡體字的「影片」「萤幕」也算）。
+ *
+ * 跟繁中一字不差的那幾句（「⏭ 切歌」「修音」）是兩岸本來就同形的字，
+ * 它們要被**列名**在測試的白名單裡 —— 不然「漏翻、直接抄繁中」跟「本來就
+ * 一樣」在完整性測試裡長得一模一樣。
+ *
+ * 只有一件事刻意**沒有**在地化：注音查歌。這台機器的首字查歌用的是
+ * 注音符號（ㄅㄆㄇ），對岸的使用者打的是拼音首字母 —— 鍵名照實寫「注音」，
+ * 說明裡講清楚它不是拼音。把它改名叫「拼音查歌」會讓人按著 Z J L 找周杰伦，
+ * 然後以為曲庫裡沒有。拼音首字母查歌見 docs/ROADMAP.md。
+ */
+const I18N_ZH_CN = {
+  "header.room_clock_hint": "欢唱时间。还没开始计时就点一下开始；计时中点一下可以结束计时",
+  "header.room_extend_hint": "续时：加时间，不是重开一场。时间到停住时点它会接着播下一首",
+  "header.room_pause_hint": "暂停计时（中场休息、餐点来了）。播放不受影响",
+  "header.marquee": "📺 大屏消息",
+  "header.marquee_hint": "把一句话发到大屏幕上（餐点到了、生日祝福）",
+  "header.service": "🔔 呼叫服务",
+  "header.service_hint": "呼叫前台：送餐、加冰块、清洁、麦克风／音响、结账",
+  "header.room_switch_hint": "这一页现在在哪个包厢。点一下查看全店总览并切换",
+  "header.nickname": "设置昵称",
+  "header.nickname_hint": "设置显示在队列里的昵称，让大家知道是谁点的歌",
+  "header.open_stage": "🖥️ 打开大屏幕",
+  "header.qr": "📱 扫码点歌",
+  "header.settings": "⚙️ 系统设置",
+  "header.settings_hint": "开机默认音效、自动音量平衡、缓存上限、AI 模型",
+  "header.staff_lock_hint": "前台管理锁",
+  "header.language_hint": "这台设备的界面语言。大屏幕的语言在系统设置页里改（那是整个包厢共用的）",
+
+  "search.placeholder": "输入歌名、歌手，或粘贴 YouTube / YouTube Music 链接...",
+  "search.button": "搜索",
+  "lib.cached": "📚 缓存歌曲",
+  "lib.browse": "🎼 分类浏览",
+  "lib.browse_hint": "按语种与歌手分类点歌",
+  "lib.find": "🔤 注音查歌",
+  "lib.find_hint": "只在已备好的曲库里查歌：按注音符号首字（ㄅㄆㄇ，不是拼音字母）、歌名字数，查到的每一首都是缓存秒播",
+  "lib.numbers": "🔢 歌号点歌",
+  "lib.numbers_hint": "歌号点歌：直接输入六位歌号（每首歌的号码印在歌曲卡片上，而且永远不会变成别的歌）",
+  "lib.artists": "🎤 歌手查歌",
+  "lib.artists_hint": "歌手查歌：按歌手名字的注音首字（周杰伦＝ㄓㄐㄌ，不是拼音字母），选一位就打开他的歌单",
+  "lib.new": "🆕 新歌推荐",
+  "lib.new_hint": "最近加入曲库的新歌与为你推荐的歌单",
+  "lib.favorites": "⭐ 我的收藏",
+  "lib.rankings": "🏆 点唱排行",
+  "lib.history": "🕘 已唱记录",
+  "lib.voice": "🎤 我的音域",
+  "lib.voice_hint": "我的音域：机器从你唱过的歌认识你的声音，之后对每一首歌说“这首对你偏高，建议降 2 个 Key”",
+  "lib.trends": "📊 我的成绩",
+  "lib.trends_hint": "跨场次段落趋势：同一首唱满三次就看得出你一向强在哪一段",
+  "lib.contest": "🥇 今晚擂台",
+  "lib.contest_hint": "今晚擂台：这一场谁是歌王。唱满三首不同的歌就上榜",
+  "lib.recordings": "🎙️ 录音回放",
+  "lib.recordings_hint": "录音回放：把刚才唱的那一遍听回来（要先在系统设置页打开录音）",
+  "lib.cache": "🗂️ 缓存管理",
+  "lib.batch": "🌙 定时预处理",
+  "lib.batch_hint": "半夜自动把整个播放列表处理好，第二天一点就是秒播",
+  "lib.rooms": "🏠 包厢",
+  "lib.rooms_hint": "多包厢：一台服务器带多组大屏与队列。这一页是前台总览",
+  "lib.import": "📁 本地导入",
+  "lib.import_hint": "本地导入：把自己的伴奏视频或音频文件放进 cache/import/，走同一条流水线变成曲库里的歌",
+
+  "queue.title": "📋 点歌队列",
+  "queue.rotation_hint": "公平轮唱：新点的歌按“这是谁的第几首”排，让大家轮流唱",
+  "queue.quota_down_hint": "每人待唱上限减一（减到 0 就是不限）",
+  "queue.quota_up_hint": "每人待唱上限加一",
+  "queue.quota_hint": "每人同时最多能排几首待唱。点一下在“不限”与上次的上限之间切换",
+  "queue.rotation_empty": "还没有人点歌",
+  "queue.rotation_reset": "重新排",
+  "queue.rotation_reset_hint": "把“谁唱过几首”清零（换一批客人时用）。队列不动",
+  "queue.autofill_idle": "想不到唱什么？让机器从曲库里挑一首",
+  "queue.random_pick": "🎲 来一首",
+  "queue.random_pick_hint": "从已经备好的曲库随机点一首（算你点的，会占额度与轮序）",
+
+  "deck.restart": "🔄 重唱",
+  "deck.restart_hint": "重新开始",
+  "deck.play": "▶ 播放",
+  "deck.pause": "⏸ 暂停",
+  "deck.skip": "⏭ 切歌",
+  "deck.skip_hint": "切歌 / 下一首",
+  "deck.idle_title": "尚未播放歌曲",
+  "deck.idle_artist": "请从上方搜索点歌",
+  "deck.seek_hint": "点一下跳到该处播放",
+
+  "stage.unlock_title": "点击屏幕启用 KTV 伴唱音效与麦克风",
+  "stage.unlock_hint": "点击后即可解锁浏览器声音播放与麦克风实时评分！",
+  "stage.idle_title": "KaraTube 伴唱系统",
+  "stage.idle_artist": "请在点歌台搜索并点播歌曲",
+  "stage.interlude": "间奏",
+  "stage.practice": "练唱循环",
+  "stage.guide_duck": "导唱自动淡出",
+  "stage.mic_agc": "麦克风自动增益",
+  "stage.feedback_guard": "防啸叫",
+  "stage.harmony": "和声",
+  "stage.pitch_fix": "修音",
+  "stage.recording": "录音中",
+  "stage.finale": "🎤 欢唱时间结束",
 };
 
 const I18N_EN = {
@@ -342,13 +446,14 @@ const I18N_WIDTH_BUDGET = {
   "stage.recording": 12, "stage.finale": 24,
 };
 
-const I18N_CATALOGS = { "zh-TW": I18N_ZH_TW, "en": I18N_EN, "ja": I18N_JA };
+const I18N_CATALOGS = { "zh-TW": I18N_ZH_TW, "zh-CN": I18N_ZH_CN, "en": I18N_EN, "ja": I18N_JA };
 
 // 語言選單上的名字。跟 backend/services/i18n.py 的 LOCALES 是同一份內容
 // （tests/test_i18n.py 把兩邊釘在一起）—— 離線開著的舞台也要列得出來，
 // 所以前端不能只靠 API 才知道有哪些語言。
 const I18N_LOCALES = [
   { code: "zh-TW", name: "繁體中文", flag: "🇹🇼" },
+  { code: "zh-CN", name: "简体中文", flag: "🇨🇳" },
   { code: "en", name: "English", flag: "🇬🇧" },
   { code: "ja", name: "日本語", flag: "🇯🇵" },
 ];
@@ -364,6 +469,6 @@ if (typeof window !== "undefined") {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     I18N_CATALOGS, I18N_LOCALES, I18N_WIDTH_BUDGET,
-    I18N_ZH_TW, I18N_EN, I18N_JA,
+    I18N_ZH_TW, I18N_ZH_CN, I18N_EN, I18N_JA,
   };
 }

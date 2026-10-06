@@ -85,7 +85,7 @@ def test_i18n_endpoint_lists_locales_and_the_stage_language():
     assert res.status_code == 200
     data = res.json()
     codes = [item["code"] for item in data["locales"]]
-    assert codes == ["zh-TW", "en", "ja"]
+    assert codes == ["zh-TW", "zh-CN", "en", "ja"]
     assert data["stage_locale"] in codes
     assert data["base"] == "zh-TW"
     # 字典不走這支 API（它跟著 /js/i18n-catalog.js 走瀏覽器快取，

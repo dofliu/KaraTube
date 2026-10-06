@@ -55,7 +55,8 @@ const I18N_DEVICE_KEY = "karatube.locale";
 const I18N_ALIASES = {
   "zh": "zh-TW", "zh-tw": "zh-TW", "zh-hant": "zh-TW", "zh-hant-tw": "zh-TW",
   "zh-hk": "zh-TW", "zh-mo": "zh-TW", "zh-hant-hk": "zh-TW",
-  "zh-cn": "zh-TW", "zh-hans": "zh-TW", "zh-sg": "zh-TW", "zh-hans-cn": "zh-TW",
+  "zh-cn": "zh-CN", "zh-hans": "zh-CN", "zh-sg": "zh-CN", "zh-my": "zh-CN",
+  "zh-hans-cn": "zh-CN", "zh-hans-sg": "zh-CN",
   "en": "en", "en-us": "en", "en-gb": "en", "en-au": "en", "en-ca": "en",
   "ja": "ja", "ja-jp": "ja", "jp": "ja",
 };

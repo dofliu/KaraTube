@@ -3622,8 +3622,7 @@ document.addEventListener("DOMContentLoaded", () => {
     },
     stage_ruby: {
       label: "歌詞上方標拼音",
-      hint: "只標國語歌。台語、粵語、日語歌一律不標 —— 用華語讀音去標那幾種語言，" +
-            "每一個音節都是錯的，而照著唸的人不會發現",
+      hint: "只標國語歌（其他語言標了也是錯的）",
       choiceLabels: { off: "不顯示", auto: "舞台不是中文時顯示", on: "一律顯示" },
     },
   };
@@ -3880,12 +3879,19 @@ document.addEventListener("DOMContentLoaded", () => {
     return `${shown}${meta.unit || ""}`;
   }
 
+  // 設定頁的說明文字是寫在程式裡的常數，作者用 **粗體** 標出那一句的重點。
+  // 在 1.35 之前它們被原樣印出來 —— 十幾段說明裡全是星號，而最該被看到的那幾個字
+  // 反而最難讀。這裡只轉這一種記號，而且只給這些常數用（不是使用者打的字）。
+  function emphasisHtml(text) {
+    return String(text || "").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  }
+
   function settingRowHtml(key) {
     const spec = settingsSpec[key];
     if (!spec) return "";
     const meta = SETTINGS_LABELS[key] || {};
     const value = settingsValues[key];
-    const label = `<label>${meta.label || key}${meta.hint ? `<small>${meta.hint}</small>` : ""}</label>`;
+    const label = `<label>${meta.label || key}${meta.hint ? `<small>${emphasisHtml(meta.hint)}</small>` : ""}</label>`;
 
     if (spec.type === "bool") {
       return `<div class="mixer-row">${label}
@@ -3917,7 +3923,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <div class="mixer-section">
         <div class="mixer-section-title">${group.title}</div>
         ${group.keys.map(settingRowHtml).join("")}
-        ${group.hint ? `<p class="mixer-hint">${group.hint}</p>` : ""}
+        ${group.hint ? `<p class="mixer-hint">${emphasisHtml(group.hint)}</p>` : ""}
       </div>`).join("");
 
     settingsBody.querySelectorAll(".setting-range").forEach(el => {

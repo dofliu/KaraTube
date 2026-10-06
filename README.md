@@ -7,7 +7,7 @@
 **KaraTube** 是一個把任何 YouTube / YouTube Music 歌曲 —— 或**你自己硬碟裡的影音檔** ——
 全自動轉換成專業 KTV 伴唱畫面的現代化卡拉OK系統。
 
-📖 文件：[使用說明書](docs/USER_GUIDE.md)｜[安裝與部署](docs/DEPLOYMENT.md)｜[更新日誌](CHANGELOG.md)｜[功能路線圖](docs/ROADMAP.md)｜[開發進度日誌](docs/PROGRESS_LOG.md)
+📖 文件：[使用說明書](docs/USER_GUIDE.md)｜[安裝與部署](docs/DEPLOYMENT.md)｜[更新日誌](CHANGELOG.md)｜[功能路線圖](docs/ROADMAP.md)｜[開發進度日誌](docs/PROGRESS_LOG.md)｜[測試報告](docs/TEST_REPORT.md)
 
 ---
 
@@ -4036,6 +4036,10 @@ CI 會問他這是不是要把歌名翻掉。它刻意**整段比**而不是看�
 ---
 
 ## 🔤 歌詞上面那一行拼音
+
+![英文舞台：國語歌詞上方標出拼音，已唱的部分連拼音一起變色](docs/images/v1.35-stage-ruby.png)
+
+*舞台切成 English 時的實機畫面（測試紀錄見 [docs/TEST_REPORT.md](docs/TEST_REPORT.md)）。*
 
 介面有三種語言之後，包廂裡那位看不懂中文的客人的處境其實只前進了一半：
 他**點得到歌**（搜尋框、佇列、插播都看得懂了），但螢幕上那句

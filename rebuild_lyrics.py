@@ -8,6 +8,7 @@
     python rebuild_lyrics.py                # 重算全部快取歌曲
     python rebuild_lyrics.py bu7nU9Mhpyo    # 只重算指定 song_id
     python rebuild_lyrics.py --check        # 只檢查現況，不動檔案
+    python rebuild_lyrics.py --stale        # 只重算還是舊版對齊演算法算的歌
 """
 import sys
 import json
@@ -17,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from backend.config import SONGS_DIR
-from backend.pipeline.lyrics_aligner import LyricsAligner
+from backend.pipeline.lyrics_aligner import LyricsAligner, ALIGNER_VERSION
 from backend.config import WHISPER_MODEL_SIZE, DEVICE, COMPUTE_TYPE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -35,9 +36,19 @@ def describe(lyrics):
             f"最長行 {longest:.1f}s | {lyrics[0]['start']:.2f}s ~ {lyrics[-1]['end']:.2f}s")
 
 
+def aligner_version(song_dir: Path) -> int:
+    """這一首是哪一版對齊演算法算的。沒有診斷檔或沒有欄位都當 1（最舊）。"""
+    try:
+        report = json.loads((song_dir / "alignment.json").read_text(encoding="utf-8"))
+        return int(report.get("aligner", 1))
+    except Exception:
+        return 1
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     check_only = "--check" in args
+    stale_only = "--stale" in args
     targets = [a for a in args if not a.startswith("--")]
 
     dirs = sorted(d for d in SONGS_DIR.iterdir() if d.is_dir())
@@ -55,6 +66,9 @@ def main():
         if not meta_file.exists() or not voc_file.exists():
             log.warning(f"[{song_dir.name}] 缺 metadata 或 vocals.mp3，跳過")
             skipped += 1
+            continue
+
+        if stale_only and aligner_version(song_dir) >= ALIGNER_VERSION:
             continue
 
         meta = json.loads(meta_file.read_text(encoding="utf-8"))

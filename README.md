@@ -31,7 +31,11 @@
    - 毫秒級字元漸變變色動畫（支援中文、英文、日文、韓文）。
    - **歌詞對齊採 LRC 主導、聲學校正**：抓多個 LRC 候選各自對齊，
      以 (scale, offset) 仿射變換修正片頭裁切與變速上傳，再把每行行首吸附到
-     人聲軌真實的起唱點，行內逐字依累積人聲能量分配（不是均分）。
+     人聲軌真實的起唱點。行內逐字（v1.37 起）用人聲軌上的**換字證據**
+     （頻譜突變＝換音高或子音、換氣後重新開口）與**字長先驗**（句尾拖長音）
+     一起解，句中換氣不再被當成句尾。有一套**端對端評估**守著：
+     `python -m backend.pipeline.alignment_bench` 用已知答案的合成人聲量
+     「字開始變色 vs. 那個字真的被唱出來」的誤差。
    - **播放端補償音訊輸出延遲**（`AudioContext.outputLatency`），量不到的那一段
      （藍牙、HDMI）在舞台按 `S` 的音訊面板手動補；**某一首歌自己對不上**則是
      播放中按 `←` `→`（Shift 微調 10ms、`0` 只歸零這一首），或用點歌台／手機的
@@ -927,7 +931,8 @@ KaraTube/
 │   │   ├── downloader.py        # yt-dlp 影音下載器
 │   │   ├── separator.py         # AI 人聲伴奏分離模組 (Demucs)
 │   │   ├── lyrics_aligner.py    # LRC 取得、時間軸仿射校正、逐字時間分配
-│   │   ├── vocal_activity.py    # 人聲能量包絡 / 發聲區段 / 起唱點偵測
+│   │   ├── vocal_activity.py    # 人聲能量包絡 / 發聲區段 / 起唱點偵測 / 換字證據（頻譜通量）
+│   │   ├── alignment_bench.py   # 對齊的端對端評估：合成已知答案的人聲，量逐字誤差（tests/test_alignment_e2e.py）
 │   │   ├── pitch_extractor.py   # 音高軌跡抽取 (F0 / MIDI)
 │   │   ├── loudness.py          # EBU R128 響度量測與自動音量平衡增益
 │   │   ├── chorus_detector.py   # 副歌偵測與段落切分（練唱模式的曲式分析）
@@ -1314,6 +1319,8 @@ const lyricTime = (scoreTime - songOffsetMs / 1000) / songRate;        // 字幕
 - `scale` / `offset` — 相對原始錄音估出來的變速與偏移
 - `score` — 行首落在真實起唱點的程度，**低於 0.28 會自動改走 Whisper 路徑**
 - `recall` — 有多少比例的人聲被歌詞行覆蓋到，可用來抓「LRC 少了一段副歌」
+- `aligner` — 哪一版對齊演算法算的（v1.37 起是 `2`；沒有這個欄位＝舊版）。
+  `python rebuild_lyrics.py --stale` 只挑舊版算的歌重算
 
 從 v1.22 起這份診斷會**出現在點歌台的「🗂️ 快取管理」每一列上**，
 翻譯成一句人看得懂的話（原始數字退到 tooltip）：
@@ -1356,6 +1363,7 @@ CLI 仍然在（改過對齊邏輯之後要整批重算時用）：
 python rebuild_lyrics.py              # 全部
 python rebuild_lyrics.py bu7nU9Mhpyo  # 單一首
 python rebuild_lyrics.py --check      # 只看現況，不動檔案
+python rebuild_lyrics.py --stale      # 只重算還是舊版對齊演算法算的歌（升級到 v1.37 後建議跑一次）
 ```
 
 ---

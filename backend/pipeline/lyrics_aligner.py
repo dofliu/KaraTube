@@ -26,10 +26,31 @@ from backend.pipeline.vocal_activity import VocalActivity
 logger = logging.getLogger("KaraTube.LyricsAligner")
 
 # --- 對齊參數 ---
-SCALE_GRID = np.arange(0.95, 1.05001, 0.0025)   # 支援 ±5% 變速上傳
+# 支援 ±8% 變速上傳。原本只到 ±5%，而 nightcore 風格或為了避開比對調快 6~7% 的
+# 上傳並不少見：超出網格時搜尋會收斂到一個「看起來分數還行」的錯誤 offset，
+# 端對端評估量到整首字幕歪 3~6 秒、而且越唱越歪 —— 正是「越唱越歪」那一類症狀。
+SCALE_GRID = np.arange(0.92, 1.08001, 0.0025)
 OFFSET_RANGE = 25.0                              # 片頭最多裁切/新增 25 秒
+# 連唱進來的句首（前面沒有靜音）改吸附到這個半徑內、強度至少這麼多的換字證據
+START_FLUX_WINDOW = 0.30
+START_FLUX_MIN = 0.5
 SNAP_WINDOW = 0.70                               # 行首吸附真實起唱點的搜尋半徑
-ENERGY_WEIGHT = 0.70                             # 逐字時間：能量分配 vs 線性均分的混合比
+# 一句歌詞之內，連續靜音要超過這麼久才算「這句唱完了」。
+# 0.35 秒會把句中換氣（流行歌常見 0.4~0.8 秒）當成句尾，後半句的字被擠進
+# 前半句的時間裡 —— 端對端評估量到的是整句走字提早 2~3 秒唱完。
+LINE_BREATH_GAP = 0.90
+# 句尾那個字通常拖長音（樂句末延長）。逐字分配的先驗權重乘上這個倍數；
+# 真正的長度仍以人聲軌上找得到的換字點為準，這只是找不到時的預設。
+FINAL_HOLD_WEIGHT = 2.2
+# 逐字切分的兩個權重（見 _segment_chars）：字長偏離先驗的懲罰、換字點落在聲學證據上的加分
+SEG_LENGTH = 1.0
+SEG_EVIDENCE = 2.0
+# 對齊演算法的版本，寫進每一首的 alignment.json。
+# 改過演算法之後，快取裡的舊時間軸不會自己更新 —— 有了這個欄位，
+# `python rebuild_lyrics.py --stale` 才挑得出「還是舊版算的」那幾首。
+#   1（或欄位不存在）：v1.36 以前，逐字按能量均分、句中換氣即句尾、變速 ±5%
+#   2：v1.37，逐字切分（頻譜換字點 + 字長先驗）、換氣不斷句、變速 ±8%
+ALIGNER_VERSION = 2
 MIN_TRUST_SCORE = 0.28                           # 低於此分數視為抓到別首歌的 LRC
 
 # LRC 檔頭的製作名單／版權聲明。只認「欄位名 + 冒號」這種結構，
@@ -428,6 +449,14 @@ class LyricsAligner:
             for i in range(L):
                 floor = starts[i - 1] + 0.30 if i > 0 else -0.5
                 cand = va.nearest_onset(starts[i], window=SNAP_WINDOW)
+                if cand is None and START_FLUX_WINDOW > 0:
+                    # 上一句直接連唱進來（中間沒有靜音），起唱點偵測找不到它。
+                    # 改找附近最強的換字證據 —— 句首差一個字，整句走字就錯一格。
+                    near = [c for c in va.syllable_boundaries(starts[i] - START_FLUX_WINDOW,
+                                                              starts[i] + START_FLUX_WINDOW)
+                            if c[1] >= START_FLUX_MIN]
+                    if near:
+                        cand = min(near, key=lambda c: abs(c[0] - starts[i]))[0]
                 # 找不到起唱點代表這行是連唱進來的，維持仿射映射結果即可
                 if cand is not None and cand >= floor:
                     starts[i] = cand
@@ -443,7 +472,8 @@ class LyricsAligner:
             nxt = starts[i + 1] if i + 1 < L else total_dur
             hard = max(starts[i] + 0.25, nxt - 0.04)
             if va is not None:
-                e = va.voice_end_after(starts[i], max_gap=0.35, limit=hard)
+                e = va.voice_end_after(starts[i], max_gap=LINE_BREATH_GAP, limit=hard,
+                                      next_start=nxt if i + 1 < L else None)
             else:
                 e = min(hard, starts[i] + char_counts[i] * 0.35)
             lo = starts[i] + max(0.40, char_counts[i] * 0.16)
@@ -463,11 +493,111 @@ class LyricsAligner:
             return 0.45
         return 0.30
 
+    def _prior_weights(self, chars: List[str]) -> np.ndarray:
+        """每個字預期佔多少演唱時間（相對值）。句尾最後一個字加上拖長音的倍數。"""
+        w = np.array([self._char_weight(c) for c in chars], dtype=np.float64)
+        if w.sum() <= 0:
+            w = np.ones(len(chars))
+        sung = [k for k, c in enumerate(chars) if not c.isspace()]
+        if len(sung) >= 3:
+            w[sung[-1]] *= FINAL_HOLD_WEIGHT
+        return w
+
+    @staticmethod
+    def _segment_chars(weights: np.ndarray, start: float, end: float,
+                       va: VocalActivity, cands: List[Tuple[float, float]]) -> Optional[List[float]]:
+        """
+        把一句切成 n 個字：在「每個字的長度合理」與「換字點落在聲學證據上」之間
+        找最佳解（動態規劃）。回傳 n-1 個內部換字點，或 None（這一句沒有可信的人聲）。
+
+          * 長度：每個字的**發聲時間**應該接近它的先驗份額（權重 ÷ 總權重 × 這句的
+            總發聲時間）。偏離用對數平方計 —— 長一倍跟短一半一樣糟。
+            用發聲時間不用牆上時間，句中換氣的那半秒才不會被算成某個字拖長音。
+          * 證據：換字點落在 `syllable_boundaries` 找到的位置上，依強度加分。
+
+        為什麼不是「每個預期點各自吸最近的候選」：連音（同一個音高、沒有子音）
+        找不到換字點，這時候最近的候選是**下一個**字的；吸過去之後整句錯一格，
+        前一個字長一倍、最後一個字只剩一眨眼 —— 端對端評估裡這正是剩下那三成
+        大誤差的來源。長度項讓「錯一格」付出它真正的代價。
+        """
+        n = len(weights)
+        if n < 2:
+            return []
+        fs = va.frame_sec
+        a = int(np.clip(round(start / fs), 0, va.n_frames))
+        b = int(np.clip(round(end / fs), 0, va.n_frames))
+        if b - a < 4:
+            return None
+        voiced_total = float(va.cum_active[b] - va.cum_active[a]) * fs
+        if voiced_total < 0.30 * (end - start):
+            return None
+
+        # 可以放換字點的位置：每 20ms 一格（無證據），加上所有候選點（有證據）
+        grid = np.arange(start + 0.06, end - 0.06 + 1e-9, 0.02)
+        pos = [(float(t), 0.0) for t in grid] + [
+            (float(t), float(sv)) for t, sv in cands if start + 0.06 < t < end - 0.06]
+        if not pos:
+            return None
+        pos.sort()
+        P = np.array([t for t, _ in pos])
+        reward = SEG_EVIDENCE * np.array([sv for _, sv in pos])
+
+        def voiced_at(t: np.ndarray) -> np.ndarray:
+            f = np.clip(np.round(np.asarray(t) / fs).astype(np.int64), 0, va.n_frames)
+            return va.cum_active[f] * fs
+
+        # 字的「長度」：發聲時間為主，加一點牆上時間避免整段靜音時長度變 0
+        V = voiced_at(P)
+        Vs, Ve = float(voiced_at(np.array([start]))[0]), float(voiced_at(np.array([end]))[0])
+
+        def length(v0, v1, t0, t1):
+            return np.maximum(v1 - v0 + 0.15 * (t1 - t0), 0.03)
+
+        share = weights / weights.sum() * (voiced_total + 0.15 * (end - start))
+        NEG = -1e18
+
+        # 第 1 個換字點（字 0 從句首開始）
+        dur0 = length(Vs, V, start, P)
+        score = -SEG_LENGTH * np.log(dur0 / share[0]) ** 2 + reward
+        score[P - start < 0.06] = NEG
+        backs = []
+        dV = V[None, :] - V[:, None]
+        dT = P[None, :] - P[:, None]
+        ok = dT >= 0.06
+        for k in range(1, n - 1):
+            dur = np.maximum(dV + 0.15 * dT, 0.03)
+            cost = -SEG_LENGTH * np.log(dur / share[k]) ** 2
+            total = np.where(ok, score[:, None] + cost, NEG)
+            arg = np.argmax(total, axis=0)
+            score = total[arg, np.arange(P.size)] + reward
+            backs.append(arg)
+        last = length(V, Ve, P, end)
+        final = score - SEG_LENGTH * np.log(last / share[n - 1]) ** 2
+        final[end - P < 0.06] = NEG
+        j = int(np.argmax(final))
+        if final[j] <= NEG / 2:
+            return None
+        idx = [j]
+        for arg in reversed(backs):
+            j = int(arg[j])
+            idx.append(j)
+        idx.reverse()
+        return [float(P[i]) for i in idx]
+
     def _distribute_chars(self, text: str, start: float, end: float,
                           va: Optional[VocalActivity]) -> List[Dict[str, Any]]:
         """
-        行內逐字時間。不再均分 —— 依累積人聲能量切點，
-        換氣、長音、拖腔才會落在正確的字上面。
+        行內逐字時間 —— 走字跟不跟得上聲音，看的是這一段。
+
+        1. 先驗：每個字的權重（中文一字一音、句尾拖長音）。
+        2. 證據：人聲軌上像換字的位置（頻譜突變、換氣後開口），見
+           `VocalActivity.syllable_boundaries`。
+        3. 兩者在 `_segment_chars` 裡一起解：字長合理、換字點盡量落在證據上。
+           沒有可信人聲時退回按權重的線性分配。
+
+        舊做法（能量累積均分）等於假設每個字一樣長，句尾長音被壓成一般長度，
+        句中的字一路跑在聲音前面半秒到一秒（端對端評估：中位誤差 370ms，
+        過半的字差超過 300ms）。
         """
         chars = list(text)
         n = len(chars)
@@ -475,18 +605,16 @@ class LyricsAligner:
             return []
         span = max(0.05, end - start)
 
-        w = np.array([self._char_weight(c) for c in chars], dtype=np.float64)
-        if w.sum() <= 0:
-            w = np.ones(n)
+        w = self._prior_weights(chars)
         frac = (np.cumsum(w) / w.sum())[:-1]                      # n-1 個內部邊界
 
         linear = [start + span * f for f in frac]
         bounds = linear
         if va is not None and frac.size:
-            e_pts = va.energy_split_times(start, end, frac.tolist())
-            if e_pts:
-                bounds = [ENERGY_WEIGHT * e + (1.0 - ENERGY_WEIGHT) * lin
-                          for e, lin in zip(e_pts, linear, strict=False)]
+            cands = va.syllable_boundaries(start, end)
+            seg = self._segment_chars(w, start, end, va, cands)
+            if seg is not None and len(seg) == frac.size:
+                bounds = seg
 
         pts = [start] + list(bounds) + [end]
         min_dur = min(0.05, span / n)
@@ -782,6 +910,7 @@ class LyricsAligner:
             lyrics = self._placeholder(track_name)
             report = {"source": "placeholder", "scale": 1.0, "offset": 0.0, "score": 0.0, "lines": len(lyrics)}
 
+        report["aligner"] = ALIGNER_VERSION
         logger.info(f"歌詞對齊完成: {report['lines']} 行，來源 {report['source']}")
 
         if output_json:

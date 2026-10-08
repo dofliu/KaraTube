@@ -138,3 +138,10 @@ test("自備歌詞對不上時要說「那份歌詞可能是別的版本」，�
   assert.equal(badge.tone, "bad");
   assert.match(badge.title, /別的版本|對不太上/);
 });
+
+test("分段平移有發生時要寫在說明裡（看得出影片跟歌詞檔是不同版本）", () => {
+  const b = AV.alignmentBadge({ source: "lrc", score: 0.6, scale: 1, lines: 30, shifts: 1 });
+  assert.match(b.title, /分段平移 1 處/);
+  const c = AV.alignmentBadge({ source: "lrc", score: 0.6, scale: 1, lines: 30 });
+  assert.doesNotMatch(c.title, /分段平移/);
+});

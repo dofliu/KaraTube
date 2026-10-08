@@ -33,7 +33,8 @@
      以 (scale, offset) 仿射變換修正片頭裁切與變速上傳，再把每行行首吸附到
      人聲軌真實的起唱點。行內逐字（v1.37 起）用人聲軌上的**換字證據**
      （頻譜突變＝換音高或子音、換氣後重新開口）與**字長先驗**（句尾拖長音）
-     一起解，句中換氣不再被當成句尾。有一套**端對端評估**守著：
+     一起解，句中換氣不再被當成句尾。影片是 MV 版／剪輯版、中段長度跟 LRC
+     的錄音版本不同時（v1.38 起），會**整段平移**後半首，而不是讓它整段歪掉。有一套**端對端評估**守著：
      `python -m backend.pipeline.alignment_bench` 用已知答案的合成人聲量
      「字開始變色 vs. 那個字真的被唱出來」的誤差。
    - **播放端補償音訊輸出延遲**（`AudioContext.outputLatency`），量不到的那一段
@@ -1319,7 +1320,9 @@ const lyricTime = (scoreTime - songOffsetMs / 1000) / songRate;        // 字幕
 - `scale` / `offset` — 相對原始錄音估出來的變速與偏移
 - `score` — 行首落在真實起唱點的程度，**低於 0.28 會自動改走 Whisper 路徑**
 - `recall` — 有多少比例的人聲被歌詞行覆蓋到，可用來抓「LRC 少了一段副歌」
-- `aligner` — 哪一版對齊演算法算的（v1.37 起是 `2`；沒有這個欄位＝舊版）。
+- `shifts` / `score_shifted` — （v1.38 起，有發生才會出現）影片跟 LRC 是不同剪輯版本時，
+  中段整段平移了幾處，以及平移後的分數（只當診斷，信任門檻仍看 `score`）
+- `aligner` — 哪一版對齊演算法算的（v1.37 是 `2`、v1.38 起是 `3`；沒有這個欄位＝舊版）。
   `python rebuild_lyrics.py --stale` 只挑舊版算的歌重算
 
 從 v1.22 起這份診斷會**出現在點歌台的「🗂️ 快取管理」每一列上**，
@@ -1363,7 +1366,7 @@ CLI 仍然在（改過對齊邏輯之後要整批重算時用）：
 python rebuild_lyrics.py              # 全部
 python rebuild_lyrics.py bu7nU9Mhpyo  # 單一首
 python rebuild_lyrics.py --check      # 只看現況，不動檔案
-python rebuild_lyrics.py --stale      # 只重算還是舊版對齊演算法算的歌（升級到 v1.37 後建議跑一次）
+python rebuild_lyrics.py --stale      # 只重算還是舊版對齊演算法算的歌（升級到 v1.37／v1.38 後建議跑一次）
 ```
 
 ---

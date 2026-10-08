@@ -36,7 +36,9 @@ def _fft_convolve(x: np.ndarray, h: np.ndarray) -> np.ndarray:
 
 def make_song(seed: int, *, n_lines: int = 32, scale: float = 1.0, offset: float = 0.0,
               lrc_noise: float = 0.12, lrc_bias: float = -0.15, breath_p: float = 0.5,
-              reverb: float = 0.5, bleed_db: float = -38.0, legato_p: float = 0.25
+              reverb: float = 0.5, bleed_db: float = -38.0, legato_p: float = 0.25,
+              shift_at: int = -1, shift_sec: float = 0.0, drums_db: float = -99.0,
+              adlib_db: float = -99.0
               ) -> Tuple[np.ndarray, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     回傳 (人聲訊號, 真實時間軸, LRC)。
@@ -44,6 +46,13 @@ def make_song(seed: int, *, n_lines: int = 32, scale: float = 1.0, offset: float
     真實時間軸每一行是 {start, end, text, chars: [(字起點, 字終點), ...]}；
     LRC 是 parse_lrc_with_timestamps 的格式（{time, text, cjk}），滿足
     `音訊時間 ≈ scale × LRC 時間 + offset`。
+
+    真實歌曲裡、合成人聲原本沒有的三件事：
+      shift_at / shift_sec —— 影片版本跟 LRC 的錄音版本在第 shift_at 行之前多了
+        （正值）或少了（負值）一段：MV 插了一段劇情、間奏剪短、現場版多講一段話。
+        整首不是同一個仿射變換，全域 (scale, offset) 只能對上一半。
+      drums_db —— 分離不乾淨，人聲軌裡漏進來的鼓（每拍一下寬頻打擊）。
+      adlib_db —— 間奏裡的和聲／「喔～」，LRC 裡沒有那一行，卻是真的人聲。
     """
     rng = np.random.default_rng(seed)
     t = 12.0 + rng.uniform(0, 8)                          # 前奏
@@ -52,6 +61,8 @@ def make_song(seed: int, *, n_lines: int = 32, scale: float = 1.0, offset: float
     for li in range(n_lines):
         if li in interludes and li > 0:
             t += rng.uniform(12, 20)                      # 間奏
+        if li == shift_at:
+            t += shift_sec
         n = int(rng.integers(6, 13))
         chars = []
         cur = t
@@ -88,6 +99,31 @@ def make_song(seed: int, *, n_lines: int = 32, scale: float = 1.0, offset: float
             if ci == n_c - 1:
                 env = env * np.exp(-tt / 2.5)
             y[i0:i1] += sig * env * loud * rng.uniform(0.7, 1.0)
+    if adlib_db > -90:
+        # 間奏的和聲：落在句與句之間超過 6 秒的空檔裡，各唱 1.5~3 秒
+        g = 10 ** (adlib_db / 20)
+        for a, b in zip(lines[:-1], lines[1:], strict=True):
+            if b["start"] - a["end"] < 6.0:
+                continue
+            s0 = a["end"] + rng.uniform(1.5, 3.0)
+            while s0 + 3.5 < b["start"] - 1.0:
+                d = rng.uniform(1.5, 3.0)
+                i0, i1 = int(s0 * SR), int((s0 + d) * SR)
+                tt = np.arange(i1 - i0) / SR
+                ph = 2 * np.pi * rng.uniform(200, 400) * tt
+                env = np.minimum(1, tt / 0.15) * np.minimum(1, tt[::-1] / 0.3)
+                y[i0:i1] += g * env * sum((0.6 / h) * np.sin(h * ph) for h in range(1, 4))
+                s0 += d + rng.uniform(1.0, 2.5)
+    if drums_db > -90:
+        # 每拍一下：40ms 的寬頻衰減噪音（漏進人聲軌的小鼓／大鼓）
+        g = 10 ** (drums_db / 20)
+        beat = 60.0 / rng.uniform(70, 110)
+        hit = rng.standard_normal(int(0.04 * SR)) * np.exp(-np.arange(int(0.04 * SR)) / (0.01 * SR))
+        bt = 2.0
+        while bt < t + 8.0:
+            i0 = int(bt * SR)
+            y[i0:i0 + hit.size] += g * hit[:max(0, y.size - i0)]
+            bt += beat
     if reverb > 0:
         ir_t = np.arange(int(0.8 * SR)) / SR
         ir = rng.standard_normal(ir_t.size) * np.exp(-ir_t / 0.18) * 0.03 * reverb
@@ -97,8 +133,9 @@ def make_song(seed: int, *, n_lines: int = 32, scale: float = 1.0, offset: float
     y = y / (np.max(np.abs(y)) * 1.1)
 
     lrc = []
-    for ln in lines:
-        lt = (ln["start"] - offset) / scale + lrc_bias + rng.normal(0, lrc_noise)
+    for li, ln in enumerate(lines):
+        st = ln["start"] - (shift_sec if 0 <= shift_at <= li else 0.0)   # LRC 那個版本沒有這一段
+        lt = (st - offset) / scale + lrc_bias + rng.normal(0, lrc_noise)
         lrc.append({"time": round(max(0.0, lt), 2), "text": ln["text"], "cjk": ln["text"]})
     return y, lines, lrc
 
@@ -145,6 +182,9 @@ SCENARIOS: List[Tuple[str, Dict[str, Any]]] = [
     ("快 6%", {"scale": 1.06, "offset": 1.0}),
     ("重殘響", {"reverb": 1.5}),
     ("句句換氣", {"breath_p": 0.9}),
+    ("MV 中段多 7 秒", {"shift_at": 20, "shift_sec": 7.0}),
+    ("間奏剪短 9 秒", {"shift_at": 8, "shift_sec": -9.0}),
+    ("漏鼓＋間奏和聲", {"drums_db": -14.0, "adlib_db": -8.0}),
 ]
 
 

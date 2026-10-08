@@ -3,8 +3,8 @@ name_zh: KaraTube 隨選即唱 KTV 伴唱系統
 category: personal_tools
 progress: 100
 status: active
-last_updated: "2026-10-07"
-next_milestone: "🔥 最優先：字幕與聲音對齊（負責人實測仍對不上）—— v1.37 建立了端對端評估並修掉量得到的三個後端問題（逐字走字中位誤差 370ms→9ms、句中換氣不再斷句、變速網格 ±5%→±8%）；等負責人用真實歌曲（先 rebuild_lyrics.py --stale）重測確認前維持未完成。其後：動態訊息多語化、拼音首字母查歌、對唱模式下的修音"
+last_updated: "2026-10-08"
+next_milestone: "🔥 最優先：字幕與聲音對齊（負責人實測仍對不上）—— v1.37 修了逐字走字／換氣斷句／變速網格；v1.38 修了 MV 版／剪輯版中段長度不同造成的「後半首整段差 7~9 秒」（分段平移）。仍未解：漏鼓與重殘響的逐字誤差。等負責人用真實歌曲（先 rebuild_lyrics.py --stale）重測確認前維持未完成。其後：動態訊息多語化、拼音首字母查歌、對唱模式下的修音"
 technologies:
   - Python
   - Docker

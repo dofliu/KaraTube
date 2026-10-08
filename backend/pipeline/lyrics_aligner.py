@@ -34,6 +34,13 @@ OFFSET_RANGE = 25.0                              # 片頭最多裁切/新增 25 
 # 連唱進來的句首（前面沒有靜音）改吸附到這個半徑內、強度至少這麼多的換字證據
 START_FLUX_WINDOW = 0.30
 START_FLUX_MIN = 0.5
+# 分段平移（見 _piecewise_offsets）：MV 版／剪輯版跟 LRC 的錄音版本中段長度不同
+PIECE_RANGE = 20.0                               # 一段最多相對全域結果再平移幾秒
+PIECE_STEP = 0.05
+PIECE_QUIET = 1.00                               # 換段處新位置前至少這麼久沒人唱
+PIECE_ENTRY_FIT = 0.80                           # 新段落第一行的起唱分數下限（見 _line_fit）
+PIECE_JITTER = 0.25                              # 每一行自己的打點誤差容許量
+PIECE_SWITCH_COST = 1.2                          # 換段懲罰：約要連續三、四行的證據
 SNAP_WINDOW = 0.70                               # 行首吸附真實起唱點的搜尋半徑
 # 一句歌詞之內，連續靜音要超過這麼久才算「這句唱完了」。
 # 0.35 秒會把句中換氣（流行歌常見 0.4~0.8 秒）當成句尾，後半句的字被擠進
@@ -50,7 +57,8 @@ SEG_EVIDENCE = 2.0
 # `python rebuild_lyrics.py --stale` 才挑得出「還是舊版算的」那幾首。
 #   1（或欄位不存在）：v1.36 以前，逐字按能量均分、句中換氣即句尾、變速 ±5%
 #   2：v1.37，逐字切分（頻譜換字點 + 字長先驗）、換氣不斷句、變速 ±8%
-ALIGNER_VERSION = 2
+#   3：v1.38，分段平移（MV 版／剪輯版中段長度跟 LRC 不同時，後半段不再整段歪掉）
+ALIGNER_VERSION = 3
 MIN_TRUST_SCORE = 0.28                           # 低於此分數視為抓到別首歌的 LRC
 
 # LRC 檔頭的製作名單／版權聲明。只認「欄位名 + 冒號」這種結構，
@@ -382,39 +390,46 @@ class LyricsAligner:
     # ------------------------------------------------------------------
     # 時間軸對齊
     # ------------------------------------------------------------------
-    def _estimate_time_warp(self, times: np.ndarray, durations: np.ndarray,
-                            va: VocalActivity) -> Tuple[float, float, float]:
+    @staticmethod
+    def _line_fit(T: np.ndarray, cover_len: np.ndarray, va: VocalActivity) -> np.ndarray:
         """
-        在 (scale, offset) 空間網格搜尋，讓 LRC 行首盡量落在真實的人聲起點上。
+        每一行放在 T 這個起點時「像不像起唱」：0.55 × onset + 0.45 × cover。
 
-        評分兩項：
           onset —— 行首之後有聲、之前無聲（真正的「起唱」特徵）
           cover —— 整行預期演唱區間確實有人聲
+
+        T 的最後一維是行；cover_len 是每行的預期長度（格數），可廣播到 T。
         """
         fs, N = va.frame_sec, va.n_frames
         cum = va.cum_active
-        if N == 0 or times.size < 3:
-            return 1.0, 0.0, 0.0
 
         def win_mean(start_sec: np.ndarray, length_frames) -> np.ndarray:
             a = np.clip(np.round(start_sec / fs).astype(np.int64), 0, N)
             b = np.clip(a + np.asarray(length_frames, dtype=np.int64), 0, N)
             return (cum[b] - cum[a]) / np.maximum(b - a, 1)
 
-        pre_len = int(0.45 / fs)
-        post_len = int(0.40 / fs)
+        post = win_mean(T, int(0.40 / fs))
+        pre = win_mean(T - 0.55, int(0.45 / fs))
+        onset = np.clip(post - pre, -1.0, 1.0)
+        cover = win_mean(T, cover_len)
+        return 0.55 * onset + 0.45 * cover
+
+    def _estimate_time_warp(self, times: np.ndarray, durations: np.ndarray,
+                            va: VocalActivity) -> Tuple[float, float, float]:
+        """
+        在 (scale, offset) 空間網格搜尋，讓 LRC 行首盡量落在真實的人聲起點上
+        （每一行的分數見 `_line_fit`，這裡取全首平均）。
+        """
+        fs, N = va.frame_sec, va.n_frames
+        if N == 0 or times.size < 3:
+            return 1.0, 0.0, 0.0
 
         def score_for(scale: float, offsets: np.ndarray) -> np.ndarray:
             T = scale * times[None, :] + offsets[:, None]          # (O, L)
             cover_len = np.maximum(np.round(scale * durations / fs), 1).astype(np.int64)
-
-            post = win_mean(T, post_len)
-            pre = win_mean(T - 0.55, pre_len)
-            onset = np.clip(post - pre, -1.0, 1.0).mean(axis=1)
-            cover = win_mean(T, cover_len[None, :]).mean(axis=1)
+            s = self._line_fit(T, cover_len[None, :], va).mean(axis=1)
 
             in_range = ((T >= -0.5) & (T <= va.duration)).mean(axis=1)
-            s = 0.55 * onset + 0.45 * cover
             s -= 0.60 * (1.0 - in_range)                            # 把歌詞推到音檔外面不算對齊
             s -= 0.12 * np.minimum(1.0, abs(scale - 1.0) / 0.05)    # 無證據時偏好不變速
             s -= 0.02 * np.minimum(1.0, np.abs(offsets) / OFFSET_RANGE)
@@ -438,6 +453,98 @@ class LyricsAligner:
 
         logger.info(f"時間軸校正: scale={best_scale:.4f} offset={best_off:+.3f}s score={best_score:.3f}")
         return best_scale, best_off, best_score
+
+    def _piecewise_offsets(self, times: np.ndarray, durations: np.ndarray, scale: float,
+                           offset: float, va: VocalActivity) -> Tuple[np.ndarray, int]:
+        """
+        全域仿射之後，允許歌曲中段整段平移（回傳每一行的 offset、平移了幾次）。
+
+        為什麼需要：LRC 對應的是錄音室版本，YouTube 上常常是 MV 版、現場版、
+        剪輯版 —— 中段插了一段劇情、間奏剪短、多講一段話。整首不是同一個仿射變換，
+        全域 (scale, offset) 只能對上其中一半；另一半整段差 7~9 秒
+        （端對端評估「MV 中段多 7 秒」「間奏剪短 9 秒」兩個情境），
+        唱的人看到的就是「唱到一半字幕突然整段跳開」。每行吸附起唱點的半徑只有
+        0.7 秒，救不回來。
+
+        做法：每一行可以在全域結果上再加一個 Δ（±PIECE_RANGE 秒），用 Viterbi 找
+        「每行的起唱分數總和 − 換段懲罰」最大的 Δ 序列。
+          * 換段要付 PIECE_SWITCH_COST，大約要連續三、四行的證據才值得換 ——
+            單一行對到別的起唱點不會把整段帶走；
+          * 時間不能倒退：下一行的起點不能早於上一行起點 + 0.3 秒；
+          * 結果整段幾乎都是 Δ=0（沒有結構差異的歌）時，原樣回傳全域 offset。
+        """
+        L = times.size
+        base = np.full(L, offset, dtype=np.float64)
+        if L < 6 or va.n_frames == 0:
+            return base, 0
+        fs = va.frame_sec
+        deltas = np.round(np.arange(-PIECE_RANGE, PIECE_RANGE + 1e-6, PIECE_STEP), 3)
+        D = deltas.size
+        T = scale * times[:, None] + offset + deltas[None, :]       # (L, D)
+        cover_len = np.maximum(np.round(scale * durations / fs), 1).astype(np.int64)
+        emit = self._line_fit(T, cover_len[:, None], va)
+        emit[(T < -0.5) | (T > va.duration)] = -1.0
+        # LRC 每一行本身就有 ±0.1~0.2 秒的打點誤差，單行的分數在正確 Δ 附近很尖：
+        # 每行取 ±PIECE_JITTER 內最好的那一格（精確位置交給之後的行首吸附）
+        r = int(round(PIECE_JITTER / PIECE_STEP))
+        if r > 0:
+            from numpy.lib.stride_tricks import sliding_window_view
+            padded = np.pad(emit, ((0, 0), (r, r)), mode="edge")
+            emit = sliding_window_view(padded, 2 * r + 1, axis=1).max(axis=-1)
+        # 不換段時偏好 Δ=0：相同證據下不要無緣無故整段搬家
+        emit -= 0.002 * np.abs(deltas)[None, :]
+        # 只准在「新位置前面有一段人聲靜音」的行換段。真的版本差異（MV 插了劇情、
+        # 間奏剪短）在人聲軌上一定是一段沒人唱的空檔；連唱的段落裡整段往後滑
+        # 一行也對得上起唱點與覆蓋率，沒有這一條會被當成結構差異（量到過把副歌
+        # 最後六行整段搬錯一行）。
+        cum = va.cum_active
+        qa = np.clip(np.round((T - PIECE_QUIET) / fs).astype(np.int64), 0, va.n_frames)
+        qb = np.clip(np.round((T - 0.10) / fs).astype(np.int64), 0, va.n_frames)
+        quiet = (cum[qb] - cum[qa]) <= 0.25 * np.maximum(qb - qa, 1)
+        # 而且新段落的第一行必須是一個乾淨的起唱（靜音之後馬上開口）。只有靜音
+        # 不夠：句中換氣後重新開口也長得像起唱，一段連唱的句子整段往前挪到
+        # 換氣點上，覆蓋率照樣很高。
+        entry = quiet & (emit >= PIECE_ENTRY_FIT)
+
+        NEG = -1e18
+        score = emit[0].copy()
+        back = np.zeros((L, D), dtype=np.int64)
+        idx = np.arange(D)
+        for i in range(1, L):
+            # 不換段（Δ 不變）：LRC 的行距本身至少要 0.3 秒
+            slack = scale * (times[i] - times[i - 1]) - 0.30
+            # 換段：可接受的 Δ_prev 是 deltas ≤ Δ + sw_slack；取其中分數最高者（前綴最大值）
+            pm_val = np.maximum.accumulate(score)
+            pm_arg = np.maximum.accumulate(np.where(score >= pm_val, idx, 0))
+            # 換段時更嚴：上一行要在新位置前的那段靜音之前唱完（它自己的長度 + 靜音）。
+            # 只要求不倒退的話，新段落會從「上一行的起唱點」進場 —— 整段錯一行。
+            sw_slack = scale * (times[i] - times[i - 1]) - scale * durations[i - 1] - PIECE_QUIET
+            lim = np.searchsorted(deltas, deltas + sw_slack + 1e-9, side="right") - 1
+            switch_val = np.where(lim >= 0, pm_val[np.clip(lim, 0, D - 1)], NEG) - PIECE_SWITCH_COST
+            switch_arg = pm_arg[np.clip(lim, 0, D - 1)]
+            switch_val = np.where(entry[i], switch_val, NEG)
+            stay_ok = slack >= 0
+            stay_val = score if stay_ok else np.full(D, NEG)
+            use_stay = stay_val >= switch_val
+            back[i] = np.where(use_stay, idx, switch_arg)
+            score = np.where(use_stay, stay_val, switch_val) + emit[i]
+
+        j = int(np.argmax(score))
+        path = np.zeros(L, dtype=np.int64)
+        path[-1] = j
+        for i in range(L - 1, 0, -1):
+            j = int(back[i, j])
+            path[i - 1] = j
+        d = deltas[path]
+        switches = int(np.count_nonzero(np.diff(d)))
+        if not np.any(np.abs(d) > 0.75):
+            return base, 0          # 只是幾十毫秒的游移，交給行首吸附處理
+        # 每一段跟全域結果比，分數要真的變好才採用（防止在沒有人聲的區域亂搬）
+        gain = float(emit[np.arange(L), path].sum() - emit[:, int(np.argmin(np.abs(deltas)))].sum())
+        if gain < PIECE_SWITCH_COST * max(1, switches):
+            return base, 0
+        logger.info(f"分段平移: {switches} 處，Δ 範圍 {d.min():+.2f}~{d.max():+.2f}s，增益 {gain:.2f}")
+        return base + d, switches
 
     def _refine_line_times(self, mapped: List[float], char_counts: List[int],
                            va: Optional[VocalActivity]) -> Tuple[List[float], List[float]]:
@@ -647,7 +754,21 @@ class LyricsAligner:
         else:
             scale, offset, score = 1.0, 0.0, 0.0
 
-        mapped = (scale * times + offset).tolist()
+        shifts = 0
+        score_shifted = None
+        if va is not None:
+            offsets, shifts = self._piecewise_offsets(times, durations, scale, offset, va)
+            mapped = (scale * times + offsets).tolist()
+            if shifts:
+                # 平移後的分數只當診斷，不拿來決定信不信這份 LRC：分段平移對抓錯的歌
+                # 也會硬湊出幾段（端對端評估量到 +0.03~0.10），拿它來過信任門檻
+                # 等於多開一條讓別首歌的歌詞混過去的路。
+                cl = np.maximum(np.round(scale * durations / va.frame_sec), 1).astype(np.int64)
+                f0 = self._line_fit((scale * times + offset)[None, :], cl[None, :], va).mean()
+                f1 = self._line_fit((scale * times + offsets)[None, :], cl[None, :], va).mean()
+                score_shifted = score + float(f1 - f0)
+        else:
+            mapped = (scale * times + offset).tolist()
         starts, ends = self._refine_line_times(mapped, char_counts, va)
 
         lyrics = []
@@ -664,6 +785,9 @@ class LyricsAligner:
 
         report = {"source": "lrc", "scale": round(scale, 4), "offset": round(offset, 3),
                   "score": round(score, 3), "lines": len(lyrics)}
+        if shifts:
+            report["shifts"] = shifts
+            report["score_shifted"] = round(score_shifted, 3)
         return lyrics, report
 
     def _split_long_lines(self, lyrics: List[Dict[str, Any]], va: Optional[VocalActivity],

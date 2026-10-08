@@ -59,6 +59,8 @@ function alignmentBadge(alignment) {
   if (Number.isFinite(Number(alignment.scale)) && Number(alignment.scale) !== 1) {
     parts.push(`變速校正 ×${Number(alignment.scale).toFixed(3)}`);
   }
+  // 影片版本跟歌詞檔的錄音版本中段長度不同（MV 插劇情、間奏剪短）時，後端會整段平移
+  if (Number(alignment.shifts) > 0) parts.push(`分段平移 ${Number(alignment.shifts)} 處`);
   if (Number.isFinite(Number(alignment.lines))) parts.push(`${alignment.lines} 行`);
 
   if (source === "placeholder") {

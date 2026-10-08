@@ -98,3 +98,29 @@ def test_silence_yields_no_syllable_boundaries():
     va = VocalActivity.from_signal(np.zeros(16000 * 3), 16000)
     assert va.syllable_boundaries(0.5, 2.5) == []
     assert va.n_frames > 0
+
+
+@pytest.mark.parametrize("seed,kw", [
+    (111, {"shift_at": 9, "shift_sec": 7.0}),      # MV 中段插了一段
+    (112, {"shift_at": 10, "shift_sec": -6.0}),    # 間奏剪短（n_lines=16 的第二段間奏在第 10 行前）
+    (113, {"shift_at": 10, "shift_sec": 2.5}),     # 只差兩秒半：超出行首吸附半徑，仍要救
+])
+def test_a_section_that_differs_from_the_lrc_version_is_not_left_behind(aligner, seed, kw):
+    """影片版本跟 LRC 的錄音版本中段長度不同：全域 (scale, offset) 只能對上一半，
+    舊版後半段整段差 7~9 秒（「唱到一半字幕突然跳開」）。"""
+    truth, aligned, report, _ = _run(aligner, seed, **kw)
+    assert len(aligned) == len(truth), report
+    err = measure(truth, aligned)
+    assert np.percentile(np.abs(err["start"]), 90) < 0.30, stats(err["start"])
+    assert stats(err["char"])["median_ms"] < 60
+    assert report.get("shifts", 0) >= 1, report
+
+
+@pytest.mark.parametrize("seed,kw", [
+    (121, {}), (122, {"scale": 1.03, "offset": -2.0}), (123, {"reverb": 1.5}),
+    (124, {"drums_db": -14.0, "adlib_db": -8.0}),
+])
+def test_a_song_without_structural_differences_is_not_split(aligner, seed, kw):
+    """分段平移不能自己發明結構差異：同一個版本的歌一段都不准搬。"""
+    _, _, report, _ = _run(aligner, seed, **kw)
+    assert report.get("shifts", 0) == 0, report
